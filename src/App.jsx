@@ -32,7 +32,6 @@ const HAND_FACE_TOUCH_RATIO = 0.12
 function validateKeyFormat(rawValue) {
     const value = rawValue.trim()
     if (!value) return 'Enter your Deepgram API key.'
-    if (!value.startsWith('dg_')) return 'Key must start with dg_.'
     if (value.length < 20) return 'Key looks too short. Check and retry.'
     if (!/^[-_A-Za-z0-9]+$/.test(value)) return 'Key contains unsupported characters.'
     return ''
@@ -1079,7 +1078,7 @@ function App() {
                             className={fieldError ? 'field field-error' : 'field'}
                             autoComplete="off"
                         />
-                        <p id="key-help" className="help-text">Expected format starts with dg_</p>
+                        <p id="key-help" className="help-text">Use a valid Deepgram API key from your Deepgram account.</p>
                         {fieldError && (
                             <p id="key-error" className="error-text" aria-live="polite">
                                 {fieldError}

@@ -8,7 +8,7 @@ Current implementation includes:
 
 - React + Vite project scaffolded
 - Settings UI for Deepgram API key (BYOK)
-- Client-side key validation rules (`dg_` prefix, minimum length, allowed characters)
+- Client-side key validation rules (minimum length and safe character checks)
 - Local key persistence with replace/remove actions
 - JavaScript MediaPipe live analysis using face and hand landmark models
 - Camera preview with landmark overlay and live counters
