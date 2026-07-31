@@ -1,5 +1,5 @@
 body {
-    overflow-y:auto;
+    overflow-y: auto;
 }
 
 .app-shell {
@@ -171,9 +171,45 @@ h3 {
 
 .btn:disabled {
     opacity: 0.7;
-    cursor: wait;
+    cursor: not-allowed;
     transform: none;
     box-shadow: none;
+}
+
+.disabled-tooltip-wrap {
+    position: relative;
+    display: inline-flex;
+}
+
+.disabled-tooltip-wrap.has-tooltip:hover::after {
+    content: attr(data-disabled-reason);
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 0.5rem);
+    transform: translateX(-50%);
+    background: #0f1c22;
+    color: #ecfffd;
+    border: 1px solid rgba(172, 223, 228, 0.35);
+    border-radius: 8px;
+    padding: 0.3rem 0.5rem;
+    font-size: 0.78rem;
+    line-height: 1.2;
+    white-space: nowrap;
+    z-index: 25;
+    pointer-events: none;
+}
+
+.disabled-tooltip-wrap.has-tooltip:hover::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 0.18rem);
+    transform: translateX(-50%);
+    border-width: 6px 6px 0 6px;
+    border-style: solid;
+    border-color: #0f1c22 transparent transparent transparent;
+    z-index: 25;
+    pointer-events: none;
 }
 
 .btn.ghost {
@@ -315,6 +351,28 @@ h3 {
     background: var(--ghost-bg);
 }
 
+.transcript-box.copyable-output {
+    cursor: copy;
+}
+
+.transcript-box.copyable-output:focus-visible {
+    outline: 3px solid var(--focus);
+    outline-offset: 2px;
+}
+
+.panel.session .session-output-box {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.panel.session .session-output-box .output-text {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+}
+
 .output-text {
     margin: 0.6rem 0 0;
     color: var(--ink-900);
@@ -373,7 +431,7 @@ h3 {
     max-width: 90vw;
     height: min(90vh, calc(100vh - 2rem));
     max-height: 90vh;
-    overflow: auto;
+    overflow: hidden;
     display: grid;
     grid-template-rows: auto 1fr;
 }
@@ -384,6 +442,10 @@ h3 {
     justify-content: space-between;
     gap: 0.75rem;
     margin-bottom: 0.75rem;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--card-bg);
 }
 
 .history-close-btn {
@@ -393,6 +455,7 @@ h3 {
 .history-modal-grid {
     min-height: 0;
     height: 100%;
+    overflow: auto;
     display: grid;
     grid-template-columns: minmax(280px, 340px) 1fr;
     gap: 0.8rem;
@@ -466,33 +529,27 @@ h3 {
     gap: 0.7rem;
 }
 
+.history-detail-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.history-detail-top h3 {
+    margin: 0;
+}
+
+.history-copy-btn {
+    white-space: nowrap;
+}
+
 .history-detail-scroll {
     min-height: 0;
     height: 100%;
     overflow-y: auto;
     overflow-x: hidden;
     padding-right: 0.45rem;
-}
-
-@media (min-width: 861px) {
-
-    .history-modal-grid,
-    .history-overview,
-    .history-detail,
-    .history-detail-layout,
-    .history-detail-scroll {
-        height: auto;
-    }
-
-    .history-overview-list,
-    .history-detail-scroll {
-        overflow: visible;
-        padding-right: 0;
-    }
-
-    .history-detail {
-        overflow: visible;
-    }
 }
 
 .history-transcript,
@@ -651,6 +708,12 @@ h3 {
     border-radius: 10px;
     border: 1px solid var(--line);
     font: inherit;
+}
+
+.question-field {
+    min-height: calc(1.45em * 2 + 1.24rem);
+    line-height: 1.45;
+    resize: vertical;
 }
 
 .field:focus-visible {

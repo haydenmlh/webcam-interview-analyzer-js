@@ -658,33 +658,6 @@ function downloadBlob(blob, fileName) {
     URL.revokeObjectURL(url)
 }
 
-function toSessionTextReport(report) {
-    const lines = [
-        'Mock Interview Analyzer Session Report',
-        `Generated: ${report.generatedAt}`,
-        '',
-        'Metrics',
-        `- Faces detected: ${report.metrics.facesDetected}`,
-        `- Hands detected: ${report.metrics.handsDetected}`,
-        `- Eye contact proxy: ${report.metrics.eyeContactPercent}%`,
-        `- Gaze deviation: ${report.metrics.gazeDeviationPercent}%`,
-        `- Prolonged eye closure events: ${report.metrics.prolongedEyeClosureCount}`,
-        `- Hand-to-face touches: ${report.metrics.handToFaceTouchCount}`,
-        `- Currently touching face: ${report.metrics.isTouchingFace ? 'yes' : 'no'}`,
-        `- Shoulder side shift: ${report.metrics.shoulderDriftPercent ?? 'n/a'}%`,
-        `- Shoulder side shift status: ${report.metrics.shoulderShiftStatus || 'n/a'}`,
-        `- Shoulder tilt delta: ${report.metrics.shoulderTiltDeltaDegrees ?? 'n/a'}°`,
-        `- Shoulder tilt status: ${report.metrics.shoulderTiltStatus || 'n/a'}`,
-        `- Shoulder rotation (yaw proxy): ${report.metrics.shoulderRotationDegrees ?? 'n/a'}°`,
-        `- Shoulder rotation status: ${report.metrics.shoulderRotationStatus || 'n/a'}`,
-        '',
-        'Transcript',
-        report.transcript || '(no transcript captured)',
-    ]
-
-    return lines.join('\n')
-}
-
 function sanitizeDisplayText(value, fallback = '') {
     const text = String(value ?? '')
         .split('')
@@ -737,6 +710,7 @@ function parseSessionJsonReport(fileName, content, fallbackDateIso, sortTime) {
     try {
         const parsed = JSON.parse(content)
         const { baseName } = splitFileName(fileName)
+        const parsedTextFileName = sanitizeDisplayText(parsed?.savedFiles?.textFileName, '')
         return {
             id: `${baseName}-${sortTime}-json`,
             baseName,
@@ -765,8 +739,10 @@ function parseSessionJsonReport(fileName, content, fallbackDateIso, sortTime) {
                 parsed?.videoFileName ?? parsed?.savedFiles?.videoFileName,
                 '',
             ),
+            textFileName: parsedTextFileName || `${baseName}.txt`,
             audioHandle: null,
             videoHandle: null,
+            textHandle: null,
             sortTime,
         }
     } catch {
@@ -848,9 +824,7 @@ function App() {
     const [fieldError, setFieldError] = useState('')
     const [banner, setBanner] = useState('')
     const [toast, setToast] = useState('')
-    const [showKeyStatus, setShowKeyStatus] = useState(() =>
-        getSavedValue(STORAGE_KEY).length > 0,
-    )
+    const [showKeyStatus, setShowKeyStatus] = useState(false)
     const [darkMode, setDarkMode] = useState(() => getSavedValue(STORAGE_THEME) === 'dark')
 
     const [cameraStatus, setCameraStatus] = useState('idle')
@@ -896,7 +870,7 @@ function App() {
         audioUrl: '',
         videoUrl: '',
     })
-    const [historyPlaybackRate, setHistoryPlaybackRate] = useState(1.5)
+    const [historyPlaybackRate, setHistoryPlaybackRate] = useState(1)
     const historyVideoRef = useRef(null)
     const historyAudioRef = useRef(null)
     const selectedHistoryMediaRef = useRef({ audioUrl: '', videoUrl: '' })
@@ -1064,7 +1038,11 @@ function App() {
                 const byNameVideo = parsed.videoFileName
                     ? fileHandleByName.get(parsed.videoFileName) || null
                     : null
+                const byNameText = parsed.textFileName
+                    ? fileHandleByName.get(parsed.textFileName) || null
+                    : null
                 const byBaseMedia = mediaByBaseName.get(entry.baseName)
+                const fallbackTextFileName = `${entry.baseName}.txt`
 
                 parsedItems.push({
                     ...parsed,
@@ -1072,6 +1050,8 @@ function App() {
                     videoHandle: byNameVideo || byBaseMedia?.videoHandle || null,
                     audioFileName: parsed.audioFileName || byBaseMedia?.audioFileName || '',
                     videoFileName: parsed.videoFileName || byBaseMedia?.videoFileName || '',
+                    textHandle: byNameText || fileHandleByName.get(fallbackTextFileName) || null,
+                    textFileName: parsed.textFileName || fallbackTextFileName,
                 })
             }
 
@@ -1118,6 +1098,17 @@ function App() {
         () => previousAnswers.find((item) => item.id === selectedPreviousAnswerId) || null,
         [previousAnswers, selectedPreviousAnswerId],
     )
+
+    const isVideoStartDisabled = isTranscribing || cameraStatus !== 'ready'
+    const videoStartDisabledReason =
+        cameraStatus !== 'ready' ? 'Camera access is not allowed yet' : ''
+
+    const isPreviousAnswersViewDisabled =
+        !fileSystemAccessSupported || !recordingsFolderName || isLoadingPreviousAnswers
+    const previousAnswersViewDisabledReason =
+        !fileSystemAccessSupported || !recordingsFolderName
+            ? 'Folder access is not allowed yet'
+            : ''
 
     useEffect(() => {
         let cancelled = false
@@ -1845,21 +1836,49 @@ function App() {
         }
     }
 
-    function exportJsonReport() {
+    async function copyJsonReportToClipboard() {
         const report = buildSessionReport()
-        const blob = new Blob([JSON.stringify(report, null, 2)], {
-            type: 'application/json',
-        })
-        downloadBlob(blob, `session-report-${Date.now()}.json`)
+        try {
+            await navigator.clipboard.writeText(JSON.stringify(report, null, 2))
+            setToast('JSON copied to clipboard.')
+        } catch {
+            setToast('Could not copy JSON to clipboard.')
+        }
     }
 
-    function exportTextReport() {
-        const report = buildSessionReport()
-        const outputBlock = outputText || toSessionTextReport(report)
-        const blob = new Blob([outputBlock], {
-            type: 'text/plain;charset=utf-8',
-        })
-        downloadBlob(blob, `session-report-${Date.now()}.txt`)
+    async function copyOutputToClipboard() {
+        if (!outputText) {
+            setToast('No output to copy yet.')
+            return
+        }
+
+        try {
+            await navigator.clipboard.writeText(outputText)
+            setToast('Output copied to clipboard.')
+        } catch {
+            setToast('Could not copy output to clipboard.')
+        }
+    }
+
+    async function copySelectedAnswerTextFile() {
+        if (!selectedPreviousAnswer) {
+            setToast('Select an answer first.')
+            return
+        }
+
+        if (!selectedPreviousAnswer.textHandle) {
+            setToast('No text file found for this answer.')
+            return
+        }
+
+        try {
+            const file = await selectedPreviousAnswer.textHandle.getFile()
+            const textContent = await file.text()
+            await navigator.clipboard.writeText(textContent)
+            setToast('text output copied to clipboard')
+        } catch {
+            setToast('Could not copy text file.')
+        }
     }
 
     function downloadRecording() {
@@ -2392,6 +2411,9 @@ function App() {
         shoulderRotationDeg == null
             ? 'n/a'
             : describeTorsoRotation(shoulderRotationDeg, SHOULDER_ROTATION_ALERT_DEG)
+    const outputDisplayText =
+        outputText ||
+        'No output yet. Start recording to capture a transcript and interview metrics.'
     const cameraActionButton =
         cameraStatus === 'ready' ? (
             <button type="button" className="btn ghost" onClick={stopCamera}>
@@ -2606,14 +2628,19 @@ function App() {
                     <div className="actions wrap">
                         {!isRecording ? (
                             <>
-                                <button
-                                    type="button"
-                                    className="btn"
-                                    onClick={() => startRecording('video')}
-                                    disabled={isTranscribing}
+                                <span
+                                    className={`disabled-tooltip-wrap${isVideoStartDisabled && videoStartDisabledReason ? ' has-tooltip' : ''}`}
+                                    data-disabled-reason={videoStartDisabledReason}
                                 >
-                                    Start Video Recording
-                                </button>
+                                    <button
+                                        type="button"
+                                        className="btn"
+                                        onClick={() => startRecording('video')}
+                                        disabled={isVideoStartDisabled}
+                                    >
+                                        Start Video Recording
+                                    </button>
+                                </span>
                                 <button
                                     type="button"
                                     className="btn ghost"
@@ -2647,13 +2674,13 @@ function App() {
                             <span>Read (TTS) Question</span>
                         </label>
                     </div>
-                    <input
+                    <textarea
                         id="interview-question"
-                        type="text"
-                        className="field"
+                        className="field question-field"
                         value={questionInput}
                         onChange={(event) => setQuestionInput(event.target.value)}
                         autoComplete="off"
+                        rows={2}
                         placeholder="Tell me about a challenging project you worked on."
                     />
                     {hasKey && showKeyStatus && <p className="key-status">{maskedSummary}</p>}
@@ -2664,20 +2691,42 @@ function App() {
                     )}
                     {banner && <p className="banner">{banner}</p>}
 
-                    <div className="transcript-box">
+                    <div
+                        className="transcript-box copyable-output session-output-box"
+                        role="button"
+                        tabIndex={0}
+                        onClick={copyOutputToClipboard}
+                        onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault()
+                                void copyOutputToClipboard()
+                            }
+                        }}
+                        aria-label="Copy output to clipboard"
+                        title="Copy output to clipboard"
+                    >
                         <h3>Output</h3>
-                        <p className="output-text">
-                            {outputText ||
-                                'No output yet. Start recording to capture a transcript and interview metrics.'}
-                        </p>
+                        <p className="output-text">{outputDisplayText}</p>
                     </div>
 
                     <div className="actions wrap export-actions">
-                        <button type="button" className="btn ghost" onClick={exportJsonReport}>
-                            Export JSON
+                        <button
+                            type="button"
+                            className="btn ghost"
+                            onClick={() => {
+                                void copyOutputToClipboard()
+                            }}
+                        >
+                            Copy Text
                         </button>
-                        <button type="button" className="btn ghost" onClick={exportTextReport}>
-                            Export TXT
+                        <button
+                            type="button"
+                            className="btn ghost"
+                            onClick={() => {
+                                void copyJsonReportToClipboard()
+                            }}
+                        >
+                            Copy JSON
                         </button>
                         <button
                             type="button"
@@ -2699,14 +2748,19 @@ function App() {
                                         : 'Select an output folder in Settings to load previous answers.'}
                                 </p>
                             </div>
-                            <button
-                                type="button"
-                                className="btn ghost"
-                                onClick={openPreviousAnswersModal}
-                                disabled={!fileSystemAccessSupported || !recordingsFolderName || isLoadingPreviousAnswers}
+                            <span
+                                className={`disabled-tooltip-wrap${isPreviousAnswersViewDisabled && previousAnswersViewDisabledReason ? ' has-tooltip' : ''}`}
+                                data-disabled-reason={previousAnswersViewDisabledReason}
                             >
-                                {isLoadingPreviousAnswers ? 'Loading...' : 'View'}
-                            </button>
+                                <button
+                                    type="button"
+                                    className="btn ghost"
+                                    onClick={openPreviousAnswersModal}
+                                    disabled={isPreviousAnswersViewDisabled}
+                                >
+                                    {isLoadingPreviousAnswers ? 'Loading...' : 'View'}
+                                </button>
+                            </span>
                         </div>
                         {previousAnswersError && <p className="warning">{previousAnswersError}</p>}
                     </div>
@@ -2714,12 +2768,21 @@ function App() {
             </main>
 
             {historyModalOpen && (
-                <div className="overlay" role="presentation">
+                <div
+                    className="overlay"
+                    role="presentation"
+                    onPointerDown={(event) => {
+                        if (event.target === event.currentTarget) {
+                            closePreviousAnswersModal()
+                        }
+                    }}
+                >
                     <div
                         className="modal history-modal"
                         role="dialog"
                         aria-modal="true"
                         aria-labelledby="history-title"
+                        onClick={(event) => event.stopPropagation()}
                     >
                         <div className="history-modal-header">
                             <h2 id="history-title">Previous Answers</h2>
@@ -2774,6 +2837,14 @@ function App() {
                                     <div className="history-detail-layout">
                                         <div className="history-detail-top">
                                             <h3>{selectedPreviousAnswer.question}</h3>
+                                            <button
+                                                type="button"
+                                                className="btn ghost history-copy-btn"
+                                                onClick={copySelectedAnswerTextFile}
+                                                disabled={!selectedPreviousAnswer.textHandle}
+                                            >
+                                                Copy Text
+                                            </button>
                                         </div>
 
                                         <div className="history-detail-scroll">
@@ -3063,11 +3134,11 @@ function App() {
                     >
                         <h2 id="folder-select-title">Select Save Folder</h2>
                         <p className="muted">
-                            Select a local empty folder to save the output and camera/audio recordings. This folder can be changed in settings screen.
+                            Select a local empty folder to automatically save the output and camera/audio recordings. This folder can be changed in settings screen.
                         </p>
                         <div className="actions">
                             <button type="button" className="btn" onClick={selectRecordingsFolder}>
-                                Continue
+                                Select Folder
                             </button>
                             <button
                                 type="button"
