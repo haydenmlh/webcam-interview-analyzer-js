@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
     FaceLandmarker,
     FilesetResolver,
@@ -12,6 +12,7 @@ import './App.css'
 
 const STORAGE_KEY = 'mia.deepgram.apiKey'
 const STORAGE_VALIDATED_AT = 'mia.deepgram.lastValidatedAt'
+const STORAGE_THEME = 'mia.theme'
 const HANDLE_DB_NAME = 'mia-handle-db'
 const HANDLE_STORE_NAME = 'handles'
 const RECORDINGS_FOLDER_KEY = 'recordings-folder'
@@ -34,15 +35,17 @@ const DEFAULT_DEEPGRAM_SPEAK_URL =
 const DEFAULT_FFMPEG_CORE_BASE_URL =
     'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd'
 
-const BLINK_MIN_MS = 50
-const BLINK_MAX_MS = 450
 const PROLONGED_CLOSURE_MS = 800
 const EYE_CLOSED_RATIO = 0.18
+const EYE_REOPEN_RATIO = 0.205
 const HAND_FACE_TOUCH_RATIO = 0.12
 const SHOULDER_SHIFT_ALERT_PCT = 30
 const SHOULDER_TILT_ALERT_DEG = 12
 const SHOULDER_ROTATION_ALERT_DEG = 18
 const GAZE_CENTER_DEVIATION_THRESHOLD_PCT = 25
+const GAZE_DIRECTION_EXIT_THRESHOLD_PCT = 24
+const GAZE_DIRECTION_RETURN_THRESHOLD_PCT = 15
+const GAZE_DIRECTION_DOMINANCE_PCT = 4
 
 function validateKeyFormat(rawValue) {
     const value = rawValue.trim()
@@ -198,20 +201,6 @@ async function ensureDirectoryPermission(handle) {
     return result === 'granted'
 }
 
-function buildAudioFileName(blobType) {
-    const now = new Date()
-    const stamp = now.toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19)
-    const extension =
-        blobType.includes('mpeg') || blobType.includes('mp3')
-            ? 'mp3'
-            : blobType.includes('mp4') || blobType.includes('m4a')
-                ? 'm4a'
-                : blobType.includes('ogg')
-                    ? 'ogg'
-                    : 'webm'
-    return `session-audio-${stamp}.${extension}`
-}
-
 function pickSupportedAudioMimeType() {
     const preferred = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']
     const supported = preferred.find((value) => MediaRecorder.isTypeSupported(value))
@@ -277,6 +266,7 @@ function buildOutputText({ capturedAt, question, answer, metrics }) {
         `- WPM: ${toFixed1(metrics.wpm)}`,
         `- Hesitations Count: ${metrics.hesitationsCount}`,
         `- Number of Gaze Deviations from Center: ${metrics.gazeDeviationCount}`,
+        `- Gaze Deviation Direction Counts (L/R/U/D): ${metrics.gazeDeviationDirectionCounts.left}/${metrics.gazeDeviationDirectionCounts.right}/${metrics.gazeDeviationDirectionCounts.up}/${metrics.gazeDeviationDirectionCounts.down}`,
         `- Gaze Center Time: ${toFixed1(metrics.gazeCenterSec)}s / ${toFixed1(metrics.answerLengthSec)}s (${toFixed1(metrics.gazeCenterPct)}%)`,
         `- Prolonged Eye-Closure Duration: ${toFixed1(metrics.prolongedClosureSec)}s (${toFixed1(metrics.prolongedClosurePct)}%)`,
         `- Prolonged Eye-Closure Events: ${metrics.prolongedClosureEvents}`,
@@ -451,6 +441,12 @@ function averageX(landmarks, indexes) {
     return valid.reduce((sum, point) => sum + point.x, 0) / valid.length
 }
 
+function averageY(landmarks, indexes) {
+    const valid = indexes.map((index) => landmarks[index]).filter(Boolean)
+    if (!valid.length) return null
+    return valid.reduce((sum, point) => sum + point.y, 0) / valid.length
+}
+
 function distance2d(a, b) {
     if (!a || !b) return 0
     const dx = a.x - b.x
@@ -494,6 +490,88 @@ function computeEyeContactScore(faceLandmarks) {
     const avgDeviation = (leftDeviation + rightDeviation) / 2
 
     return clamp01(1 - avgDeviation)
+}
+
+function computeGazeCenterOffsetsPct(faceLandmarks) {
+    if (!faceLandmarks?.length) return null
+
+    const leftInner = faceLandmarks[133]
+    const leftOuter = faceLandmarks[33]
+    const leftUpper = faceLandmarks[159]
+    const leftLower = faceLandmarks[145]
+
+    const rightInner = faceLandmarks[362]
+    const rightOuter = faceLandmarks[263]
+    const rightUpper = faceLandmarks[386]
+    const rightLower = faceLandmarks[374]
+
+    if (
+        !leftInner ||
+        !leftOuter ||
+        !leftUpper ||
+        !leftLower ||
+        !rightInner ||
+        !rightOuter ||
+        !rightUpper ||
+        !rightLower
+    ) {
+        return null
+    }
+
+    const leftIrisX = averageX(faceLandmarks, [468, 469, 470, 471, 472])
+    const leftIrisY = averageY(faceLandmarks, [468, 469, 470, 471, 472])
+    const rightIrisX = averageX(faceLandmarks, [473, 474, 475, 476, 477])
+    const rightIrisY = averageY(faceLandmarks, [473, 474, 475, 476, 477])
+
+    if (leftIrisX == null || leftIrisY == null || rightIrisX == null || rightIrisY == null) {
+        return null
+    }
+
+    const leftCenterX = (leftInner.x + leftOuter.x) / 2
+    const rightCenterX = (rightInner.x + rightOuter.x) / 2
+    const leftCenterY = (leftUpper.y + leftLower.y) / 2
+    const rightCenterY = (rightUpper.y + rightLower.y) / 2
+
+    const leftHalfWidth = Math.abs(leftInner.x - leftOuter.x) / 2
+    const rightHalfWidth = Math.abs(rightInner.x - rightOuter.x) / 2
+    const leftHalfHeight = Math.abs(leftUpper.y - leftLower.y) / 2
+    const rightHalfHeight = Math.abs(rightUpper.y - rightLower.y) / 2
+
+    if (leftHalfWidth <= 0 || rightHalfWidth <= 0 || leftHalfHeight <= 0 || rightHalfHeight <= 0) {
+        return null
+    }
+
+    const leftOffsetXPct = ((leftIrisX - leftCenterX) / leftHalfWidth) * 100
+    const rightOffsetXPct = ((rightIrisX - rightCenterX) / rightHalfWidth) * 100
+    const leftOffsetYPct = ((leftIrisY - leftCenterY) / leftHalfHeight) * 100
+    const rightOffsetYPct = ((rightIrisY - rightCenterY) / rightHalfHeight) * 100
+
+    return {
+        xPct: (leftOffsetXPct + rightOffsetXPct) / 2,
+        yPct: (leftOffsetYPct + rightOffsetYPct) / 2,
+    }
+}
+
+function classifyGazeRegionFromOffsets(offsets, previousRegion) {
+    if (!offsets) return previousRegion
+
+    const absX = Math.abs(offsets.xPct)
+    const absY = Math.abs(offsets.yPct)
+    const limit =
+        previousRegion === 'center'
+            ? GAZE_DIRECTION_EXIT_THRESHOLD_PCT
+            : GAZE_DIRECTION_RETURN_THRESHOLD_PCT
+
+    if (absX <= limit && absY <= limit) {
+        return 'center'
+    }
+
+    if (Math.abs(absX - absY) >= GAZE_DIRECTION_DOMINANCE_PCT) {
+        if (absX > absY) return offsets.xPct > 0 ? 'right' : 'left'
+        return offsets.yPct > 0 ? 'down' : 'up'
+    }
+
+    return previousRegion
 }
 
 function computeEyeClosureRatio(faceLandmarks) {
@@ -582,7 +660,6 @@ function toSessionTextReport(report) {
         `- Hands detected: ${report.metrics.handsDetected}`,
         `- Eye contact proxy: ${report.metrics.eyeContactPercent}%`,
         `- Gaze deviation: ${report.metrics.gazeDeviationPercent}%`,
-        `- Blink count: ${report.metrics.blinkCount}`,
         `- Prolonged eye closure events: ${report.metrics.prolongedEyeClosureCount}`,
         `- Hand-to-face touches: ${report.metrics.handToFaceTouchCount}`,
         `- Currently touching face: ${report.metrics.isTouchingFace ? 'yes' : 'no'}`,
@@ -598,6 +675,136 @@ function toSessionTextReport(report) {
     ]
 
     return lines.join('\n')
+}
+
+function sanitizeDisplayText(value, fallback = '') {
+    const text = String(value ?? '')
+        .split('')
+        .filter((char) => {
+            const code = char.charCodeAt(0)
+            return code === 9 || code === 10 || code === 13 || (code >= 32 && code !== 127)
+        })
+        .join('')
+    const trimmed = text.trim()
+    return trimmed || fallback
+}
+
+function formatSessionTimestamp(dateValue) {
+    const date = new Date(dateValue)
+    const safeDate = Number.isNaN(date.getTime()) ? new Date() : date
+    const year = safeDate.getFullYear()
+    const month = String(safeDate.getMonth() + 1).padStart(2, '0')
+    const day = String(safeDate.getDate()).padStart(2, '0')
+    const hours = String(safeDate.getHours()).padStart(2, '0')
+    const minutes = String(safeDate.getMinutes()).padStart(2, '0')
+    const seconds = String(safeDate.getSeconds()).padStart(2, '0')
+    return `${year}${month}${day}_${hours}${minutes}${seconds}`
+}
+
+function sanitizeQuestionForFileName(question) {
+    const safeText = sanitizeDisplayText(question, 'question')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+    return (safeText || 'question').slice(0, 30)
+}
+
+function buildSessionFileBaseName(capturedAtIso, question) {
+    const stamp = formatSessionTimestamp(capturedAtIso)
+    const safeQuestion = sanitizeQuestionForFileName(question)
+    return `${stamp}_${safeQuestion}`
+}
+
+function splitFileName(fileName) {
+    const safeName = sanitizeDisplayText(fileName, 'unknown')
+    const lastDot = safeName.lastIndexOf('.')
+    if (lastDot <= 0) return { baseName: safeName, extension: '' }
+    return {
+        baseName: safeName.slice(0, lastDot),
+        extension: safeName.slice(lastDot + 1).toLowerCase(),
+    }
+}
+
+function parseAnswerFromTextReport(content) {
+    const answerBlock = content.match(/(?:^|\n)Answer:\s*\n([\s\S]*?)(?:\n\s*Interview Metrics\s*$|$)/m)
+    if (answerBlock?.[1]) return sanitizeDisplayText(answerBlock[1], '(no transcript captured)')
+
+    const transcriptBlock = content.match(/(?:^|\n)Transcript\s*\n([\s\S]*)$/m)
+    if (transcriptBlock?.[1]) return sanitizeDisplayText(transcriptBlock[1], '(no transcript captured)')
+
+    return '(no transcript captured)'
+}
+
+function parseMetricsTextFromReport(content) {
+    const metricsBlock = content.match(/(?:^|\n)Interview Metrics\s*\n([\s\S]*)$/m)
+    return sanitizeDisplayText(metricsBlock?.[1], '')
+}
+
+function parseSessionTextReport(fileName, content, fallbackDateIso, sortTime) {
+    const questionMatch = content.match(/^Question:\s*(.*)$/m)
+    const generatedMatch = content.match(/^(?:Generated|Captured At):\s*(.*)$/m)
+    const question = sanitizeDisplayText(questionMatch?.[1], '(none)')
+    const answer = parseAnswerFromTextReport(content)
+    const metricsText = parseMetricsTextFromReport(content)
+    const capturedAt = sanitizeDisplayText(generatedMatch?.[1], fallbackDateIso)
+    const { baseName } = splitFileName(fileName)
+
+    return {
+        id: `${baseName}-${sortTime}-txt`,
+        baseName,
+        source: sanitizeDisplayText(fileName, 'unknown-file'),
+        capturedAt,
+        question,
+        transcript: answer,
+        metrics: null,
+        metricsText,
+        audioFileName: '',
+        videoFileName: '',
+        audioHandle: null,
+        videoHandle: null,
+        sortTime,
+    }
+}
+
+function parseSessionJsonReport(fileName, content, fallbackDateIso, sortTime) {
+    try {
+        const parsed = JSON.parse(content)
+        const { baseName } = splitFileName(fileName)
+        return {
+            id: `${baseName}-${sortTime}-json`,
+            baseName,
+            source: sanitizeDisplayText(fileName, 'unknown-file'),
+            capturedAt: sanitizeDisplayText(
+                parsed?.generatedAt ?? parsed?.capturedAt,
+                fallbackDateIso,
+            ),
+            question: sanitizeDisplayText(parsed?.question, '(none)'),
+            transcript: sanitizeDisplayText(
+                parsed?.transcript ?? parsed?.answer,
+                '(no transcript captured)',
+            ),
+            metrics:
+                parsed?.interviewMetrics && typeof parsed.interviewMetrics === 'object'
+                    ? parsed.interviewMetrics
+                    : parsed?.metrics && typeof parsed.metrics === 'object'
+                        ? parsed.metrics
+                        : null,
+            metricsText: sanitizeDisplayText(parsed?.outputText, ''),
+            audioFileName: sanitizeDisplayText(
+                parsed?.audioFileName ?? parsed?.savedFiles?.audioFileName,
+                '',
+            ),
+            videoFileName: sanitizeDisplayText(
+                parsed?.videoFileName ?? parsed?.savedFiles?.videoFileName,
+                '',
+            ),
+            audioHandle: null,
+            videoHandle: null,
+            sortTime,
+        }
+    } catch {
+        return null
+    }
 }
 
 function App() {
@@ -623,6 +830,7 @@ function App() {
     const ffmpegLoadedRef = useRef(false)
     const portraitVideoRef = useRef(false)
     const recordingActiveRef = useRef(false)
+    const recordingModeRef = useRef('audio')
     const recordingStartedAtPerfRef = useRef(0)
     const recordingLastFrameAtPerfRef = useRef(0)
     const shoulderBaselineRef = useRef({
@@ -631,6 +839,13 @@ function App() {
         rotationDeg: null,
     })
     const gazeDeviationCountRef = useRef(0)
+    const gazeDirectionCountsRef = useRef({
+        left: 0,
+        right: 0,
+        up: 0,
+        down: 0,
+    })
+    const gazeRegionRef = useRef('center')
     const gazeCenteredTimeMsRef = useRef(0)
     const lastGazeCenteredRef = useRef(null)
     const prolongedClosureTotalMsRef = useRef(0)
@@ -667,6 +882,7 @@ function App() {
     const [showKeyStatus, setShowKeyStatus] = useState(() =>
         getSavedValue(STORAGE_KEY).length > 0,
     )
+    const [darkMode, setDarkMode] = useState(() => getSavedValue(STORAGE_THEME) === 'dark')
 
     const [cameraStatus, setCameraStatus] = useState('idle')
     const [debugEnabled, setDebugEnabled] = useState(false)
@@ -676,7 +892,13 @@ function App() {
     const [handsDetected, setHandsDetected] = useState(0)
     const [eyeContactScore, setEyeContactScore] = useState(null)
     const [gazeDeviationPct, setGazeDeviationPct] = useState(null)
-    const [blinkCount, setBlinkCount] = useState(0)
+    const [gazeDeviationCount, setGazeDeviationCount] = useState(0)
+    const [gazeDirectionCounts, setGazeDirectionCounts] = useState({
+        left: 0,
+        right: 0,
+        up: 0,
+        down: 0,
+    })
     const [prolongedClosureCount, setProlongedClosureCount] = useState(0)
     const [touchCount, setTouchCount] = useState(0)
     const [isTouchingFace, setIsTouchingFace] = useState(false)
@@ -687,12 +909,22 @@ function App() {
     const [isRecording, setIsRecording] = useState(false)
     const [isTranscribing, setIsTranscribing] = useState(false)
     const [isSpeakingQuestion, setIsSpeakingQuestion] = useState(false)
-    const [readQuestionWithTts, setReadQuestionWithTts] = useState(false)
+    const [readQuestionWithTts, setReadQuestionWithTts] = useState(true)
     const [questionInput, setQuestionInput] = useState('')
     const [transcript, setTranscript] = useState('')
     const [recordedVideoBlob, setRecordedVideoBlob] = useState(null)
     const [recordingsFolderName, setRecordingsFolderName] = useState('')
     const [outputText, setOutputText] = useState('')
+    const [previousAnswers, setPreviousAnswers] = useState([])
+    const [isLoadingPreviousAnswers, setIsLoadingPreviousAnswers] = useState(false)
+    const [previousAnswersError, setPreviousAnswersError] = useState('')
+    const [historyModalOpen, setHistoryModalOpen] = useState(false)
+    const [selectedPreviousAnswerId, setSelectedPreviousAnswerId] = useState('')
+    const [selectedHistoryMedia, setSelectedHistoryMedia] = useState({
+        audioUrl: '',
+        videoUrl: '',
+    })
+    const selectedHistoryMediaRef = useRef({ audioUrl: '', videoUrl: '' })
 
     const hasKey = savedKey.length > 0
     const maskedSummary = hasKey
@@ -724,6 +956,203 @@ function App() {
     }, [showKeyStatus])
 
     useEffect(() => {
+        if (darkMode) {
+            document.documentElement.setAttribute('data-theme', 'dark')
+            setSavedValue(STORAGE_THEME, 'dark')
+            return
+        }
+
+        document.documentElement.removeAttribute('data-theme')
+        setSavedValue(STORAGE_THEME, 'light')
+    }, [darkMode])
+
+    const revokeHistoryMediaUrls = useCallback((urls) => {
+        if (urls.audioUrl) URL.revokeObjectURL(urls.audioUrl)
+        if (urls.videoUrl) URL.revokeObjectURL(urls.videoUrl)
+    }, [])
+
+    const replaceHistoryMediaUrls = useCallback((nextUrls) => {
+        revokeHistoryMediaUrls(selectedHistoryMediaRef.current)
+        selectedHistoryMediaRef.current = nextUrls
+        setSelectedHistoryMedia(nextUrls)
+    }, [revokeHistoryMediaUrls])
+
+    async function loadHistoryMedia(item) {
+        if (!item) {
+            replaceHistoryMediaUrls({ audioUrl: '', videoUrl: '' })
+            return
+        }
+
+        let audioUrl = ''
+        let videoUrl = ''
+
+        try {
+            if (item.audioHandle) {
+                const audioFile = await item.audioHandle.getFile()
+                audioUrl = URL.createObjectURL(audioFile)
+            }
+            if (item.videoHandle) {
+                const videoFile = await item.videoHandle.getFile()
+                videoUrl = URL.createObjectURL(videoFile)
+            }
+        } catch {
+            setBanner('Could not load selected media files from the output folder.')
+        }
+
+        replaceHistoryMediaUrls({ audioUrl, videoUrl })
+    }
+
+    const loadPreviousAnswers = useCallback(async () => {
+        if (!fileSystemAccessSupported) {
+            setPreviousAnswers([])
+            setPreviousAnswersError('File access is unavailable in this browser.')
+            return []
+        }
+
+        const folderHandle = recordingsFolderRef.current
+        if (!folderHandle) {
+            setPreviousAnswers([])
+            setPreviousAnswersError('Select a save folder in Settings to load previous answers.')
+            return []
+        }
+
+        setIsLoadingPreviousAnswers(true)
+        setPreviousAnswersError('')
+
+        try {
+            const granted = await ensureDirectoryPermission(folderHandle)
+            if (!granted) {
+                setPreviousAnswers([])
+                setPreviousAnswersError('Folder permission denied. Re-select the folder in Settings.')
+                return []
+            }
+
+            const allFileEntries = []
+            const fileHandleByName = new Map()
+            const mediaByBaseName = new Map()
+            const parsedItems = []
+            const mediaExtensions = new Set(['mp3', 'm4a', 'ogg', 'wav', 'webm', 'mp4', 'mov'])
+
+            for await (const [entryName, entryHandle] of folderHandle.entries()) {
+                if (entryHandle.kind !== 'file') continue
+                const parts = splitFileName(entryName)
+                fileHandleByName.set(entryName, entryHandle)
+
+                allFileEntries.push({
+                    name: entryName,
+                    handle: entryHandle,
+                    baseName: parts.baseName,
+                    extension: parts.extension,
+                })
+
+                if (!mediaExtensions.has(parts.extension)) continue
+
+                const existing = mediaByBaseName.get(parts.baseName) || {
+                    audioHandle: null,
+                    videoHandle: null,
+                    audioFileName: '',
+                    videoFileName: '',
+                }
+
+                if (parts.extension === 'mp4' || parts.extension === 'mov') {
+                    existing.videoHandle = entryHandle
+                    existing.videoFileName = entryName
+                }
+
+                if (parts.extension === 'mp3' || parts.extension === 'm4a' || parts.extension === 'ogg' || parts.extension === 'wav') {
+                    existing.audioHandle = entryHandle
+                    existing.audioFileName = entryName
+                }
+
+                mediaByBaseName.set(parts.baseName, existing)
+            }
+
+            for (const entry of allFileEntries) {
+                if (entry.extension !== 'json' && entry.extension !== 'txt') continue
+
+                const file = await entry.handle.getFile()
+                if (file.size > 1024 * 1024) continue
+
+                const content = await file.text()
+                const fallbackDateIso = new Date(file.lastModified || Date.now()).toISOString()
+                const parsed =
+                    entry.extension === 'json'
+                        ? parseSessionJsonReport(
+                            entry.name,
+                            content,
+                            fallbackDateIso,
+                            file.lastModified || 0,
+                        )
+                        : parseSessionTextReport(
+                            entry.name,
+                            content,
+                            fallbackDateIso,
+                            file.lastModified || 0,
+                        )
+                if (!parsed) continue
+
+                const byNameAudio = parsed.audioFileName
+                    ? fileHandleByName.get(parsed.audioFileName) || null
+                    : null
+                const byNameVideo = parsed.videoFileName
+                    ? fileHandleByName.get(parsed.videoFileName) || null
+                    : null
+                const byBaseMedia = mediaByBaseName.get(entry.baseName)
+
+                parsedItems.push({
+                    ...parsed,
+                    audioHandle: byNameAudio || byBaseMedia?.audioHandle || null,
+                    videoHandle: byNameVideo || byBaseMedia?.videoHandle || null,
+                    audioFileName: parsed.audioFileName || byBaseMedia?.audioFileName || '',
+                    videoFileName: parsed.videoFileName || byBaseMedia?.videoFileName || '',
+                })
+            }
+
+            parsedItems.sort((a, b) => b.sortTime - a.sortTime)
+            const limited = parsedItems.slice(0, 100)
+            setPreviousAnswers(limited)
+            return limited
+        } catch {
+            setPreviousAnswers([])
+            setPreviousAnswersError('Could not read report files from the selected folder.')
+            return []
+        } finally {
+            setIsLoadingPreviousAnswers(false)
+        }
+    }, [fileSystemAccessSupported])
+
+    async function openPreviousAnswersModal() {
+        const items = await loadPreviousAnswers()
+        if (!items.length) {
+            setHistoryModalOpen(true)
+            setSelectedPreviousAnswerId('')
+            replaceHistoryMediaUrls({ audioUrl: '', videoUrl: '' })
+            return
+        }
+
+        const firstItem = items[0]
+        setSelectedPreviousAnswerId(firstItem.id)
+        await loadHistoryMedia(firstItem)
+        setHistoryModalOpen(true)
+    }
+
+    const closePreviousAnswersModal = useCallback(() => {
+        setHistoryModalOpen(false)
+        setSelectedPreviousAnswerId('')
+        replaceHistoryMediaUrls({ audioUrl: '', videoUrl: '' })
+    }, [replaceHistoryMediaUrls])
+
+    async function selectPreviousAnswer(item) {
+        setSelectedPreviousAnswerId(item.id)
+        await loadHistoryMedia(item)
+    }
+
+    const selectedPreviousAnswer = useMemo(
+        () => previousAnswers.find((item) => item.id === selectedPreviousAnswerId) || null,
+        [previousAnswers, selectedPreviousAnswerId],
+    )
+
+    useEffect(() => {
         let cancelled = false
 
         if (!fileSystemAccessSupported) return () => { }
@@ -739,6 +1168,7 @@ function App() {
                 recordingsFolderRef.current = handle
                 if (!cancelled) {
                     setRecordingsFolderName(handle.name || 'Selected folder')
+                    await loadPreviousAnswers()
                 }
             } catch {
                 // Ignore persistence restore issues and continue without a folder.
@@ -750,7 +1180,13 @@ function App() {
         return () => {
             cancelled = true
         }
-    }, [fileSystemAccessSupported])
+    }, [fileSystemAccessSupported, loadPreviousAnswers])
+
+    useEffect(() => {
+        return () => {
+            revokeHistoryMediaUrls(selectedHistoryMediaRef.current)
+        }
+    }, [revokeHistoryMediaUrls])
 
     useEffect(() => {
         if (!showKey) return undefined
@@ -769,12 +1205,18 @@ function App() {
                 setConfirmRemoveOpen(false)
                 return
             }
-            if (settingsOpen) setSettingsOpen(false)
+            if (settingsOpen) {
+                setSettingsOpen(false)
+                return
+            }
+            if (historyModalOpen) {
+                closePreviousAnswersModal()
+            }
         }
 
         window.addEventListener('keydown', onEscape)
         return () => window.removeEventListener('keydown', onEscape)
-    }, [confirmRemoveOpen, settingsOpen])
+    }, [confirmRemoveOpen, settingsOpen, historyModalOpen, closePreviousAnswersModal])
 
     useEffect(() => {
         return () => {
@@ -875,7 +1317,6 @@ function App() {
         }
         touchTrackerRef.current = { touching: false }
 
-        setBlinkCount(0)
         setProlongedClosureCount(0)
         setTouchCount(0)
         setIsTouchingFace(false)
@@ -905,8 +1346,17 @@ function App() {
         recordingStartedAtPerfRef.current = 0
         recordingLastFrameAtPerfRef.current = 0
         gazeDeviationCountRef.current = 0
+        gazeDirectionCountsRef.current = {
+            left: 0,
+            right: 0,
+            up: 0,
+            down: 0,
+        }
+        gazeRegionRef.current = 'center'
         gazeCenteredTimeMsRef.current = 0
         lastGazeCenteredRef.current = null
+        setGazeDeviationCount(0)
+        setGazeDirectionCounts({ left: 0, right: 0, up: 0, down: 0 })
         prolongedClosureTotalMsRef.current = 0
         prolongedClosureTimestampsSecRef.current = []
         touchCountDuringRecordingRef.current = 0
@@ -915,6 +1365,19 @@ function App() {
         shoulderPeakDriftPctRef.current = 0
         shoulderPeakTiltDegRef.current = 0
         shoulderPeakRotationDegRef.current = 0
+    }
+
+    function resetStatisticsAndRecalibrate() {
+        resetInterviewTracking()
+        resetBehaviorCounters()
+        setFacesDetected(0)
+        setHandsDetected(0)
+        setEyeContactScore(null)
+        setGazeDeviationPct(null)
+        setGazeDeviationCount(0)
+        setGazeDirectionCounts({ left: 0, right: 0, up: 0, down: 0 })
+        recalibrateTorsoBaseline()
+        setToast('Statistics reset and torso baseline recalibrating...')
     }
 
     function runAnalysisLoop() {
@@ -995,60 +1458,84 @@ function App() {
                     eyeContact == null
                         ? null
                         : Math.round(clamp01(1 - eyeContact) * 100)
+                const gazeOffsets = computeGazeCenterOffsetsPct(mainFace)
 
                 if (recordingActiveRef.current) {
                     const lastFrameAt = recordingLastFrameAtPerfRef.current
                     const deltaMs = lastFrameAt > 0 ? Math.max(0, nowMs - lastFrameAt) : 0
                     recordingLastFrameAtPerfRef.current = nowMs
 
-                    if (gazeDeviation != null) {
-                        const centered =
-                            gazeDeviation <= GAZE_CENTER_DEVIATION_THRESHOLD_PCT
-                        if (lastGazeCenteredRef.current === null) {
-                            lastGazeCenteredRef.current = centered
-                        } else if (lastGazeCenteredRef.current && !centered) {
+                    let centered = false
+                    if (gazeOffsets) {
+                        const previousRegion = gazeRegionRef.current
+                        const nextRegion = classifyGazeRegionFromOffsets(
+                            gazeOffsets,
+                            previousRegion,
+                        )
+
+                        if (previousRegion === 'center' && nextRegion !== 'center') {
                             gazeDeviationCountRef.current += 1
-                            lastGazeCenteredRef.current = centered
-                        } else if (!lastGazeCenteredRef.current && centered) {
-                            lastGazeCenteredRef.current = centered
+                            if (nextRegion in gazeDirectionCountsRef.current) {
+                                gazeDirectionCountsRef.current[nextRegion] += 1
+                            }
                         }
 
-                        if (centered) {
-                            gazeCenteredTimeMsRef.current += deltaMs
-                        }
+                        gazeRegionRef.current = nextRegion
+                        centered = nextRegion === 'center'
+                    } else if (gazeDeviation != null) {
+                        centered = gazeDeviation <= GAZE_CENTER_DEVIATION_THRESHOLD_PCT
+                        gazeRegionRef.current = centered ? 'center' : gazeRegionRef.current
+                    }
+
+                    if (lastGazeCenteredRef.current === null) {
+                        lastGazeCenteredRef.current = centered
+                    } else {
+                        lastGazeCenteredRef.current = centered
+                    }
+
+                    if (centered) {
+                        gazeCenteredTimeMsRef.current += deltaMs
                     }
                 }
 
                 const closureRatio = computeEyeClosureRatio(mainFace)
-                const closed = closureRatio != null && closureRatio < EYE_CLOSED_RATIO
                 const blinkTracker = blinkTrackerRef.current
 
-                if (closed && !blinkTracker.closed) {
-                    blinkTracker.closed = true
-                    blinkTracker.closedAt = nowMs
-                    blinkTracker.prolongedCounted = false
-                } else if (!closed && blinkTracker.closed) {
-                    const duration = nowMs - blinkTracker.closedAt
-                    if (duration >= BLINK_MIN_MS && duration <= BLINK_MAX_MS) {
-                        setBlinkCount((prev) => prev + 1)
-                    }
-                    if (duration >= PROLONGED_CLOSURE_MS && recordingActiveRef.current) {
-                        prolongedClosureTotalMsRef.current += duration
-                        if (recordingStartedAtPerfRef.current > 0) {
-                            prolongedClosureTimestampsSecRef.current.push(
-                                (blinkTracker.closedAt - recordingStartedAtPerfRef.current) /
-                                1000,
-                            )
-                        }
-                    }
+                // Ignore frames without a reliable eye-closure signal to prevent false transitions.
+                if (closureRatio == null) {
                     blinkTracker.closed = false
                     blinkTracker.closedAt = 0
                     blinkTracker.prolongedCounted = false
-                } else if (closed && blinkTracker.closed && !blinkTracker.prolongedCounted) {
-                    const duration = nowMs - blinkTracker.closedAt
-                    if (duration >= PROLONGED_CLOSURE_MS) {
-                        blinkTracker.prolongedCounted = true
-                        setProlongedClosureCount((prev) => prev + 1)
+                } else {
+                    // Use hysteresis so tiny per-frame EAR jitter does not create phantom blinks.
+                    const isClosedNow = blinkTracker.closed
+                        ? closureRatio < EYE_REOPEN_RATIO
+                        : closureRatio < EYE_CLOSED_RATIO
+
+                    if (isClosedNow && !blinkTracker.closed) {
+                        blinkTracker.closed = true
+                        blinkTracker.closedAt = nowMs
+                        blinkTracker.prolongedCounted = false
+                    } else if (!isClosedNow && blinkTracker.closed) {
+                        const duration = nowMs - blinkTracker.closedAt
+                        if (duration >= PROLONGED_CLOSURE_MS && recordingActiveRef.current) {
+                            prolongedClosureTotalMsRef.current += duration
+                            if (recordingStartedAtPerfRef.current > 0) {
+                                prolongedClosureTimestampsSecRef.current.push(
+                                    (blinkTracker.closedAt - recordingStartedAtPerfRef.current) /
+                                    1000,
+                                )
+                            }
+                        }
+                        blinkTracker.closed = false
+                        blinkTracker.closedAt = 0
+                        blinkTracker.prolongedCounted = false
+                    } else if (isClosedNow && blinkTracker.closed && !blinkTracker.prolongedCounted) {
+                        const duration = nowMs - blinkTracker.closedAt
+                        if (duration >= PROLONGED_CLOSURE_MS) {
+                            blinkTracker.prolongedCounted = true
+                            setProlongedClosureCount((prev) => prev + 1)
+                        }
                     }
                 }
 
@@ -1159,6 +1646,8 @@ function App() {
                     setHandsDetected(handLandmarks.length)
                     setEyeContactScore(eyeContact)
                     setGazeDeviationPct(gazeDeviation)
+                    setGazeDeviationCount(gazeDeviationCountRef.current)
+                    setGazeDirectionCounts({ ...gazeDirectionCountsRef.current })
                     setIsTouchingFace(touching)
                     setShoulderDriftPct(frameShoulderDriftPct)
                     setShoulderTiltDeltaDeg(frameShoulderTiltDeltaDeg)
@@ -1305,19 +1794,23 @@ function App() {
         setToast('Deepgram key removed.')
     }
 
-    function buildSessionReport() {
+    function buildSessionReport(options = {}) {
+        const generatedAt = options.generatedAt || new Date().toISOString()
+        const sessionEndedAt = options.sessionEndedAt || new Date().toISOString()
+        const question = options.question ?? questionInput.trim()
+        const reportTranscript = options.transcript ?? transcript
+
         return {
-            generatedAt: new Date().toISOString(),
+            generatedAt,
             sessionStartedAt: sessionStartedAtRef.current,
-            sessionEndedAt: new Date().toISOString(),
-            question: questionInput.trim(),
+            sessionEndedAt,
+            question,
             metrics: {
                 facesDetected,
                 handsDetected,
                 eyeContactPercent:
                     eyeContactScore == null ? null : Math.round(eyeContactScore * 100),
                 gazeDeviationPercent: gazeDeviationPct,
-                blinkCount,
                 prolongedEyeClosureCount: prolongedClosureCount,
                 handToFaceTouchCount: touchCount,
                 isTouchingFace,
@@ -1328,7 +1821,7 @@ function App() {
                 shoulderTiltStatus,
                 shoulderRotationStatus,
             },
-            transcript,
+            transcript: reportTranscript,
         }
     }
 
@@ -1377,6 +1870,7 @@ function App() {
             recordingsFolderRef.current = handle
             setRecordingsFolderName(handle.name || 'Selected folder')
             await savePersistedFolderHandle(handle)
+            await loadPreviousAnswers()
             setToast('Recording folder selected.')
         } catch {
             // User may dismiss the picker.
@@ -1386,6 +1880,9 @@ function App() {
     async function clearRecordingsFolder() {
         recordingsFolderRef.current = null
         setRecordingsFolderName('')
+        setPreviousAnswers([])
+        setPreviousAnswersError('')
+        closePreviousAnswersModal()
         try {
             await clearPersistedFolderHandle()
         } catch {
@@ -1394,7 +1891,7 @@ function App() {
         setToast('Recording folder cleared.')
     }
 
-    async function saveAudioToSelectedFolder(audioBlob) {
+    async function writeBlobToSelectedFolder(fileName, blob) {
         const folderHandle = recordingsFolderRef.current
         if (!folderHandle) return false
 
@@ -1405,17 +1902,94 @@ function App() {
                 return false
             }
 
-            const fileName = buildAudioFileName(audioBlob.type || 'audio/webm')
             const fileHandle = await folderHandle.getFileHandle(fileName, { create: true })
             const writable = await fileHandle.createWritable()
-            await writable.write(audioBlob)
+            await writable.write(blob)
             await writable.close()
-            setToast(`Saved audio to folder as ${fileName}.`)
             return true
         } catch {
             setBanner('Saving to selected folder failed. Re-select the folder and retry.')
             return false
         }
+    }
+
+    async function saveSessionArtifactsToSelectedFolder({
+        capturedAtIso,
+        question,
+        report,
+        outputBlock,
+        audioBlob,
+        videoBlob,
+    }) {
+        const folderHandle = recordingsFolderRef.current
+        if (!folderHandle) return null
+
+        const granted = await ensureDirectoryPermission(folderHandle)
+        if (!granted) {
+            setBanner('Folder write permission was not granted. Select folder again.')
+            return null
+        }
+
+        const baseName = buildSessionFileBaseName(capturedAtIso, question)
+        const jsonFileName = `${baseName}.json`
+        const textFileName = `${baseName}.txt`
+        const audioExt =
+            audioBlob?.type?.includes('mpeg') || audioBlob?.type?.includes('mp3')
+                ? 'mp3'
+                : audioBlob?.type?.includes('ogg')
+                    ? 'ogg'
+                    : audioBlob?.type?.includes('mp4') || audioBlob?.type?.includes('m4a')
+                        ? 'm4a'
+                        : 'webm'
+        const audioFileName = `${baseName}.${audioExt}`
+        const videoExt =
+            videoBlob?.type?.includes('mp4')
+                ? 'mp4'
+                : videoBlob?.type?.includes('webm')
+                    ? 'webm'
+                    : 'mp4'
+        const videoFileName = videoBlob ? `${baseName}.${videoExt}` : ''
+
+        const reportForSave = {
+            ...report,
+            outputText: outputBlock,
+            audioFileName,
+            videoFileName,
+            savedFiles: {
+                jsonFileName,
+                textFileName,
+                audioFileName,
+                videoFileName,
+            },
+        }
+
+        const jsonOk = await writeBlobToSelectedFolder(
+            jsonFileName,
+            new Blob([JSON.stringify(reportForSave, null, 2)], {
+                type: 'application/json',
+            }),
+        )
+        const textOk = await writeBlobToSelectedFolder(
+            textFileName,
+            new Blob([outputBlock], {
+                type: 'text/plain;charset=utf-8',
+            }),
+        )
+        const audioOk = audioBlob
+            ? await writeBlobToSelectedFolder(audioFileName, audioBlob)
+            : false
+        const videoOk = videoBlob
+            ? await writeBlobToSelectedFolder(videoFileName, videoBlob)
+            : true
+
+        if (jsonOk && textOk && audioOk && videoOk) {
+            setToast(`Saved session files to ${recordingsFolderName}.`)
+            await loadPreviousAnswers()
+            return reportForSave
+        }
+
+        setBanner('Some session files could not be saved to the selected folder.')
+        return reportForSave
     }
 
     async function transcribeAudioBlob(audioBlob) {
@@ -1526,6 +2100,7 @@ function App() {
         }
 
         try {
+            recordingModeRef.current = mode
             setBanner('')
             setTranscript('Recording answer...')
             setOutputText('')
@@ -1597,6 +2172,7 @@ function App() {
             setToast(mode === 'video' ? 'Video recording started.' : 'Audio recording started.')
         } catch {
             recordingActiveRef.current = false
+            recordingModeRef.current = 'audio'
             setBanner('Recording setup failed. Check camera/microphone permissions and try again.')
             setTranscript('')
             stopAudioStream()
@@ -1644,7 +2220,8 @@ function App() {
                 setBanner('MP3 conversion failed in this browser; using original audio format.')
             }
 
-            await saveAudioToSelectedFolder(storageAudioBlob)
+            let finalVideoBlob = null
+            const shouldSaveVideo = recordingModeRef.current === 'video'
 
             if (videoChunksRef.current.length > 0) {
                 const rawVideoBlob = new Blob(videoChunksRef.current, {
@@ -1657,8 +2234,10 @@ function App() {
                         ffmpegRef,
                         ffmpegLoadedRef,
                     )
+                    finalVideoBlob = mp4Blob
                     setRecordedVideoBlob(mp4Blob)
                 } catch {
+                    finalVideoBlob = rawVideoBlob
                     setRecordedVideoBlob(rawVideoBlob)
                     setBanner('MP4 conversion failed; video is available in original format.')
                 }
@@ -1704,36 +2283,61 @@ function App() {
                 SHOULDER_ROTATION_ALERT_DEG,
             )
 
-            setOutputText(
-                buildOutputText({
-                    capturedAt: new Date().toISOString(),
-                    question: questionInput.trim(),
-                    answer: text,
-                    metrics: {
-                        answerLengthSec,
-                        wpm,
-                        hesitationsCount,
-                        gazeDeviationCount: gazeDeviationCountRef.current,
-                        gazeCenterSec,
-                        gazeCenterPct,
-                        prolongedClosureSec,
-                        prolongedClosurePct,
-                        prolongedClosureEvents:
-                            prolongedClosureTimestampsSecRef.current.length,
-                        prolongedClosureTimestampsSec:
-                            prolongedClosureTimestampsSecRef.current,
-                        handFaceTouchPerMin,
-                        handFaceTouchDurationSec,
-                        handFaceTouchRegions: 'none',
-                        shoulderShiftPeakPct: shoulderPeakDriftPctRef.current,
-                        shoulderTiltPeakDeg: shoulderPeakTiltDegRef.current,
-                        shoulderRotationPeakDeg: shoulderPeakRotationDegRef.current,
-                        shoulderRotationSignedDeg: shoulderRotationDeg,
-                        shoulderRotationDirection,
-                        shoulderRotationStatus: shoulderRotationStatusFromPeak,
-                    },
+            const capturedAtIso = new Date().toISOString()
+            const trimmedQuestion = questionInput.trim()
+            const interviewMetrics = {
+                answerLengthSec,
+                wpm,
+                hesitationsCount,
+                gazeDeviationCount: gazeDeviationCountRef.current,
+                gazeDeviationDirectionCounts: { ...gazeDirectionCountsRef.current },
+                gazeCenterSec,
+                gazeCenterPct,
+                prolongedClosureSec,
+                prolongedClosurePct,
+                prolongedClosureEvents:
+                    prolongedClosureTimestampsSecRef.current.length,
+                prolongedClosureTimestampsSec:
+                    prolongedClosureTimestampsSecRef.current,
+                handFaceTouchPerMin,
+                handFaceTouchDurationSec,
+                handFaceTouchRegions: 'none',
+                shoulderShiftPeakPct: shoulderPeakDriftPctRef.current,
+                shoulderTiltPeakDeg: shoulderPeakTiltDegRef.current,
+                shoulderRotationPeakDeg: shoulderPeakRotationDegRef.current,
+                shoulderRotationSignedDeg: shoulderRotationDeg,
+                shoulderRotationDirection,
+                shoulderRotationStatus: shoulderRotationStatusFromPeak,
+            }
+
+            const outputBlock = buildOutputText({
+                capturedAt: capturedAtIso,
+                question: trimmedQuestion,
+                answer: text,
+                metrics: interviewMetrics,
+            })
+
+            setOutputText(outputBlock)
+
+            const sessionReport = {
+                ...buildSessionReport({
+                    generatedAt: capturedAtIso,
+                    sessionEndedAt: capturedAtIso,
+                    question: trimmedQuestion,
+                    transcript: text,
                 }),
-            )
+                interviewMetrics,
+            }
+
+            await saveSessionArtifactsToSelectedFolder({
+                capturedAtIso,
+                question: trimmedQuestion,
+                report: sessionReport,
+                outputBlock,
+                audioBlob: storageAudioBlob,
+                videoBlob: shouldSaveVideo ? finalVideoBlob : null,
+            })
+
             setToast('Transcription completed.')
         } catch (error) {
             setTranscript('')
@@ -1745,11 +2349,11 @@ function App() {
             videoRecorderRef.current = null
             chunksRef.current = []
             videoChunksRef.current = []
+            recordingModeRef.current = 'audio'
             setIsTranscribing(false)
         }
     }
 
-    const faceDetectedLabel = facesDetected > 0 ? 'Face detected' : 'No face detected'
     const shoulderShiftStatus =
         shoulderDriftPct == null
             ? 'n/a'
@@ -1766,20 +2370,48 @@ function App() {
         shoulderRotationDeg == null
             ? 'n/a'
             : describeTorsoRotation(shoulderRotationDeg, SHOULDER_ROTATION_ALERT_DEG)
+    const cameraToggleButton =
+        cameraStatus === 'ready' ? (
+            <button type="button" className="btn ghost" onClick={stopCamera}>
+                Stop Camera
+            </button>
+        ) : (
+            <button type="button" className="btn" onClick={startCamera}>
+                Start Camera
+            </button>
+        )
 
     return (
         <div className="app-shell">
             <header className="topbar">
                 <h1>Mock Interview Analyzer</h1>
-                <button type="button" className="btn ghost" onClick={openSettings}>
-                    Settings
-                </button>
+                <div className="topbar-actions">
+                    <button
+                        type="button"
+                        className="btn ghost theme-toggle"
+                        onClick={() => setDarkMode((prev) => !prev)}
+                        aria-label={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+                        aria-pressed={darkMode}
+                        title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+                    >
+                        <span aria-hidden="true">{darkMode ? '\u263D' : '\u2600'}</span>
+                    </button>
+                    <button
+                        type="button"
+                        className="btn ghost settings-cog"
+                        onClick={openSettings}
+                        aria-label="Open settings"
+                        title="Settings"
+                    >
+                        &#9881;
+                    </button>
+                </div>
             </header>
 
             <main className="layout">
                 <section className="panel camera-panel">
                     <div className="camera-heading-row">
-                        <h2>{debugEnabled ? 'Camera Analysis (JS MediaPipe)' : 'Camera View'}</h2>
+                        <h2>{debugEnabled ? 'Camera View (JS MediaPipe)' : 'Camera View'}</h2>
                         <label className="debug-toggle">
                             <input
                                 type="checkbox"
@@ -1807,44 +2439,53 @@ function App() {
                         )}
                     </div>
 
-                    <div className="actions wrap">
-                        {debugEnabled && (
+                    <div className="actions wrap camera-controls-row">
+                        {debugEnabled ? (
                             <div className="baseline-controls">
-                                <button
-                                    type="button"
-                                    className="btn ghost"
-                                    onClick={recalibrateTorsoBaseline}
-                                    disabled={cameraStatus !== 'ready'}
-                                    title={
-                                        cameraStatus === 'ready'
-                                            ? 'Set current torso orientation as neutral baseline'
-                                            : 'Start camera to recalibrate torso baseline'
-                                    }
-                                >
-                                    Recalibrate Torso Baseline
-                                </button>
+                                <div className="baseline-button-row">
+                                    <button
+                                        type="button"
+                                        className="btn ghost"
+                                        onClick={recalibrateTorsoBaseline}
+                                        disabled={cameraStatus !== 'ready' || isRecording || isTranscribing}
+                                        title={
+                                            cameraStatus === 'ready'
+                                                ? 'Set current torso orientation as neutral baseline'
+                                                : 'Start camera to recalibrate torso baseline'
+                                        }
+                                    >
+                                        Recalibrate Torso Baseline
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn ghost"
+                                        onClick={resetStatisticsAndRecalibrate}
+                                        disabled={cameraStatus !== 'ready' || isRecording || isTranscribing}
+                                    >
+                                        Reset Statistics
+                                    </button>
+                                    {cameraToggleButton}
+                                </div>
                                 <p className="muted baseline-note">
                                     Torso baseline auto-recalibrates when you start video or audio
                                     recording.
                                 </p>
                             </div>
-                        )}
-                        {cameraStatus === 'ready' ? (
-                            <button type="button" className="btn ghost" onClick={stopCamera}>
-                                Stop Camera
-                            </button>
                         ) : (
-                            <button type="button" className="btn" onClick={startCamera}>
-                                Start Camera
-                            </button>
+                            <>
+                                {cameraToggleButton}
+                                {cameraStatus === 'ready' && facesDetected === 0 ? (
+                                    <p className="face-detected-text">No face detected</p>
+                                ) : null}
+                            </>
                         )}
                     </div>
 
                     {debugEnabled ? (
                         <div className="metrics-grid metrics-grid-wide">
                             <article className="metric-card">
-                                <p className="metric-label">Faces detected</p>
-                                <p className="metric-value">{facesDetected}</p>
+                                <p className="metric-label">Face detected</p>
+                                <p className="metric-value">{facesDetected > 0 ? 'true' : 'false'}</p>
                             </article>
                             <article className="metric-card">
                                 <p className="metric-label">Hands detected</p>
@@ -1857,6 +2498,10 @@ function App() {
                                         ? 'n/a'
                                         : `${Math.round(eyeContactScore * 100)}%`}
                                 </p>
+                                <p className="metric-help">
+                                    Higher is better. It estimates how consistently your gaze stays
+                                    near the camera.
+                                </p>
                             </article>
                             <article className="metric-card">
                                 <p className="metric-label">Gaze deviation</p>
@@ -1865,10 +2510,17 @@ function App() {
                                         ? 'n/a'
                                         : `${gazeDeviationPct}%`}
                                 </p>
+                                <p className="metric-help">
+                                    Lower is better. It is the share of time your gaze was away
+                                    from center.
+                                </p>
                             </article>
                             <article className="metric-card">
-                                <p className="metric-label">Blink count</p>
-                                <p className="metric-value">{blinkCount}</p>
+                                <p className="metric-label">Gaze deviations from center</p>
+                                <p className="metric-value">{gazeDeviationCount}</p>
+                                <p className="metric-help">
+                                    Leaves center: L {gazeDirectionCounts.left} / R {gazeDirectionCounts.right} / U {gazeDirectionCounts.up} / D {gazeDirectionCounts.down}
+                                </p>
                             </article>
                             <article className="metric-card">
                                 <p className="metric-label">Prolonged closure</p>
@@ -1906,9 +2558,7 @@ function App() {
                                 <p className="metric-label">{shoulderRotationStatus}</p>
                             </article>
                         </div>
-                    ) : (
-                        <p className="face-detected-text">{faceDetectedLabel}</p>
-                    )}
+                    ) : null}
                 </section>
 
                 <section className="panel session">
@@ -2008,8 +2658,156 @@ function App() {
                             Download Video + Audio
                         </button>
                     </div>
+
+                    <div className="session-history-summary">
+                        <div className="session-history-box">
+                            <div className="session-history-text">
+                                <p className="session-history-title">Previous Answers</p>
+                                <p className="muted session-history-count">
+                                    {recordingsFolderName
+                                        ? `Questions found: ${previousAnswers.length}`
+                                        : 'Select an output folder in Settings to load previous answers.'}
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                className="btn ghost"
+                                onClick={openPreviousAnswersModal}
+                                disabled={!fileSystemAccessSupported || !recordingsFolderName || isLoadingPreviousAnswers}
+                            >
+                                {isLoadingPreviousAnswers ? 'Loading...' : 'View'}
+                            </button>
+                        </div>
+                        {previousAnswersError && <p className="warning">{previousAnswersError}</p>}
+                    </div>
                 </section>
             </main>
+
+            {historyModalOpen && (
+                <div className="overlay" role="presentation">
+                    <div
+                        className="modal history-modal"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="history-title"
+                    >
+                        <div className="history-modal-header">
+                            <h2 id="history-title">Previous Answers</h2>
+                            <button
+                                type="button"
+                                className="btn ghost history-close-btn"
+                                onClick={closePreviousAnswersModal}
+                            >
+                                Exit
+                            </button>
+                        </div>
+
+                        <div className="history-modal-grid">
+                            <aside className="history-overview">
+                                <div className="history-overview-head">
+                                    <h3>Overview</h3>
+                                    <button
+                                        type="button"
+                                        className="btn ghost"
+                                        onClick={loadPreviousAnswers}
+                                        disabled={isLoadingPreviousAnswers}
+                                    >
+                                        {isLoadingPreviousAnswers ? 'Loading...' : 'Refresh'}
+                                    </button>
+                                </div>
+
+                                <p className="muted">{previousAnswers.length} question(s)</p>
+
+                                <div className="history-overview-list">
+                                    {previousAnswers.map((item) => (
+                                        <button
+                                            key={item.id}
+                                            type="button"
+                                            className={`history-overview-item${selectedPreviousAnswerId === item.id ? ' active' : ''
+                                                }`}
+                                            onClick={() => selectPreviousAnswer(item)}
+                                        >
+                                            <strong>{item.question}</strong>
+                                            <span>{new Date(item.capturedAt).toLocaleString()}</span>
+                                        </button>
+                                    ))}
+                                    {!previousAnswers.length && (
+                                        <p className="muted">No previous answers found in the selected folder.</p>
+                                    )}
+                                </div>
+                            </aside>
+
+                            <section className="history-detail">
+                                {selectedPreviousAnswer ? (
+                                    <>
+                                        <h3>{selectedPreviousAnswer.question}</h3>
+                                        <p className="metric-label">
+                                            {selectedPreviousAnswer.source} ·{' '}
+                                            {new Date(selectedPreviousAnswer.capturedAt).toLocaleString()}
+                                        </p>
+
+                                        <div className="transcript-box history-transcript">
+                                            <h3>Full Transcript</h3>
+                                            <p className="output-text">{selectedPreviousAnswer.transcript}</p>
+                                        </div>
+
+                                        <div className="transcript-box history-metrics">
+                                            <h3>Metrics</h3>
+                                            {selectedPreviousAnswer.metrics && (
+                                                <div className="history-metrics-grid">
+                                                    {Object.entries(selectedPreviousAnswer.metrics).map(
+                                                        ([key, value]) => (
+                                                            <div key={key} className="history-metric-row">
+                                                                <span className="metric-label">{key}</span>
+                                                                <span>{String(value ?? 'n/a')}</span>
+                                                            </div>
+                                                        ),
+                                                    )}
+                                                </div>
+                                            )}
+                                            {!selectedPreviousAnswer.metrics &&
+                                                selectedPreviousAnswer.metricsText && (
+                                                    <p className="output-text">{selectedPreviousAnswer.metricsText}</p>
+                                                )}
+                                            {!selectedPreviousAnswer.metrics &&
+                                                !selectedPreviousAnswer.metricsText && (
+                                                    <p className="muted">No metrics available in this report.</p>
+                                                )}
+                                        </div>
+
+                                        <div className="transcript-box history-media">
+                                            <h3>Recording</h3>
+                                            {selectedHistoryMedia.videoUrl ? (
+                                                <video
+                                                    className="history-video"
+                                                    src={selectedHistoryMedia.videoUrl}
+                                                    controls
+                                                    preload="metadata"
+                                                />
+                                            ) : (
+                                                <p className="muted">No video recording found for this answer.</p>
+                                            )}
+
+                                            {selectedHistoryMedia.audioUrl ? (
+                                                <audio
+                                                    className="history-audio"
+                                                    src={selectedHistoryMedia.audioUrl}
+                                                    controls
+                                                    preload="metadata"
+                                                />
+                                            ) : (
+                                                <p className="muted">No audio recording found for this answer.</p>
+                                            )}
+                                        </div>
+                                    </>
+                                ) : (
+                                    <p className="muted">Select an answer from the overview to inspect details.</p>
+                                )}
+                            </section>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {settingsOpen && (
                 <div

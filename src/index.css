@@ -1,8 +1,10 @@
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
 
 :root {
+    color-scheme: light;
     --paper: #f2f7f9;
     --paper-deep: #deebf0;
+    --paper-warm: #f9efe2;
     --card-bg: #ffffff;
     --line: #c9d9e1;
     --ink-900: #15242d;
@@ -23,6 +25,29 @@
     --font-display: 'Space Grotesk', 'Segoe UI', sans-serif;
 }
 
+:root[data-theme='dark'] {
+    color-scheme: dark;
+    --paper: #12161d;
+    --paper-deep: #1a2029;
+    --paper-warm: #22252c;
+    --card-bg: #1d2430;
+    --line: #343f4f;
+    --ink-900: #e9edf4;
+    --ink-700: #bdc7d6;
+    --action: #5a6f91;
+    --focus: rgba(124, 140, 167, 0.42);
+    --ghost-bg: #242d3a;
+    --status-bg: #243142;
+    --warn-bg: #3f3a2f;
+    --warn-ink: #e9ddbf;
+    --error-bg: #403037;
+    --error-ink: #e9cbd4;
+    --danger: #b57a8b;
+    --shadow-soft: rgba(0, 0, 0, 0.35);
+    --topbar-a: #1b2330;
+    --topbar-b: #252f3e;
+}
+
 * {
     box-sizing: border-box;
 }
@@ -39,6 +64,6 @@ body {
     color: var(--ink-900);
     background:
         radial-gradient(circle at 14% 10%, var(--paper-deep), transparent 45%),
-        radial-gradient(circle at 90% 20%, #f9efe2, transparent 35%),
+        radial-gradient(circle at 90% 20%, var(--paper-warm), transparent 35%),
         var(--paper);
 }
