@@ -13,13 +13,14 @@ Current implementation includes:
 - JavaScript MediaPipe live analysis using face and hand landmark models
 - Camera preview with landmark overlay and live counters
 - Browser audio recording and Deepgram transcription request flow
+- Deepgram text-to-speech for reading an input interview question
 - Transcription gating when no key is available
 
 ## Local development
 
 ```bash
 npm install
-npm run dev
+npm start
 ```
 
 ## Build and lint
@@ -33,7 +34,7 @@ npm run build
 
 - `VITE_DEEPGRAM_VALIDATE_URL` (optional): endpoint to validate user-provided Deepgram keys before persisting.
 - `VITE_DEEPGRAM_LISTEN_URL` (optional): override the Deepgram listen endpoint.
-- `VITE_TRANSCRIPTION_RELAY_URL` (optional): fallback relay endpoint URL when relay mode is selected.
+- `VITE_DEEPGRAM_SPEAK_URL` (optional): override the Deepgram text-to-speech endpoint.
 - `VITE_MEDIAPIPE_WASM_URL` (optional): override MediaPipe wasm bundle location.
 - `VITE_FACE_LANDMARKER_MODEL_URL` (optional): override face model `.task` URL.
 - `VITE_HAND_LANDMARKER_MODEL_URL` (optional): override hand model `.task` URL.
@@ -42,8 +43,7 @@ If `VITE_DEEPGRAM_VALIDATE_URL` is not set, keys are saved after local format va
 
 ## Notes
 
-- This app currently sends transcription requests directly from the browser using the user-provided key.
-- Relay mode is supported in Settings. It forwards recorded audio to your relay endpoint with `X-Deepgram-Key`.
+- This app currently sends Deepgram transcription and text-to-speech requests directly from the browser using the user-provided key.
 
 ## GitHub Pages + Custom Domain
 

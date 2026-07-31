@@ -8,8 +8,6 @@ import './App.css'
 
 const STORAGE_KEY = 'mia.deepgram.apiKey'
 const STORAGE_VALIDATED_AT = 'mia.deepgram.lastValidatedAt'
-const STORAGE_TRANSCRIPTION_MODE = 'mia.transcription.mode'
-const STORAGE_RELAY_ENDPOINT = 'mia.transcription.relayEndpoint'
 
 const VALIDATION_RECOMMEND_DAYS = 30
 const INITIAL_NOW_MS = Date.now()
@@ -22,6 +20,8 @@ const DEFAULT_HAND_MODEL_URL =
     'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task'
 const DEFAULT_DEEPGRAM_LISTEN_URL =
     'https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&filler_words=true'
+const DEFAULT_DEEPGRAM_SPEAK_URL =
+    'https://api.deepgram.com/v1/speak?model=aura-2-thalia-en'
 
 const BLINK_MIN_MS = 50
 const BLINK_MAX_MS = 450
@@ -283,6 +283,7 @@ function App() {
     const uiUpdateAtRef = useRef(0)
     const recorderRef = useRef(null)
     const chunksRef = useRef([])
+    const questionAudioRef = useRef(null)
     const sessionStartedAtRef = useRef(null)
 
     const blinkTrackerRef = useRef({
@@ -301,24 +302,17 @@ function App() {
     const [lastValidatedAt, setLastValidatedAt] = useState(() =>
         getSavedValue(STORAGE_VALIDATED_AT),
     )
-    const [transcriptionMode, setTranscriptionMode] = useState(
-        () => getSavedValue(STORAGE_TRANSCRIPTION_MODE) || 'direct',
-    )
-    const [relayEndpoint, setRelayEndpoint] = useState(
-        () => getSavedValue(STORAGE_RELAY_ENDPOINT) || '',
-    )
-    const [relayEndpointInput, setRelayEndpointInput] = useState('')
 
     const [keyInput, setKeyInput] = useState('')
     const [showKey, setShowKey] = useState(false)
     const [fieldError, setFieldError] = useState('')
-    const [settingsError, setSettingsError] = useState('')
     const [banner, setBanner] = useState('')
     const [toast, setToast] = useState('')
     const [isSaving, setIsSaving] = useState(false)
 
     const [cameraStatus, setCameraStatus] = useState('idle')
     const [analysisStatus, setAnalysisStatus] = useState('idle')
+    const [debugEnabled, setDebugEnabled] = useState(false)
 
     const [facesDetected, setFacesDetected] = useState(0)
     const [handsDetected, setHandsDetected] = useState(0)
@@ -331,6 +325,8 @@ function App() {
 
     const [isRecording, setIsRecording] = useState(false)
     const [isTranscribing, setIsTranscribing] = useState(false)
+    const [isSpeakingQuestion, setIsSpeakingQuestion] = useState(false)
+    const [questionInput, setQuestionInput] = useState('')
     const [transcript, setTranscript] = useState('')
     const [recordedAudioBlob, setRecordedAudioBlob] = useState(null)
 
@@ -494,11 +490,13 @@ function App() {
                 const faceLandmarks = faceResult?.faceLandmarks || []
                 const handLandmarks = handResult?.landmarks || []
 
-                for (const landmarkSet of faceLandmarks) {
-                    drawLandmarkSet(ctx, landmarkSet, width, height, '#22a7a6')
-                }
-                for (const landmarkSet of handLandmarks) {
-                    drawLandmarkSet(ctx, landmarkSet, width, height, '#e77e23')
+                if (debugEnabled) {
+                    for (const landmarkSet of faceLandmarks) {
+                        drawLandmarkSet(ctx, landmarkSet, width, height, '#22a7a6')
+                    }
+                    for (const landmarkSet of handLandmarks) {
+                        drawLandmarkSet(ctx, landmarkSet, width, height, '#e77e23')
+                    }
                 }
 
                 const mainFace = faceLandmarks[0]
@@ -613,15 +611,12 @@ function App() {
     function openSettings() {
         setSettingsOpen(true)
         setKeyInput(savedKey)
-        setRelayEndpointInput(relayEndpoint)
         setFieldError('')
-        setSettingsError('')
     }
 
     function closeSettings() {
         setSettingsOpen(false)
         setFieldError('')
-        setSettingsError('')
         setShowKey(false)
     }
 
@@ -641,14 +636,8 @@ function App() {
             return
         }
 
-        if (transcriptionMode === 'relay' && !relayEndpointInput.trim()) {
-            setSettingsError('Relay mode requires a relay endpoint URL.')
-            return
-        }
-
         setIsSaving(true)
         setBanner('')
-        setSettingsError('')
 
         const validationResult = await validateAgainstEndpoint(keyInput.trim())
         setIsSaving(false)
@@ -669,11 +658,6 @@ function App() {
         setLastValidatedAt(nowIso)
         setSavedValue(STORAGE_KEY, cleanedKey)
         setSavedValue(STORAGE_VALIDATED_AT, nowIso)
-
-        const cleanRelayUrl = relayEndpointInput.trim()
-        setRelayEndpoint(cleanRelayUrl)
-        setSavedValue(STORAGE_TRANSCRIPTION_MODE, transcriptionMode)
-        setSavedValue(STORAGE_RELAY_ENDPOINT, cleanRelayUrl)
 
         closeSettings()
 
@@ -702,7 +686,7 @@ function App() {
             generatedAt: new Date().toISOString(),
             sessionStartedAt: sessionStartedAtRef.current,
             sessionEndedAt: new Date().toISOString(),
-            transcriptionMode,
+            question: questionInput.trim(),
             metrics: {
                 facesDetected,
                 handsDetected,
@@ -744,39 +728,77 @@ function App() {
         downloadBlob(recordedAudioBlob, `session-audio-${Date.now()}.${extension}`)
     }
 
-    async function transcribeAudioBlob(audioBlob) {
-        if (transcriptionMode === 'relay') {
+    async function speakQuestion() {
+        const text = questionInput.trim()
+        if (!text) {
+            setBanner('Enter a question before using text-to-speech.')
+            return
+        }
+
+        if (!hasKey) {
+            openSettings()
+            setBanner('Add Deepgram key in Settings to enable text-to-speech.')
+            return
+        }
+
+        setIsSpeakingQuestion(true)
+        setBanner('')
+
+        try {
             const endpoint =
-                relayEndpoint || import.meta.env.VITE_TRANSCRIPTION_RELAY_URL || ''
-            if (!endpoint) {
-                throw new Error('Relay mode is selected but no relay endpoint is configured.')
-            }
+                import.meta.env.VITE_DEEPGRAM_SPEAK_URL || DEFAULT_DEEPGRAM_SPEAK_URL
 
             const response = await fetch(endpoint, {
                 method: 'POST',
                 headers: {
-                    'Content-Type': audioBlob.type || 'audio/webm',
-                    'X-Deepgram-Key': savedKey,
+                    Authorization: `Token ${savedKey}`,
+                    'Content-Type': 'application/json',
                 },
-                body: audioBlob,
+                body: JSON.stringify({ text }),
             })
 
             if (response.status === 401 || response.status === 403) {
                 setBanner('Saved key is invalid or revoked. Update it in Settings.')
                 throw new Error('Saved key is invalid or revoked.')
             }
+
             if (response.status === 429) {
-                throw new Error('Transcription provider rate limit reached. Please wait and retry.')
+                throw new Error('TTS rate limit reached. Please wait and retry.')
             }
+
             if (!response.ok) {
-                throw new Error('Relay transcription failed. Check relay logs and retry.')
+                throw new Error('Text-to-speech failed. Try again in a moment.')
             }
 
-            const payload = await response.json()
-            const text = safeTranscriptFromDeepgram(payload)
-            return text || 'No transcript was returned for this recording.'
-        }
+            const audioBlob = await response.blob()
+            const audioUrl = URL.createObjectURL(audioBlob)
 
+            if (questionAudioRef.current) {
+                questionAudioRef.current.pause()
+                URL.revokeObjectURL(questionAudioRef.current.src)
+            }
+
+            const audio = new Audio(audioUrl)
+            questionAudioRef.current = audio
+            audio.onended = () => {
+                URL.revokeObjectURL(audioUrl)
+                if (questionAudioRef.current === audio) {
+                    questionAudioRef.current = null
+                }
+            }
+            await audio.play()
+            setToast('Question audio started.')
+        } catch (error) {
+            setToast(error.message || 'Text-to-speech failed. Try again.')
+            if (!banner) {
+                setBanner(error.message || 'Text-to-speech failed. Try again.')
+            }
+        } finally {
+            setIsSpeakingQuestion(false)
+        }
+    }
+
+    async function transcribeAudioBlob(audioBlob) {
         const endpoint =
             import.meta.env.VITE_DEEPGRAM_LISTEN_URL || DEFAULT_DEEPGRAM_LISTEN_URL
         const response = await fetch(endpoint, {
@@ -810,15 +832,6 @@ function App() {
         if (!hasKey) {
             openSettings()
             setBanner('Add Deepgram key in Settings to enable transcription.')
-            return
-        }
-
-        if (
-            transcriptionMode === 'relay' &&
-            !(relayEndpoint || import.meta.env.VITE_TRANSCRIPTION_RELAY_URL)
-        ) {
-            openSettings()
-            setBanner('Relay mode needs a relay endpoint URL in Settings.')
             return
         }
 
@@ -900,6 +913,8 @@ function App() {
                     ? 'Analysis unavailable'
                     : 'Analysis not started'
 
+    const faceDetectedLabel = facesDetected > 0 ? 'Face detected' : 'No face detected'
+
     return (
         <div className="app-shell">
             <header className="topbar">
@@ -915,11 +930,23 @@ function App() {
             <main className="layout">
                 <section className="panel camera-panel">
                     <h2>Camera Analysis (JS MediaPipe)</h2>
-                    <p className="muted">{analysisLabel}</p>
+                    <div className="analysis-status-row">
+                        <p className="muted">{analysisLabel}</p>
+                        <label className="debug-toggle">
+                            <input
+                                type="checkbox"
+                                checked={debugEnabled}
+                                onChange={(event) => setDebugEnabled(event.target.checked)}
+                            />
+                            <span>Debug</span>
+                        </label>
+                    </div>
 
                     <div className="camera-frame">
                         <video ref={videoRef} className="camera-video" muted playsInline />
-                        <canvas ref={overlayRef} className="camera-overlay" />
+                        {debugEnabled && (
+                            <canvas ref={overlayRef} className="camera-overlay" />
+                        )}
                         {cameraStatus !== 'ready' && (
                             <div className="camera-empty">
                                 <p>
@@ -943,46 +970,52 @@ function App() {
                         )}
                     </div>
 
-                    <div className="metrics-grid metrics-grid-wide">
-                        <article className="metric-card">
-                            <p className="metric-label">Faces detected</p>
-                            <p className="metric-value">{facesDetected}</p>
-                        </article>
-                        <article className="metric-card">
-                            <p className="metric-label">Hands detected</p>
-                            <p className="metric-value">{handsDetected}</p>
-                        </article>
-                        <article className="metric-card">
-                            <p className="metric-label">Eye contact proxy</p>
-                            <p className="metric-value">
-                                {eyeContactScore == null
-                                    ? 'n/a'
-                                    : `${Math.round(eyeContactScore * 100)}%`}
-                            </p>
-                        </article>
-                        <article className="metric-card">
-                            <p className="metric-label">Gaze deviation</p>
-                            <p className="metric-value">
-                                {gazeDeviationPct == null ? 'n/a' : `${gazeDeviationPct}%`}
-                            </p>
-                        </article>
-                        <article className="metric-card">
-                            <p className="metric-label">Blink count</p>
-                            <p className="metric-value">{blinkCount}</p>
-                        </article>
-                        <article className="metric-card">
-                            <p className="metric-label">Prolonged closure</p>
-                            <p className="metric-value">{prolongedClosureCount}</p>
-                        </article>
-                        <article className="metric-card">
-                            <p className="metric-label">Hand-to-face touches</p>
-                            <p className="metric-value">{touchCount}</p>
-                        </article>
-                        <article className="metric-card">
-                            <p className="metric-label">Touching face now</p>
-                            <p className="metric-value">{isTouchingFace ? 'yes' : 'no'}</p>
-                        </article>
-                    </div>
+                    {debugEnabled ? (
+                        <div className="metrics-grid metrics-grid-wide">
+                            <article className="metric-card">
+                                <p className="metric-label">Faces detected</p>
+                                <p className="metric-value">{facesDetected}</p>
+                            </article>
+                            <article className="metric-card">
+                                <p className="metric-label">Hands detected</p>
+                                <p className="metric-value">{handsDetected}</p>
+                            </article>
+                            <article className="metric-card">
+                                <p className="metric-label">Eye contact proxy</p>
+                                <p className="metric-value">
+                                    {eyeContactScore == null
+                                        ? 'n/a'
+                                        : `${Math.round(eyeContactScore * 100)}%`}
+                                </p>
+                            </article>
+                            <article className="metric-card">
+                                <p className="metric-label">Gaze deviation</p>
+                                <p className="metric-value">
+                                    {gazeDeviationPct == null
+                                        ? 'n/a'
+                                        : `${gazeDeviationPct}%`}
+                                </p>
+                            </article>
+                            <article className="metric-card">
+                                <p className="metric-label">Blink count</p>
+                                <p className="metric-value">{blinkCount}</p>
+                            </article>
+                            <article className="metric-card">
+                                <p className="metric-label">Prolonged closure</p>
+                                <p className="metric-value">{prolongedClosureCount}</p>
+                            </article>
+                            <article className="metric-card">
+                                <p className="metric-label">Hand-to-face touches</p>
+                                <p className="metric-value">{touchCount}</p>
+                            </article>
+                            <article className="metric-card">
+                                <p className="metric-label">Touching face now</p>
+                                <p className="metric-value">{isTouchingFace ? 'yes' : 'no'}</p>
+                            </article>
+                        </div>
+                    ) : (
+                        <p className="face-detected-text">{faceDetectedLabel}</p>
+                    )}
                 </section>
 
                 <section className="panel session">
@@ -990,6 +1023,17 @@ function App() {
                     <p className="muted">
                         Add your Deepgram API key in Settings, then record an answer and transcribe it.
                     </p>
+                    <label htmlFor="interview-question" className="label">
+                        Interview question
+                    </label>
+                    <input
+                        id="interview-question"
+                        type="text"
+                        className="field"
+                        value={questionInput}
+                        onChange={(event) => setQuestionInput(event.target.value)}
+                        placeholder="Tell me about a challenging project you worked on."
+                    />
                     <div className="actions wrap">
                         {!isRecording ? (
                             <button
@@ -1009,15 +1053,20 @@ function App() {
                                 Stop and Transcribe
                             </button>
                         )}
+                        <button
+                            type="button"
+                            className="btn ghost"
+                            onClick={speakQuestion}
+                            disabled={isSpeakingQuestion}
+                        >
+                            {isSpeakingQuestion ? 'Reading Question...' : 'Read Question'}
+                        </button>
                         <button type="button" className="btn ghost" onClick={openSettings}>
                             Transcription settings
                         </button>
                     </div>
 
                     <p className="key-status">{maskedSummary}</p>
-                    <p className="mode-pill">
-                        Transcription mode: {transcriptionMode === 'relay' ? 'Relay' : 'Direct'}
-                    </p>
                     {needsRevalidation && (
                         <p className="warning">
                             Revalidation recommended. Your key was last checked over 30 days ago.
@@ -1082,37 +1131,6 @@ function App() {
                         {fieldError && (
                             <p id="key-error" className="error-text" aria-live="polite">
                                 {fieldError}
-                            </p>
-                        )}
-
-                        <label htmlFor="transcription-mode" className="label">
-                            Transcription mode
-                        </label>
-                        <select
-                            id="transcription-mode"
-                            className="field"
-                            value={transcriptionMode}
-                            onChange={(event) => setTranscriptionMode(event.target.value)}
-                        >
-                            <option value="direct">Direct to Deepgram</option>
-                            <option value="relay">Relay endpoint</option>
-                        </select>
-
-                        <label htmlFor="relay-endpoint" className="label">
-                            Relay endpoint URL (required for relay mode)
-                        </label>
-                        <input
-                            id="relay-endpoint"
-                            type="url"
-                            className={settingsError ? 'field field-error' : 'field'}
-                            value={relayEndpointInput}
-                            onChange={(event) => setRelayEndpointInput(event.target.value)}
-                            placeholder="https://your-relay.example.com/transcribe"
-                            autoComplete="off"
-                        />
-                        {settingsError && (
-                            <p className="error-text" aria-live="polite">
-                                {settingsError}
                             </p>
                         )}
 
