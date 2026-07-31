@@ -5,6 +5,8 @@ import {
     HandLandmarker,
     PoseLandmarker,
 } from '@mediapipe/tasks-vision'
+import { FFmpeg } from '@ffmpeg/ffmpeg'
+import { fetchFile, toBlobURL } from '@ffmpeg/util'
 import lamejs from 'lamejs'
 import './App.css'
 
@@ -29,6 +31,8 @@ const DEFAULT_DEEPGRAM_LISTEN_URL =
     'https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&filler_words=true'
 const DEFAULT_DEEPGRAM_SPEAK_URL =
     'https://api.deepgram.com/v1/speak?model=aura-2-thalia-en'
+const DEFAULT_FFMPEG_CORE_BASE_URL =
+    'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd'
 
 const BLINK_MIN_MS = 50
 const BLINK_MAX_MS = 450
@@ -50,21 +54,30 @@ function validateKeyFormat(rawValue) {
 
 async function validateAgainstEndpoint(key) {
     const endpoint = import.meta.env.VITE_DEEPGRAM_VALIDATE_URL
-    if (!endpoint) return { ok: true, skipped: true }
-
     const controller = new AbortController()
     const timerId = window.setTimeout(() => controller.abort(), 8000)
 
     try {
-        const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${key}`,
-            },
-            body: JSON.stringify({ provider: 'deepgram' }),
-            signal: controller.signal,
-        })
+        const response = endpoint
+            ? await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${key}`,
+                },
+                body: JSON.stringify({ provider: 'deepgram' }),
+                signal: controller.signal,
+            })
+            : await fetch(DEFAULT_DEEPGRAM_LISTEN_URL, {
+                method: 'POST',
+                headers: {
+                    Authorization: `Token ${key}`,
+                    'Content-Type': 'audio/wav',
+                },
+                // Deepgram returns 4xx for invalid/empty audio, but 401/403 for invalid auth.
+                body: new Blob([], { type: 'audio/wav' }),
+                signal: controller.signal,
+            })
 
         if (response.status === 401 || response.status === 403) {
             return { ok: false, message: 'Saved key is invalid or revoked.' }
@@ -76,10 +89,12 @@ async function validateAgainstEndpoint(key) {
             }
         }
         if (!response.ok) {
-            return {
-                ok: false,
-                message: 'Could not validate key. Check the key and try again.',
+            if (!endpoint) {
+                // For direct Deepgram probing, non-auth HTTP errors still prove the token was accepted.
+                return { ok: true, skipped: false }
             }
+
+            return { ok: false, message: 'Could not validate key. Check the key and try again.' }
         }
 
         return { ok: true, skipped: false }
@@ -203,8 +218,34 @@ function pickSupportedAudioMimeType() {
     return supported || ''
 }
 
+function pickSupportedVideoMimeType() {
+    const preferred = [
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp8,opus',
+        'video/webm',
+        'video/mp4',
+    ]
+    const supported = preferred.find((value) => MediaRecorder.isTypeSupported(value))
+    return supported || ''
+}
+
 function toFixed1(value) {
     return Number.isFinite(value) ? value.toFixed(1) : '0.0'
+}
+
+function formatSignedDegrees(value) {
+    if (!Number.isFinite(value)) return 'n/a'
+    return `${value > 0 ? '+' : ''}${toFixed1(value)}°`
+}
+
+function describeTorsoRotation(value, alertThresholdDeg) {
+    if (!Number.isFinite(value)) return 'n/a'
+
+    const abs = Math.abs(value)
+    if (abs < 1) return 'centered (0°)'
+
+    const direction = value > 0 ? 'right (+)' : 'left (-)'
+    return abs >= alertThresholdDeg ? `${direction}, high rotation` : direction
 }
 
 function countWords(text) {
@@ -246,6 +287,8 @@ function buildOutputText({ capturedAt, question, answer, metrics }) {
         `- Shoulder Side Shift Peak: ${toFixed1(metrics.shoulderShiftPeakPct)}%`,
         `- Shoulder Tilt Peak: ${toFixed1(metrics.shoulderTiltPeakDeg)}°`,
         `- Shoulder Rotation Peak: ${toFixed1(metrics.shoulderRotationPeakDeg)}°`,
+        `- Shoulder Rotation Last Signed: ${formatSignedDegrees(metrics.shoulderRotationSignedDeg)}`,
+        `- Shoulder Rotation Direction: ${metrics.shoulderRotationDirection}`,
         `- Shoulder Rotation Status: ${metrics.shoulderRotationStatus}`,
     ].join('\n')
 }
@@ -298,6 +341,61 @@ async function convertAudioBlobToMp3(audioBlob) {
         return encodeAudioBufferToMp3(decoded)
     } finally {
         await audioCtx.close()
+    }
+}
+
+async function ensureFfmpegLoaded(ffmpegRef, ffmpegLoadedRef) {
+    if (ffmpegLoadedRef.current && ffmpegRef.current) return ffmpegRef.current
+
+    const ffmpeg = ffmpegRef.current || new FFmpeg()
+    ffmpegRef.current = ffmpeg
+
+    const baseUrl =
+        import.meta.env.VITE_FFMPEG_CORE_BASE_URL || DEFAULT_FFMPEG_CORE_BASE_URL
+
+    await ffmpeg.load({
+        coreURL: await toBlobURL(`${baseUrl}/ffmpeg-core.js`, 'text/javascript'),
+        wasmURL: await toBlobURL(`${baseUrl}/ffmpeg-core.wasm`, 'application/wasm'),
+    })
+
+    ffmpegLoadedRef.current = true
+    return ffmpeg
+}
+
+async function convertVideoBlobToMp4(videoBlob, ffmpegRef, ffmpegLoadedRef) {
+    if (videoBlob.type.includes('mp4')) return videoBlob
+
+    const ffmpeg = await ensureFfmpegLoaded(ffmpegRef, ffmpegLoadedRef)
+    const inputName = `input-${Date.now()}.webm`
+    const outputName = `output-${Date.now()}.mp4`
+
+    await ffmpeg.writeFile(inputName, await fetchFile(videoBlob))
+
+    try {
+        // Re-encode into MP4 so audio + video are muxed in a broadly compatible container.
+        await ffmpeg.exec([
+            '-i',
+            inputName,
+            '-c:v',
+            'mpeg4',
+            '-c:a',
+            'aac',
+            outputName,
+        ])
+
+        const data = await ffmpeg.readFile(outputName)
+        return new Blob([data.buffer], { type: 'video/mp4' })
+    } finally {
+        try {
+            await ffmpeg.deleteFile(inputName)
+        } catch {
+            // Ignore cleanup errors.
+        }
+        try {
+            await ffmpeg.deleteFile(outputName)
+        } catch {
+            // Ignore cleanup errors.
+        }
     }
 }
 
@@ -515,16 +613,22 @@ function App() {
     const uiUpdateAtRef = useRef(0)
     const recorderRef = useRef(null)
     const chunksRef = useRef([])
+    const videoRecorderRef = useRef(null)
+    const videoChunksRef = useRef([])
     const questionAudioRef = useRef(null)
     const sessionStartedAtRef = useRef(null)
     const debugEnabledRef = useRef(false)
     const recordingsFolderRef = useRef(null)
+    const ffmpegRef = useRef(null)
+    const ffmpegLoadedRef = useRef(false)
+    const portraitVideoRef = useRef(false)
     const recordingActiveRef = useRef(false)
     const recordingStartedAtPerfRef = useRef(0)
     const recordingLastFrameAtPerfRef = useRef(0)
     const shoulderBaselineRef = useRef({
         centerX: null,
         tiltDeg: null,
+        rotationDeg: null,
     })
     const gazeDeviationCountRef = useRef(0)
     const gazeCenteredTimeMsRef = useRef(0)
@@ -560,11 +664,13 @@ function App() {
     const [fieldError, setFieldError] = useState('')
     const [banner, setBanner] = useState('')
     const [toast, setToast] = useState('')
-    const [isSaving, setIsSaving] = useState(false)
+    const [showKeyStatus, setShowKeyStatus] = useState(() =>
+        getSavedValue(STORAGE_KEY).length > 0,
+    )
 
     const [cameraStatus, setCameraStatus] = useState('idle')
-    const [analysisStatus, setAnalysisStatus] = useState('idle')
     const [debugEnabled, setDebugEnabled] = useState(false)
+    const [isPortraitVideo, setIsPortraitVideo] = useState(false)
 
     const [facesDetected, setFacesDetected] = useState(0)
     const [handsDetected, setHandsDetected] = useState(0)
@@ -581,15 +687,16 @@ function App() {
     const [isRecording, setIsRecording] = useState(false)
     const [isTranscribing, setIsTranscribing] = useState(false)
     const [isSpeakingQuestion, setIsSpeakingQuestion] = useState(false)
+    const [readQuestionWithTts, setReadQuestionWithTts] = useState(false)
     const [questionInput, setQuestionInput] = useState('')
     const [transcript, setTranscript] = useState('')
-    const [recordedAudioBlob, setRecordedAudioBlob] = useState(null)
+    const [recordedVideoBlob, setRecordedVideoBlob] = useState(null)
     const [recordingsFolderName, setRecordingsFolderName] = useState('')
     const [outputText, setOutputText] = useState('')
 
     const hasKey = savedKey.length > 0
     const maskedSummary = hasKey
-        ? `Key saved (ends with ${savedKey.slice(-4).padStart(8, '*')})`
+        ? `Key saved (ends with ${savedKey.slice(-2).padStart(6, '*')})`
         : 'No key saved yet.'
 
     const needsRevalidation = useMemo(() => {
@@ -609,6 +716,12 @@ function App() {
         const timerId = window.setTimeout(() => setToast(''), 3500)
         return () => window.clearTimeout(timerId)
     }, [toast])
+
+    useEffect(() => {
+        if (!showKeyStatus) return undefined
+        const timerId = window.setTimeout(() => setShowKeyStatus(false), 5000)
+        return () => window.clearTimeout(timerId)
+    }, [showKeyStatus])
 
     useEffect(() => {
         let cancelled = false
@@ -668,6 +781,10 @@ function App() {
             stopAnalysisLoop()
             stopCameraStream()
             stopAudioStream()
+            videoRecorderRef.current = null
+            videoChunksRef.current = []
+            ffmpegRef.current = null
+            ffmpegLoadedRef.current = false
             faceLandmarkerRef.current?.close()
             handLandmarkerRef.current?.close()
             poseLandmarkerRef.current?.close()
@@ -704,7 +821,6 @@ function App() {
             return
         }
 
-        setAnalysisStatus('loading')
 
         const wasmFileset = await FilesetResolver.forVisionTasks(
             import.meta.env.VITE_MEDIAPIPE_WASM_URL || DEFAULT_WASM_URL,
@@ -749,7 +865,6 @@ function App() {
             },
         )
 
-        setAnalysisStatus('ready')
     }
 
     function resetBehaviorCounters() {
@@ -770,7 +885,20 @@ function App() {
         shoulderBaselineRef.current = {
             centerX: null,
             tiltDeg: null,
+            rotationDeg: null,
         }
+    }
+
+    function recalibrateTorsoBaseline() {
+        shoulderBaselineRef.current = {
+            centerX: null,
+            tiltDeg: null,
+            rotationDeg: null,
+        }
+        setShoulderDriftPct(null)
+        setShoulderTiltDeltaDeg(null)
+        setShoulderRotationDeg(null)
+        setToast('Torso baseline recalibrating...')
     }
 
     function resetInterviewTracking() {
@@ -806,6 +934,11 @@ function App() {
 
             const width = frameVideo.videoWidth || 960
             const height = frameVideo.videoHeight || 540
+            const portraitNow = height > width
+            if (portraitNow !== portraitVideoRef.current) {
+                portraitVideoRef.current = portraitNow
+                setIsPortraitVideo(portraitNow)
+            }
             if (frameCanvas) {
                 if (frameCanvas.width !== width) {
                     frameCanvas.width = width
@@ -978,14 +1111,22 @@ function App() {
                             ),
                         )
 
-                        // Yaw proxy: larger left/right shoulder depth difference implies body rotation.
-                        const shoulderDepthDelta = Math.abs(
-                            (rightShoulder.z ?? 0) - (leftShoulder.z ?? 0),
-                        )
+                        // Signed yaw proxy based on shoulder depth difference.
+                        const shoulderDepthDelta =
+                            (rightShoulder.z ?? 0) - (leftShoulder.z ?? 0)
                         if (shoulderWidth > 0) {
-                            frameShoulderRotationDeg = Math.round(
+                            const rawShoulderRotationDeg =
                                 (Math.atan2(shoulderDepthDelta, shoulderWidth) * 180) /
-                                Math.PI,
+                                Math.PI
+
+                            if (shoulderBaselineRef.current.rotationDeg == null) {
+                                shoulderBaselineRef.current.rotationDeg =
+                                    rawShoulderRotationDeg
+                            }
+
+                            frameShoulderRotationDeg = Math.round(
+                                rawShoulderRotationDeg -
+                                shoulderBaselineRef.current.rotationDeg,
                             )
                         }
 
@@ -1005,7 +1146,7 @@ function App() {
                             if (frameShoulderRotationDeg != null) {
                                 shoulderPeakRotationDegRef.current = Math.max(
                                     shoulderPeakRotationDegRef.current,
-                                    frameShoulderRotationDeg,
+                                    Math.abs(frameShoulderRotationDeg),
                                 )
                             }
                         }
@@ -1039,10 +1180,13 @@ function App() {
             setCameraStatus('loading')
             setBanner('')
 
+            const wantsPortraitCapture =
+                typeof window !== 'undefined' && window.innerHeight > window.innerWidth
+
             const stream = await navigator.mediaDevices.getUserMedia({
                 video: {
-                    width: { ideal: 1280 },
-                    height: { ideal: 720 },
+                    width: { ideal: wantsPortraitCapture ? 720 : 1280 },
+                    height: { ideal: wantsPortraitCapture ? 1280 : 720 },
                     facingMode: 'user',
                 },
                 audio: false,
@@ -1063,7 +1207,6 @@ function App() {
             setCameraStatus('ready')
         } catch {
             setCameraStatus('error')
-            setAnalysisStatus('error')
             setBanner('Camera setup failed. Check camera permissions and try again.')
         }
     }
@@ -1072,8 +1215,9 @@ function App() {
         stopAnalysisLoop()
         stopCameraStream()
         recordingActiveRef.current = false
+        portraitVideoRef.current = false
+        setIsPortraitVideo(false)
         setCameraStatus('idle')
-        setAnalysisStatus('idle')
         setFacesDetected(0)
         setHandsDetected(0)
         setEyeContactScore(null)
@@ -1105,21 +1249,24 @@ function App() {
     }
 
     function validateOnBlur() {
-        setFieldError(validateKeyFormat(keyInput))
+        const formatError = validateKeyFormat(keyInput)
+        setFieldError(formatError)
     }
 
     async function saveSettings() {
-        const formatError = validateKeyFormat(keyInput)
-        if (formatError) {
-            setFieldError(formatError)
+        const trimmedKey = keyInput.trim()
+        const formatError = validateKeyFormat(trimmedKey)
+        setFieldError(formatError)
+
+        if (formatError) return
+
+        if (trimmedKey === savedKey && lastValidatedAt) {
+            setToast('Key is already saved.')
             return
         }
 
-        setIsSaving(true)
         setBanner('')
-
-        const validationResult = await validateAgainstEndpoint(keyInput.trim())
-        setIsSaving(false)
+        const validationResult = await validateAgainstEndpoint(trimmedKey)
 
         if (!validationResult.ok) {
             setFieldError(
@@ -1130,15 +1277,13 @@ function App() {
             return
         }
 
-        const cleanedKey = keyInput.trim()
         const nowIso = new Date().toISOString()
 
-        setSavedKey(cleanedKey)
+        setSavedKey(trimmedKey)
+        setShowKeyStatus(true)
         setLastValidatedAt(nowIso)
-        setSavedValue(STORAGE_KEY, cleanedKey)
+        setSavedValue(STORAGE_KEY, trimmedKey)
         setSavedValue(STORAGE_VALIDATED_AT, nowIso)
-
-        closeSettings()
 
         if (validationResult.skipped) {
             setToast('Settings saved. Validation endpoint is not configured yet.')
@@ -1151,10 +1296,10 @@ function App() {
         clearSavedValue(STORAGE_KEY)
         clearSavedValue(STORAGE_VALIDATED_AT)
         setSavedKey('')
+        setShowKeyStatus(false)
         setLastValidatedAt('')
         setKeyInput('')
         setConfirmRemoveOpen(false)
-        setSettingsOpen(false)
         setTranscript('')
         setBanner('Transcription is disabled until a new key is added.')
         setToast('Deepgram key removed.')
@@ -1197,23 +1342,22 @@ function App() {
 
     function exportTextReport() {
         const report = buildSessionReport()
-        const blob = new Blob([toSessionTextReport(report)], {
+        const outputBlock = outputText || toSessionTextReport(report)
+        const blob = new Blob([outputBlock], {
             type: 'text/plain;charset=utf-8',
         })
         downloadBlob(blob, `session-report-${Date.now()}.txt`)
     }
 
     function downloadRecording() {
-        if (!recordedAudioBlob) return
+        if (!recordedVideoBlob) return
         const extension =
-            recordedAudioBlob.type.includes('mpeg') ||
-                recordedAudioBlob.type.includes('mp3')
-                ? 'mp3'
-                : recordedAudioBlob.type.includes('mp4') ||
-                    recordedAudioBlob.type.includes('m4a')
-                    ? 'm4a'
-                    : 'webm'
-        downloadBlob(recordedAudioBlob, `session-audio-${Date.now()}.${extension}`)
+            recordedVideoBlob.type.includes('mp4')
+                ? 'mp4'
+                : recordedVideoBlob.type.includes('webm')
+                    ? 'webm'
+                    : 'mp4'
+        downloadBlob(recordedVideoBlob, `session-video-${Date.now()}.${extension}`)
     }
 
     async function selectRecordingsFolder() {
@@ -1274,76 +1418,6 @@ function App() {
         }
     }
 
-    async function speakQuestion() {
-        const text = questionInput.trim()
-        if (!text) {
-            setBanner('Enter a question before using text-to-speech.')
-            return
-        }
-
-        if (!hasKey) {
-            openSettings()
-            setBanner('Add Deepgram key in Settings to enable text-to-speech.')
-            return
-        }
-
-        setIsSpeakingQuestion(true)
-        setBanner('')
-
-        try {
-            const endpoint =
-                import.meta.env.VITE_DEEPGRAM_SPEAK_URL || DEFAULT_DEEPGRAM_SPEAK_URL
-
-            const response = await fetch(endpoint, {
-                method: 'POST',
-                headers: {
-                    Authorization: `Token ${savedKey}`,
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ text }),
-            })
-
-            if (response.status === 401 || response.status === 403) {
-                setBanner('Saved key is invalid or revoked. Update it in Settings.')
-                throw new Error('Saved key is invalid or revoked.')
-            }
-
-            if (response.status === 429) {
-                throw new Error('TTS rate limit reached. Please wait and retry.')
-            }
-
-            if (!response.ok) {
-                throw new Error('Text-to-speech failed. Try again in a moment.')
-            }
-
-            const audioBlob = await response.blob()
-            const audioUrl = URL.createObjectURL(audioBlob)
-
-            if (questionAudioRef.current) {
-                questionAudioRef.current.pause()
-                URL.revokeObjectURL(questionAudioRef.current.src)
-            }
-
-            const audio = new Audio(audioUrl)
-            questionAudioRef.current = audio
-            audio.onended = () => {
-                URL.revokeObjectURL(audioUrl)
-                if (questionAudioRef.current === audio) {
-                    questionAudioRef.current = null
-                }
-            }
-            await audio.play()
-            setToast('Question audio started.')
-        } catch (error) {
-            setToast(error.message || 'Text-to-speech failed. Try again.')
-            if (!banner) {
-                setBanner(error.message || 'Text-to-speech failed. Try again.')
-            }
-        } finally {
-            setIsSpeakingQuestion(false)
-        }
-    }
-
     async function transcribeAudioBlob(audioBlob) {
         const endpoint =
             import.meta.env.VITE_DEEPGRAM_LISTEN_URL || DEFAULT_DEEPGRAM_LISTEN_URL
@@ -1372,12 +1446,82 @@ function App() {
         return text || 'No transcript was returned for this recording.'
     }
 
-    async function startRecording() {
+    async function speakQuestionIfEnabled() {
+        if (!readQuestionWithTts) return
+
+        const text = questionInput.trim()
+        if (!text) {
+            setBanner('Read (TTS) Question is enabled, but the question is empty.')
+            return
+        }
+
+        try {
+            setIsSpeakingQuestion(true)
+            const endpoint =
+                import.meta.env.VITE_DEEPGRAM_SPEAK_URL || DEFAULT_DEEPGRAM_SPEAK_URL
+
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    Authorization: `Token ${savedKey}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ text }),
+            })
+
+            if (!response.ok) {
+                throw new Error('Question TTS failed. Continuing without TTS.')
+            }
+
+            const audioBlob = await response.blob()
+            const audioUrl = URL.createObjectURL(audioBlob)
+
+            if (questionAudioRef.current) {
+                questionAudioRef.current.pause()
+                URL.revokeObjectURL(questionAudioRef.current.src)
+                questionAudioRef.current = null
+            }
+
+            await new Promise((resolve, reject) => {
+                const audio = new Audio(audioUrl)
+                questionAudioRef.current = audio
+                audio.onended = () => {
+                    URL.revokeObjectURL(audioUrl)
+                    if (questionAudioRef.current === audio) {
+                        questionAudioRef.current = null
+                    }
+                    resolve()
+                }
+                audio.onerror = () => {
+                    URL.revokeObjectURL(audioUrl)
+                    if (questionAudioRef.current === audio) {
+                        questionAudioRef.current = null
+                    }
+                    reject(new Error('Question TTS playback failed.'))
+                }
+                audio
+                    .play()
+                    .then(() => undefined)
+                    .catch(() => reject(new Error('Question TTS playback failed.')))
+            })
+        } catch (error) {
+            setBanner(error.message || 'Question TTS failed. Continuing without TTS.')
+        } finally {
+            setIsSpeakingQuestion(false)
+        }
+    }
+
+    async function startRecording(mode = 'audio') {
         if (isRecording || isTranscribing) return
 
         if (!hasKey) {
             openSettings()
             setBanner('Add Deepgram key in Settings to enable transcription.')
+            return
+        }
+
+        if (mode === 'video' && !cameraStreamRef.current) {
+            setBanner('Start camera first to capture video with audio.')
             return
         }
 
@@ -1387,12 +1531,29 @@ function App() {
             setOutputText('')
             sessionStartedAtRef.current = new Date().toISOString()
             resetInterviewTracking()
+            recalibrateTorsoBaseline()
+
+            await speakQuestionIfEnabled()
 
             const stream = await navigator.mediaDevices.getUserMedia({
                 audio: true,
                 video: false,
             })
             audioStreamRef.current = stream
+
+            let avStream = null
+            if (mode === 'video') {
+                const cameraTrack = cameraStreamRef.current.getVideoTracks()[0]
+                if (!cameraTrack) {
+                    throw new Error('Camera track is unavailable.')
+                }
+
+                avStream = new MediaStream([
+                    cameraTrack,
+                    ...stream.getAudioTracks(),
+                ])
+            }
+
             recordingActiveRef.current = true
             recordingStartedAtPerfRef.current = performance.now()
             recordingLastFrameAtPerfRef.current = recordingStartedAtPerfRef.current
@@ -1402,22 +1563,47 @@ function App() {
                 ? new MediaRecorder(stream, { mimeType })
                 : new MediaRecorder(stream)
 
+            let videoRecorder = null
+            if (avStream) {
+                const videoMimeType = pickSupportedVideoMimeType()
+                videoRecorder = videoMimeType
+                    ? new MediaRecorder(avStream, { mimeType: videoMimeType })
+                    : new MediaRecorder(avStream)
+            }
+
             chunksRef.current = []
-            setRecordedAudioBlob(null)
+            videoChunksRef.current = []
+            setRecordedVideoBlob(null)
 
             recorder.ondataavailable = (event) => {
                 if (event.data && event.data.size > 0) chunksRef.current.push(event.data)
             }
 
+            if (videoRecorder) {
+                videoRecorder.ondataavailable = (event) => {
+                    if (event.data && event.data.size > 0) {
+                        videoChunksRef.current.push(event.data)
+                    }
+                }
+            }
+
             recorderRef.current = recorder
+            videoRecorderRef.current = videoRecorder
             recorder.start()
+            if (videoRecorder) {
+                videoRecorder.start()
+            }
             setIsRecording(true)
-            setToast('Recording started.')
+            setToast(mode === 'video' ? 'Video recording started.' : 'Audio recording started.')
         } catch {
             recordingActiveRef.current = false
-            setBanner('Microphone access failed. Allow microphone permission and try again.')
+            setBanner('Recording setup failed. Check camera/microphone permissions and try again.')
             setTranscript('')
             stopAudioStream()
+            recorderRef.current = null
+            videoRecorderRef.current = null
+            chunksRef.current = []
+            videoChunksRef.current = []
         }
     }
 
@@ -1425,6 +1611,7 @@ function App() {
         if (!recorderRef.current || !isRecording) return
 
         const recorder = recorderRef.current
+        const videoRecorder = videoRecorderRef.current
         setIsRecording(false)
         setIsTranscribing(true)
         setTranscript('Transcribing your answer...')
@@ -1433,6 +1620,13 @@ function App() {
             recorder.onstop = resolve
             recorder.stop()
         })
+
+        if (videoRecorder) {
+            await new Promise((resolve) => {
+                videoRecorder.onstop = resolve
+                videoRecorder.stop()
+            })
+        }
 
         recordingActiveRef.current = false
 
@@ -1450,8 +1644,25 @@ function App() {
                 setBanner('MP3 conversion failed in this browser; using original audio format.')
             }
 
-            setRecordedAudioBlob(storageAudioBlob)
             await saveAudioToSelectedFolder(storageAudioBlob)
+
+            if (videoChunksRef.current.length > 0) {
+                const rawVideoBlob = new Blob(videoChunksRef.current, {
+                    type: videoRecorder?.mimeType || 'video/webm',
+                })
+
+                try {
+                    const mp4Blob = await convertVideoBlobToMp4(
+                        rawVideoBlob,
+                        ffmpegRef,
+                        ffmpegLoadedRef,
+                    )
+                    setRecordedVideoBlob(mp4Blob)
+                } catch {
+                    setRecordedVideoBlob(rawVideoBlob)
+                    setBanner('MP4 conversion failed; video is available in original format.')
+                }
+            }
 
             const text = await transcribeAudioBlob(rawAudioBlob)
             setTranscript(text)
@@ -1488,6 +1699,10 @@ function App() {
                 shoulderPeakRotationDegRef.current >= SHOULDER_ROTATION_ALERT_DEG
                     ? 'rotating too much'
                     : 'facing forward'
+            const shoulderRotationDirection = describeTorsoRotation(
+                shoulderRotationDeg,
+                SHOULDER_ROTATION_ALERT_DEG,
+            )
 
             setOutputText(
                 buildOutputText({
@@ -1513,6 +1728,8 @@ function App() {
                         shoulderShiftPeakPct: shoulderPeakDriftPctRef.current,
                         shoulderTiltPeakDeg: shoulderPeakTiltDegRef.current,
                         shoulderRotationPeakDeg: shoulderPeakRotationDegRef.current,
+                        shoulderRotationSignedDeg: shoulderRotationDeg,
+                        shoulderRotationDirection,
                         shoulderRotationStatus: shoulderRotationStatusFromPeak,
                     },
                 }),
@@ -1525,19 +1742,12 @@ function App() {
             setToast(error.message || 'Transcription failed. Try again.')
         } finally {
             recorderRef.current = null
+            videoRecorderRef.current = null
             chunksRef.current = []
+            videoChunksRef.current = []
             setIsTranscribing(false)
         }
     }
-
-    const analysisLabel =
-        analysisStatus === 'loading'
-            ? 'Loading MediaPipe models...'
-            : analysisStatus === 'ready'
-                ? 'Live analysis running'
-                : analysisStatus === 'error'
-                    ? 'Analysis unavailable'
-                    : 'Analysis not started'
 
     const faceDetectedLabel = facesDetected > 0 ? 'Face detected' : 'No face detected'
     const shoulderShiftStatus =
@@ -1555,17 +1765,12 @@ function App() {
     const shoulderRotationStatus =
         shoulderRotationDeg == null
             ? 'n/a'
-            : shoulderRotationDeg >= SHOULDER_ROTATION_ALERT_DEG
-                ? 'rotating too much'
-                : 'facing forward'
+            : describeTorsoRotation(shoulderRotationDeg, SHOULDER_ROTATION_ALERT_DEG)
 
     return (
         <div className="app-shell">
             <header className="topbar">
-                <div>
-                    <p className="eyebrow">Mock Interview Analyzer</p>
-                    <h1>Interview Session</h1>
-                </div>
+                <h1>Mock Interview Analyzer</h1>
                 <button type="button" className="btn ghost" onClick={openSettings}>
                     Settings
                 </button>
@@ -1573,9 +1778,8 @@ function App() {
 
             <main className="layout">
                 <section className="panel camera-panel">
-                    <h2>Camera Analysis (JS MediaPipe)</h2>
-                    <div className="analysis-status-row">
-                        <p className="muted">{analysisLabel}</p>
+                    <div className="camera-heading-row">
+                        <h2>{debugEnabled ? 'Camera Analysis (JS MediaPipe)' : 'Camera View'}</h2>
                         <label className="debug-toggle">
                             <input
                                 type="checkbox"
@@ -1586,7 +1790,7 @@ function App() {
                         </label>
                     </div>
 
-                    <div className="camera-frame">
+                    <div className={`camera-frame${isPortraitVideo ? ' portrait' : ''}`}>
                         <video ref={videoRef} className="camera-video" muted playsInline />
                         <canvas
                             ref={overlayRef}
@@ -1604,6 +1808,27 @@ function App() {
                     </div>
 
                     <div className="actions wrap">
+                        {debugEnabled && (
+                            <div className="baseline-controls">
+                                <button
+                                    type="button"
+                                    className="btn ghost"
+                                    onClick={recalibrateTorsoBaseline}
+                                    disabled={cameraStatus !== 'ready'}
+                                    title={
+                                        cameraStatus === 'ready'
+                                            ? 'Set current torso orientation as neutral baseline'
+                                            : 'Start camera to recalibrate torso baseline'
+                                    }
+                                >
+                                    Recalibrate Torso Baseline
+                                </button>
+                                <p className="muted baseline-note">
+                                    Torso baseline auto-recalibrates when you start video or audio
+                                    recording.
+                                </p>
+                            </div>
+                        )}
                         {cameraStatus === 'ready' ? (
                             <button type="button" className="btn ghost" onClick={stopCamera}>
                                 Stop Camera
@@ -1674,7 +1899,9 @@ function App() {
                             <article className="metric-card">
                                 <p className="metric-label">Shoulder rotation</p>
                                 <p className="metric-value">
-                                    {shoulderRotationDeg == null ? 'n/a' : `${shoulderRotationDeg}°`}
+                                    {shoulderRotationDeg == null
+                                        ? 'n/a'
+                                        : formatSignedDegrees(shoulderRotationDeg)}
                                 </p>
                                 <p className="metric-label">{shoulderRotationStatus}</p>
                             </article>
@@ -1685,57 +1912,37 @@ function App() {
                 </section>
 
                 <section className="panel session">
-                    <h2>Session Controls</h2>
-                    <p className="muted">
-                        Add your Deepgram API key in Settings, then record an answer and transcribe it.
-                    </p>
-                    <p className="muted">
-                        {recordingsFolderName
-                            ? `Auto-saving recordings to folder: ${recordingsFolderName}`
-                            : fileSystemAccessSupported
-                                ? 'No save folder selected. You can still download files manually.'
-                                : 'Direct folder save is unavailable in this browser; use Download Audio.'}
-                    </p>
-                    <div className="actions wrap">
-                        <button
-                            type="button"
-                            className="btn ghost"
-                            onClick={selectRecordingsFolder}
-                            disabled={!fileSystemAccessSupported}
-                        >
-                            Select Save Folder
-                        </button>
-                        {recordingsFolderName && (
+                    {fileSystemAccessSupported && !recordingsFolderName && (
+                        <div className="actions wrap">
                             <button
                                 type="button"
                                 className="btn ghost"
-                                onClick={clearRecordingsFolder}
+                                onClick={selectRecordingsFolder}
                             >
-                                Clear Save Folder
+                                Select Initial Save Folder
                             </button>
-                        )}
-                    </div>
-                    <label htmlFor="interview-question" className="label">
-                        Interview question
-                    </label>
-                    <input
-                        id="interview-question"
-                        type="text"
-                        className="field"
-                        value={questionInput}
-                        onChange={(event) => setQuestionInput(event.target.value)}
-                        placeholder="Tell me about a challenging project you worked on."
-                    />
+                        </div>
+                    )}
                     <div className="actions wrap">
                         {!isRecording ? (
-                            <button
-                                type="button"
-                                className="btn"
-                                onClick={startRecording}
-                                disabled={isTranscribing}
-                            >
-                                Start Recording
-                            </button>
+                            <>
+                                <button
+                                    type="button"
+                                    className="btn"
+                                    onClick={() => startRecording('video')}
+                                    disabled={isTranscribing}
+                                >
+                                    Start Video Recording
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn ghost"
+                                    onClick={() => startRecording('audio')}
+                                    disabled={isTranscribing}
+                                >
+                                    Start Audio Recording
+                                </button>
+                            </>
                         ) : (
                             <button
                                 type="button"
@@ -1745,20 +1952,31 @@ function App() {
                                 Stop and Transcribe
                             </button>
                         )}
-                        <button
-                            type="button"
-                            className="btn ghost"
-                            onClick={speakQuestion}
-                            disabled={isSpeakingQuestion}
-                        >
-                            {isSpeakingQuestion ? 'Reading Question...' : 'Read Question'}
-                        </button>
-                        <button type="button" className="btn ghost" onClick={openSettings}>
-                            Transcription settings
-                        </button>
                     </div>
-
-                    <p className="key-status">{maskedSummary}</p>
+                    <div className="label question-row">
+                        <label htmlFor="interview-question" className="question-main-label">
+                            Interview question
+                        </label>
+                        <label className="debug-toggle question-tts-toggle">
+                            <input
+                                type="checkbox"
+                                checked={readQuestionWithTts}
+                                onChange={(event) => setReadQuestionWithTts(event.target.checked)}
+                                disabled={isRecording || isTranscribing || isSpeakingQuestion}
+                            />
+                            <span>Read (TTS) Question</span>
+                        </label>
+                    </div>
+                    <input
+                        id="interview-question"
+                        type="text"
+                        className="field"
+                        value={questionInput}
+                        onChange={(event) => setQuestionInput(event.target.value)}
+                        autoComplete="off"
+                        placeholder="Tell me about a challenging project you worked on."
+                    />
+                    {hasKey && showKeyStatus && <p className="key-status">{maskedSummary}</p>}
                     {needsRevalidation && (
                         <p className="warning">
                             Revalidation recommended. Your key was last checked over 30 days ago.
@@ -1785,40 +2003,78 @@ function App() {
                             type="button"
                             className="btn ghost"
                             onClick={downloadRecording}
-                            disabled={!recordedAudioBlob}
+                            disabled={!recordedVideoBlob}
                         >
-                            Download Audio
+                            Download Video + Audio
                         </button>
                     </div>
                 </section>
             </main>
 
             {settingsOpen && (
-                <div className="overlay" role="presentation">
+                <div
+                    className="overlay"
+                    role="presentation"
+                    onPointerDown={(event) => {
+                        if (event.target === event.currentTarget) {
+                            closeSettings()
+                        }
+                    }}
+                >
                     <div
                         className="modal"
                         role="dialog"
                         aria-modal="true"
                         aria-labelledby="settings-title"
+                        onClick={(event) => event.stopPropagation()}
                     >
                         <h2 id="settings-title">Speech Transcription</h2>
                         <p className="muted">
                             Add your Deepgram API key to enable live transcription. Your key is stored only in this browser.
                         </p>
 
+                        <div className="actions wrap">
+                            <button
+                                type="button"
+                                className="btn ghost"
+                                onClick={() => setShowKey((prev) => !prev)}
+                            >
+                                {showKey ? 'Hide key' : 'Show key'}
+                            </button>
+                            {hasKey && (
+                                <button
+                                    type="button"
+                                    className="btn danger"
+                                    onClick={() => setConfirmRemoveOpen(true)}
+                                >
+                                    Remove key
+                                </button>
+                            )}
+                        </div>
+
                         <label htmlFor="deepgram-key" className="label">
                             Deepgram API Key
                         </label>
-                        <input
-                            id="deepgram-key"
-                            type={showKey ? 'text' : 'password'}
-                            value={keyInput}
-                            onChange={(event) => updateInput(event.target.value)}
-                            onBlur={validateOnBlur}
-                            aria-describedby="key-help key-error"
-                            className={fieldError ? 'field field-error' : 'field'}
-                            autoComplete="off"
-                        />
+                        <div className="key-input-row">
+                            <input
+                                id="deepgram-key"
+                                type={showKey ? 'text' : 'password'}
+                                value={keyInput}
+                                onChange={(event) => updateInput(event.target.value)}
+                                onBlur={validateOnBlur}
+                                aria-describedby="key-help key-error"
+                                className={fieldError ? 'field field-error' : 'field'}
+                                autoComplete="off"
+                            />
+                            <button
+                                type="button"
+                                className="btn key-save-btn"
+                                onMouseDown={(event) => event.preventDefault()}
+                                onClick={saveSettings}
+                            >
+                                Save key
+                            </button>
+                        </div>
                         <p id="key-help" className="help-text">Use a valid Deepgram API key from your Deepgram account.</p>
                         {fieldError && (
                             <p id="key-error" className="error-text" aria-live="polite">
@@ -1833,33 +2089,39 @@ function App() {
                             Do not share screenshots of this page while key is visible.
                         </p>
 
-                        <div className="actions wrap">
-                            <button
-                                type="button"
-                                className="btn ghost"
-                                onClick={() => setShowKey((prev) => !prev)}
-                            >
-                                {showKey ? 'Hide key' : 'Show key'}
-                            </button>
-                            <button
-                                type="button"
-                                className="btn"
-                                onClick={saveSettings}
-                                disabled={isSaving}
-                            >
-                                Save settings
-                            </button>
-                            {hasKey && (
+                        <div className="settings-section">
+                            <label className="label">Recording Save Folder</label>
+                            <p className="muted">
+                                {recordingsFolderName
+                                    ? `Current folder: ${recordingsFolderName}`
+                                    : fileSystemAccessSupported
+                                        ? 'No folder selected. Recordings can still be downloaded manually.'
+                                        : 'Folder selection is unavailable in this browser.'}
+                            </p>
+                            <div className="actions wrap">
                                 <button
                                     type="button"
-                                    className="btn danger"
-                                    onClick={() => setConfirmRemoveOpen(true)}
+                                    className="btn ghost"
+                                    onClick={selectRecordingsFolder}
+                                    disabled={!fileSystemAccessSupported}
                                 >
-                                    Remove key
+                                    {recordingsFolderName ? 'Change Save Folder' : 'Select Save Folder'}
                                 </button>
-                            )}
+                                {recordingsFolderName && (
+                                    <button
+                                        type="button"
+                                        className="btn ghost"
+                                        onClick={clearRecordingsFolder}
+                                    >
+                                        Clear Save Folder
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+
+                        <div className="actions wrap">
                             <button type="button" className="btn ghost" onClick={closeSettings}>
-                                Cancel
+                                Exit
                             </button>
                         </div>
                     </div>
