@@ -1,3 +1,7 @@
+body {
+    overflow-y:auto;
+}
+
 .app-shell {
     min-height: 100vh;
     color: var(--ink-900);
@@ -60,6 +64,8 @@ h3 {
     padding: 1rem 1.4rem 1.4rem;
 }
 
+
+
 .panel {
     background: var(--card-bg);
     border: 1px solid var(--line);
@@ -87,17 +93,44 @@ h3 {
     margin-bottom: 0.5rem;
 }
 
+.camera-heading-controls {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+}
+
 .camera-heading-row h2 {
     margin: 0;
 }
 
 .debug-toggle {
-    margin-left: auto;
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
     color: var(--ink-700);
     font-size: 0.9rem;
+}
+
+.center-camera-toggle {
+    white-space: nowrap;
+}
+
+.layout.center-camera-layout {
+    grid-template-columns: 1fr;
+}
+
+.layout.center-camera-layout .centered-camera-panel,
+.layout.center-camera-layout .centered-session-panel {
+    width: min(1100px, 100%);
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.layout.center-camera-layout .centered-camera-panel .camera-frame {
+    width: min(960px, 100%);
+    margin-left: auto;
+    margin-right: auto;
 }
 
 .debug-toggle input {
@@ -335,10 +368,12 @@ h3 {
     margin: 0;
 }
 
-.history-modal {
-    width: min(1200px, 96vw);
+.modal.history-modal {
+    width: 90vw;
+    max-width: 90vw;
+    height: min(90vh, calc(100vh - 2rem));
     max-height: 90vh;
-    overflow: hidden;
+    overflow: auto;
     display: grid;
     grid-template-rows: auto 1fr;
 }
@@ -357,6 +392,7 @@ h3 {
 
 .history-modal-grid {
     min-height: 0;
+    height: 100%;
     display: grid;
     grid-template-columns: minmax(280px, 340px) 1fr;
     gap: 0.8rem;
@@ -369,6 +405,7 @@ h3 {
     padding: 0.7rem;
     background: var(--ghost-bg);
     min-height: 0;
+    height: 100%;
 }
 
 .history-overview {
@@ -385,7 +422,8 @@ h3 {
 }
 
 .history-overview-list {
-    overflow: auto;
+    overflow-y: auto;
+    overflow-x: hidden;
     display: grid;
     gap: 0.45rem;
     align-content: start;
@@ -417,13 +455,85 @@ h3 {
 }
 
 .history-detail {
-    overflow: auto;
+    overflow: hidden;
+}
+
+.history-detail-layout {
+    min-height: 0;
+    height: 100%;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    gap: 0.7rem;
+}
+
+.history-detail-scroll {
+    min-height: 0;
+    height: 100%;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding-right: 0.45rem;
+}
+
+@media (min-width: 861px) {
+
+    .history-modal-grid,
+    .history-overview,
+    .history-detail,
+    .history-detail-layout,
+    .history-detail-scroll {
+        height: auto;
+    }
+
+    .history-overview-list,
+    .history-detail-scroll {
+        overflow: visible;
+        padding-right: 0;
+    }
+
+    .history-detail {
+        overflow: visible;
+    }
 }
 
 .history-transcript,
 .history-metrics,
 .history-media {
     margin-top: 0.7rem;
+}
+
+.history-detail-scroll .history-transcript {
+    margin-top: 0;
+}
+
+.history-detail-meta {
+    margin: 0;
+}
+
+.history-media-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.history-media-head h3 {
+    margin: 0;
+}
+
+.history-speed-controls {
+    display: inline-flex;
+    gap: 0.4rem;
+}
+
+.history-speed-btn {
+    padding: 0.35rem 0.6rem;
+    font-size: 0.82rem;
+    min-width: 3rem;
+}
+
+.history-speed-btn.active {
+    border-color: var(--action);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--action), white 20%);
 }
 
 .history-metrics-grid {
@@ -657,6 +767,17 @@ h3 {
 
 @media (max-width: 600px) {
 
+    .camera-heading-row {
+        flex-wrap: wrap;
+        align-items: flex-start;
+    }
+
+    .camera-heading-controls {
+        margin-left: 0;
+        width: 100%;
+        justify-content: space-between;
+    }
+
     .topbar,
     .layout {
         padding-left: 1rem;
@@ -693,15 +814,20 @@ h3 {
 
     .session-history-box {
         width: 100%;
-        flex-direction: column;
-        align-items: stretch;
+        flex-direction: row;
+        align-items: center;
+    }
+
+    .session-history-text {
+        flex: 1 1 auto;
     }
 
     .session-history-box .btn {
         flex: 0 0 auto;
         width: auto;
         min-width: 0;
-        align-self: flex-start;
+        margin-left: auto;
+        align-self: center;
         padding: 0.5rem 0.75rem;
     }
 

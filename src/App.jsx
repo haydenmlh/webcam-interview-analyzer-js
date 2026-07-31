@@ -222,6 +222,14 @@ function toFixed1(value) {
     return Number.isFinite(value) ? value.toFixed(1) : '0.0'
 }
 
+function toFixed2(value) {
+    return Number.isFinite(value) ? value.toFixed(2) : '0.00'
+}
+
+function toRoundedInt(value) {
+    return Number.isFinite(value) ? Math.round(value) : 0
+}
+
 function formatSignedDegrees(value) {
     if (!Number.isFinite(value)) return 'n/a'
     return `${value > 0 ? '+' : ''}${toFixed1(value)}°`
@@ -262,12 +270,12 @@ function buildOutputText({ capturedAt, question, answer, metrics }) {
         answer || '(no transcript captured)',
         '',
         'Interview Metrics',
-        `- Answer Length: ${toFixed1(metrics.answerLengthSec)}s`,
-        `- WPM: ${toFixed1(metrics.wpm)}`,
+        `- Answer Length: ${toFixed2(metrics.answerLengthSec)}s`,
+        `- WPM: ${toRoundedInt(metrics.wpm)}`,
         `- Hesitations Count: ${metrics.hesitationsCount}`,
         `- Number of Gaze Deviations from Center: ${metrics.gazeDeviationCount}`,
         `- Gaze Deviation Direction Counts (L/R/U/D): ${metrics.gazeDeviationDirectionCounts.left}/${metrics.gazeDeviationDirectionCounts.right}/${metrics.gazeDeviationDirectionCounts.up}/${metrics.gazeDeviationDirectionCounts.down}`,
-        `- Gaze Center Time: ${toFixed1(metrics.gazeCenterSec)}s / ${toFixed1(metrics.answerLengthSec)}s (${toFixed1(metrics.gazeCenterPct)}%)`,
+        `- Gaze Center Time: ${toFixed1(metrics.gazeCenterSec)}s / ${toFixed2(metrics.answerLengthSec)}s (${toRoundedInt(metrics.gazeCenterPct)}%)`,
         `- Prolonged Eye-Closure Duration: ${toFixed1(metrics.prolongedClosureSec)}s (${toFixed1(metrics.prolongedClosurePct)}%)`,
         `- Prolonged Eye-Closure Events: ${metrics.prolongedClosureEvents}`,
         `- Prolonged Eye-Closure Timestamps: ${formatTimestampList(metrics.prolongedClosureTimestampsSec)}`,
@@ -725,47 +733,6 @@ function splitFileName(fileName) {
     }
 }
 
-function parseAnswerFromTextReport(content) {
-    const answerBlock = content.match(/(?:^|\n)Answer:\s*\n([\s\S]*?)(?:\n\s*Interview Metrics\s*$|$)/m)
-    if (answerBlock?.[1]) return sanitizeDisplayText(answerBlock[1], '(no transcript captured)')
-
-    const transcriptBlock = content.match(/(?:^|\n)Transcript\s*\n([\s\S]*)$/m)
-    if (transcriptBlock?.[1]) return sanitizeDisplayText(transcriptBlock[1], '(no transcript captured)')
-
-    return '(no transcript captured)'
-}
-
-function parseMetricsTextFromReport(content) {
-    const metricsBlock = content.match(/(?:^|\n)Interview Metrics\s*\n([\s\S]*)$/m)
-    return sanitizeDisplayText(metricsBlock?.[1], '')
-}
-
-function parseSessionTextReport(fileName, content, fallbackDateIso, sortTime) {
-    const questionMatch = content.match(/^Question:\s*(.*)$/m)
-    const generatedMatch = content.match(/^(?:Generated|Captured At):\s*(.*)$/m)
-    const question = sanitizeDisplayText(questionMatch?.[1], '(none)')
-    const answer = parseAnswerFromTextReport(content)
-    const metricsText = parseMetricsTextFromReport(content)
-    const capturedAt = sanitizeDisplayText(generatedMatch?.[1], fallbackDateIso)
-    const { baseName } = splitFileName(fileName)
-
-    return {
-        id: `${baseName}-${sortTime}-txt`,
-        baseName,
-        source: sanitizeDisplayText(fileName, 'unknown-file'),
-        capturedAt,
-        question,
-        transcript: answer,
-        metrics: null,
-        metricsText,
-        audioFileName: '',
-        videoFileName: '',
-        audioHandle: null,
-        videoHandle: null,
-        sortTime,
-    }
-}
-
 function parseSessionJsonReport(fileName, content, fallbackDateIso, sortTime) {
     try {
         const parsed = JSON.parse(content)
@@ -866,9 +833,11 @@ function App() {
     const touchTrackerRef = useRef({
         touching: false,
     })
+    const cameraPermissionCheckedRef = useRef(false)
 
     const [settingsOpen, setSettingsOpen] = useState(false)
     const [confirmRemoveOpen, setConfirmRemoveOpen] = useState(false)
+    const [confirmFolderSelectOpen, setConfirmFolderSelectOpen] = useState(false)
     const [savedKey, setSavedKey] = useState(() => getSavedValue(STORAGE_KEY))
     const [lastValidatedAt, setLastValidatedAt] = useState(() =>
         getSavedValue(STORAGE_VALIDATED_AT),
@@ -886,6 +855,9 @@ function App() {
 
     const [cameraStatus, setCameraStatus] = useState('idle')
     const [debugEnabled, setDebugEnabled] = useState(false)
+    const [centerCameraLayout, setCenterCameraLayout] = useState(() =>
+        typeof window !== 'undefined' ? window.innerWidth > 860 : true,
+    )
     const [isPortraitVideo, setIsPortraitVideo] = useState(false)
 
     const [facesDetected, setFacesDetected] = useState(0)
@@ -924,6 +896,9 @@ function App() {
         audioUrl: '',
         videoUrl: '',
     })
+    const [historyPlaybackRate, setHistoryPlaybackRate] = useState(1.5)
+    const historyVideoRef = useRef(null)
+    const historyAudioRef = useRef(null)
     const selectedHistoryMediaRef = useRef({ audioUrl: '', videoUrl: '' })
 
     const hasKey = savedKey.length > 0
@@ -1068,27 +1043,19 @@ function App() {
             }
 
             for (const entry of allFileEntries) {
-                if (entry.extension !== 'json' && entry.extension !== 'txt') continue
+                if (entry.extension !== 'json') continue
 
                 const file = await entry.handle.getFile()
                 if (file.size > 1024 * 1024) continue
 
                 const content = await file.text()
                 const fallbackDateIso = new Date(file.lastModified || Date.now()).toISOString()
-                const parsed =
-                    entry.extension === 'json'
-                        ? parseSessionJsonReport(
-                            entry.name,
-                            content,
-                            fallbackDateIso,
-                            file.lastModified || 0,
-                        )
-                        : parseSessionTextReport(
-                            entry.name,
-                            content,
-                            fallbackDateIso,
-                            file.lastModified || 0,
-                        )
+                const parsed = parseSessionJsonReport(
+                    entry.name,
+                    content,
+                    fallbackDateIso,
+                    file.lastModified || 0,
+                )
                 if (!parsed) continue
 
                 const byNameAudio = parsed.audioFileName
@@ -1189,6 +1156,17 @@ function App() {
     }, [revokeHistoryMediaUrls])
 
     useEffect(() => {
+        if (selectedHistoryMedia.videoUrl && historyVideoRef.current) {
+            historyVideoRef.current.playbackRate = historyPlaybackRate
+            return
+        }
+
+        if (!selectedHistoryMedia.videoUrl && selectedHistoryMedia.audioUrl && historyAudioRef.current) {
+            historyAudioRef.current.playbackRate = historyPlaybackRate
+        }
+    }, [historyPlaybackRate, selectedHistoryMedia.videoUrl, selectedHistoryMedia.audioUrl])
+
+    useEffect(() => {
         if (!showKey) return undefined
         const timerId = window.setTimeout(() => setShowKey(false), 20000)
         return () => window.clearTimeout(timerId)
@@ -1205,6 +1183,10 @@ function App() {
                 setConfirmRemoveOpen(false)
                 return
             }
+            if (confirmFolderSelectOpen) {
+                setConfirmFolderSelectOpen(false)
+                return
+            }
             if (settingsOpen) {
                 setSettingsOpen(false)
                 return
@@ -1216,7 +1198,7 @@ function App() {
 
         window.addEventListener('keydown', onEscape)
         return () => window.removeEventListener('keydown', onEscape)
-    }, [confirmRemoveOpen, settingsOpen, historyModalOpen, closePreviousAnswersModal])
+    }, [confirmRemoveOpen, confirmFolderSelectOpen, settingsOpen, historyModalOpen, closePreviousAnswersModal])
 
     useEffect(() => {
         return () => {
@@ -1231,6 +1213,35 @@ function App() {
             handLandmarkerRef.current?.close()
             poseLandmarkerRef.current?.close()
         }
+    }, [])
+
+    useEffect(() => {
+        if (cameraPermissionCheckedRef.current) return
+        cameraPermissionCheckedRef.current = true
+
+        let cancelled = false
+
+        async function maybeStartCameraFromGrantedPermission() {
+            try {
+                if (typeof navigator === 'undefined') return
+                if (!navigator.permissions?.query) return
+
+                const permission = await navigator.permissions.query({ name: 'camera' })
+                if (cancelled || permission.state !== 'granted') return
+
+                await startCamera()
+            } catch {
+                // Some browsers do not expose camera permission state; skip auto-start.
+            }
+        }
+
+        void maybeStartCameraFromGrantedPermission()
+
+        return () => {
+            cancelled = true
+        }
+        // Only check permission state once on initial mount.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
 
     function stopAnalysisLoop() {
@@ -1732,6 +1743,15 @@ function App() {
         setShowKey(false)
     }
 
+    function openSelectRecordingsFolderModal() {
+        if (!fileSystemAccessSupported) {
+            setBanner('Folder save is supported in Chromium browsers like Chrome or Edge.')
+            return
+        }
+
+        setConfirmFolderSelectOpen(true)
+    }
+
     function updateInput(value) {
         setKeyInput(value)
         if (fieldError) setFieldError(validateKeyFormat(value))
@@ -1858,6 +1878,8 @@ function App() {
             setBanner('Folder save is supported in Chromium browsers like Chrome or Edge.')
             return
         }
+
+        setConfirmFolderSelectOpen(false)
 
         try {
             const handle = await window.showDirectoryPicker({ mode: 'readwrite' })
@@ -2095,7 +2117,7 @@ function App() {
         }
 
         if (mode === 'video' && !cameraStreamRef.current) {
-            setBanner('Start camera first to capture video with audio.')
+            setBanner('Camera access is required to capture video with audio.')
             return
         }
 
@@ -2370,14 +2392,19 @@ function App() {
         shoulderRotationDeg == null
             ? 'n/a'
             : describeTorsoRotation(shoulderRotationDeg, SHOULDER_ROTATION_ALERT_DEG)
-    const cameraToggleButton =
+    const cameraActionButton =
         cameraStatus === 'ready' ? (
             <button type="button" className="btn ghost" onClick={stopCamera}>
-                Stop Camera
+                Disable Camera
             </button>
         ) : (
-            <button type="button" className="btn" onClick={startCamera}>
-                Start Camera
+            <button
+                type="button"
+                className="btn"
+                onClick={startCamera}
+                disabled={cameraStatus === 'loading'}
+            >
+                {cameraStatus === 'loading' ? 'Starting Camera...' : 'Allow Camera Access'}
             </button>
         )
 
@@ -2408,18 +2435,23 @@ function App() {
                 </div>
             </header>
 
-            <main className="layout">
-                <section className="panel camera-panel">
+            <main className={`layout${centerCameraLayout ? ' center-camera-layout' : ''}`}>
+                <section
+                    className={`panel camera-panel${centerCameraLayout ? ' centered-camera-panel' : ''}`}
+                >
                     <div className="camera-heading-row">
                         <h2>{debugEnabled ? 'Camera View (JS MediaPipe)' : 'Camera View'}</h2>
-                        <label className="debug-toggle">
-                            <input
-                                type="checkbox"
-                                checked={debugEnabled}
-                                onChange={(event) => setDebugEnabled(event.target.checked)}
-                            />
-                            <span>Debug</span>
-                        </label>
+                        <div className="camera-heading-controls">
+                            {cameraActionButton}
+                            <label className="debug-toggle">
+                                <input
+                                    type="checkbox"
+                                    checked={debugEnabled}
+                                    onChange={(event) => setDebugEnabled(event.target.checked)}
+                                />
+                                <span>Debug</span>
+                            </label>
+                        </div>
                     </div>
 
                     <div className={`camera-frame${isPortraitVideo ? ' portrait' : ''}`}>
@@ -2464,7 +2496,6 @@ function App() {
                                     >
                                         Reset Statistics
                                     </button>
-                                    {cameraToggleButton}
                                 </div>
                                 <p className="muted baseline-note">
                                     Torso baseline auto-recalibrates when you start video or audio
@@ -2473,7 +2504,6 @@ function App() {
                             </div>
                         ) : (
                             <>
-                                {cameraToggleButton}
                                 {cameraStatus === 'ready' && facesDetected === 0 ? (
                                     <p className="face-detected-text">No face detected</p>
                                 ) : null}
@@ -2561,15 +2591,15 @@ function App() {
                     ) : null}
                 </section>
 
-                <section className="panel session">
+                <section className={`panel session${centerCameraLayout ? ' centered-session-panel' : ''}`}>
                     {fileSystemAccessSupported && !recordingsFolderName && (
                         <div className="actions wrap">
                             <button
                                 type="button"
                                 className="btn ghost"
-                                onClick={selectRecordingsFolder}
+                                onClick={openSelectRecordingsFolderModal}
                             >
-                                Select Initial Save Folder
+                                Select Save Folder
                             </button>
                         </div>
                     )}
@@ -2697,8 +2727,10 @@ function App() {
                                 type="button"
                                 className="btn ghost history-close-btn"
                                 onClick={closePreviousAnswersModal}
+                                aria-label="Close"
+                                title="Close"
                             >
-                                Exit
+                                X
                             </button>
                         </div>
 
@@ -2739,67 +2771,109 @@ function App() {
 
                             <section className="history-detail">
                                 {selectedPreviousAnswer ? (
-                                    <>
-                                        <h3>{selectedPreviousAnswer.question}</h3>
-                                        <p className="metric-label">
-                                            {selectedPreviousAnswer.source} ·{' '}
-                                            {new Date(selectedPreviousAnswer.capturedAt).toLocaleString()}
-                                        </p>
-
-                                        <div className="transcript-box history-transcript">
-                                            <h3>Full Transcript</h3>
-                                            <p className="output-text">{selectedPreviousAnswer.transcript}</p>
+                                    <div className="history-detail-layout">
+                                        <div className="history-detail-top">
+                                            <h3>{selectedPreviousAnswer.question}</h3>
                                         </div>
 
-                                        <div className="transcript-box history-metrics">
-                                            <h3>Metrics</h3>
-                                            {selectedPreviousAnswer.metrics && (
-                                                <div className="history-metrics-grid">
-                                                    {Object.entries(selectedPreviousAnswer.metrics).map(
-                                                        ([key, value]) => (
-                                                            <div key={key} className="history-metric-row">
-                                                                <span className="metric-label">{key}</span>
-                                                                <span>{String(value ?? 'n/a')}</span>
-                                                            </div>
-                                                        ),
-                                                    )}
+                                        <div className="history-detail-scroll">
+                                            <p className="metric-label history-detail-meta">
+                                                {selectedPreviousAnswer.source} ·{' '}
+                                                {new Date(selectedPreviousAnswer.capturedAt).toLocaleString()}
+                                            </p>
+
+                                            <div className="transcript-box history-media">
+                                                <div className="history-media-head">
+                                                    <h3>Recording</h3>
+                                                    <div
+                                                        className="history-speed-controls"
+                                                        role="group"
+                                                        aria-label="Video playback speed"
+                                                    >
+                                                        {[1, 1.5, 2, 3].map((rate) => (
+                                                            <button
+                                                                key={rate}
+                                                                type="button"
+                                                                className={`btn ghost history-speed-btn${historyPlaybackRate === rate ? ' active' : ''}`}
+                                                                onClick={() => setHistoryPlaybackRate(rate)}
+                                                                disabled={
+                                                                    !selectedHistoryMedia.videoUrl &&
+                                                                    !selectedHistoryMedia.audioUrl
+                                                                }
+                                                            >
+                                                                {rate}x
+                                                            </button>
+                                                        ))}
+                                                    </div>
                                                 </div>
-                                            )}
-                                            {!selectedPreviousAnswer.metrics &&
-                                                selectedPreviousAnswer.metricsText && (
-                                                    <p className="output-text">{selectedPreviousAnswer.metricsText}</p>
-                                                )}
-                                            {!selectedPreviousAnswer.metrics &&
-                                                !selectedPreviousAnswer.metricsText && (
-                                                    <p className="muted">No metrics available in this report.</p>
-                                                )}
-                                        </div>
 
-                                        <div className="transcript-box history-media">
-                                            <h3>Recording</h3>
-                                            {selectedHistoryMedia.videoUrl ? (
-                                                <video
-                                                    className="history-video"
-                                                    src={selectedHistoryMedia.videoUrl}
-                                                    controls
-                                                    preload="metadata"
-                                                />
-                                            ) : (
-                                                <p className="muted">No video recording found for this answer.</p>
-                                            )}
+                                                {selectedHistoryMedia.videoUrl ? (
+                                                    <video
+                                                        ref={historyVideoRef}
+                                                        className="history-video"
+                                                        src={selectedHistoryMedia.videoUrl}
+                                                        controls
+                                                        preload="metadata"
+                                                        onLoadedMetadata={() => {
+                                                            if (historyVideoRef.current) {
+                                                                historyVideoRef.current.playbackRate =
+                                                                    historyPlaybackRate
+                                                            }
+                                                        }}
+                                                    />
+                                                ) : (
+                                                    <p className="muted">No video recording found for this answer.</p>
+                                                )}
 
-                                            {selectedHistoryMedia.audioUrl ? (
-                                                <audio
-                                                    className="history-audio"
-                                                    src={selectedHistoryMedia.audioUrl}
-                                                    controls
-                                                    preload="metadata"
-                                                />
-                                            ) : (
-                                                <p className="muted">No audio recording found for this answer.</p>
-                                            )}
+                                                {!selectedHistoryMedia.videoUrl && selectedHistoryMedia.audioUrl ? (
+                                                    <audio
+                                                        ref={historyAudioRef}
+                                                        className="history-audio"
+                                                        src={selectedHistoryMedia.audioUrl}
+                                                        controls
+                                                        preload="metadata"
+                                                        onLoadedMetadata={() => {
+                                                            if (historyAudioRef.current) {
+                                                                historyAudioRef.current.playbackRate =
+                                                                    historyPlaybackRate
+                                                            }
+                                                        }}
+                                                    />
+                                                ) : !selectedHistoryMedia.videoUrl ? (
+                                                    <p className="muted">No audio recording found for this answer.</p>
+                                                ) : null}
+                                            </div>
+
+                                            <div className="transcript-box history-transcript">
+                                                <h3>Full Transcript</h3>
+                                                <p className="output-text">{selectedPreviousAnswer.transcript}</p>
+                                            </div>
+
+                                            <div className="transcript-box history-metrics">
+                                                <h3>Metrics</h3>
+                                                {selectedPreviousAnswer.metrics && (
+                                                    <div className="history-metrics-grid">
+                                                        {Object.entries(selectedPreviousAnswer.metrics).map(
+                                                            ([key, value]) => (
+                                                                <div key={key} className="history-metric-row">
+                                                                    <span className="metric-label">{key}</span>
+                                                                    <span>{String(value ?? 'n/a')}</span>
+                                                                </div>
+                                                            ),
+                                                        )}
+                                                    </div>
+                                                )}
+                                                {!selectedPreviousAnswer.metrics &&
+                                                    selectedPreviousAnswer.metricsText && (
+                                                        <p className="output-text">{selectedPreviousAnswer.metricsText}</p>
+                                                    )}
+                                                {!selectedPreviousAnswer.metrics &&
+                                                    !selectedPreviousAnswer.metricsText && (
+                                                        <p className="muted">No metrics available in this report.</p>
+                                                    )}
+                                            </div>
                                         </div>
-                                    </>
+                                    </div>
                                 ) : (
                                     <p className="muted">Select an answer from the overview to inspect details.</p>
                                 )}
@@ -2888,6 +2962,33 @@ function App() {
                         </p>
 
                         <div className="settings-section">
+                            <label className="label">Desktop Layout</label>
+                            <p className="muted">
+                                Choose how panels are arranged on desktop screens.
+                            </p>
+                            <div className="actions wrap">
+                                <button
+                                    type="button"
+                                    className="btn ghost"
+                                    onClick={() => setCenterCameraLayout(true)}
+                                    aria-pressed={centerCameraLayout}
+                                    title="Use one-column layout on desktop"
+                                >
+                                    One Column
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn ghost"
+                                    onClick={() => setCenterCameraLayout(false)}
+                                    aria-pressed={!centerCameraLayout}
+                                    title="Use two-column layout on desktop"
+                                >
+                                    Two Columns
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="settings-section">
                             <label className="label">Recording Save Folder</label>
                             <p className="muted">
                                 {recordingsFolderName
@@ -2900,7 +3001,7 @@ function App() {
                                 <button
                                     type="button"
                                     className="btn ghost"
-                                    onClick={selectRecordingsFolder}
+                                    onClick={openSelectRecordingsFolderModal}
                                     disabled={!fileSystemAccessSupported}
                                 >
                                     {recordingsFolderName ? 'Change Save Folder' : 'Select Save Folder'}
@@ -2946,6 +3047,34 @@ function App() {
                                 onClick={() => setConfirmRemoveOpen(false)}
                             >
                                 Keep key
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {confirmFolderSelectOpen && (
+                <div className="overlay" role="presentation">
+                    <div
+                        className="modal compact"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="folder-select-title"
+                    >
+                        <h2 id="folder-select-title">Select Save Folder</h2>
+                        <p className="muted">
+                            Select a local empty folder to save the output and camera/audio recordings. This folder can be changed in settings screen.
+                        </p>
+                        <div className="actions">
+                            <button type="button" className="btn" onClick={selectRecordingsFolder}>
+                                Continue
+                            </button>
+                            <button
+                                type="button"
+                                className="btn ghost"
+                                onClick={() => setConfirmFolderSelectOpen(false)}
+                            >
+                                Cancel
                             </button>
                         </div>
                     </div>
