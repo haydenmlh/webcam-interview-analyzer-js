@@ -38,6 +38,7 @@ const HAND_FACE_TOUCH_RATIO = 0.12
 const SHOULDER_SHIFT_ALERT_PCT = 30
 const SHOULDER_TILT_ALERT_DEG = 12
 const SHOULDER_ROTATION_ALERT_DEG = 18
+const GAZE_CENTER_DEVIATION_THRESHOLD_PCT = 25
 
 function validateKeyFormat(rawValue) {
     const value = rawValue.trim()
@@ -200,6 +201,53 @@ function pickSupportedAudioMimeType() {
     const preferred = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']
     const supported = preferred.find((value) => MediaRecorder.isTypeSupported(value))
     return supported || ''
+}
+
+function toFixed1(value) {
+    return Number.isFinite(value) ? value.toFixed(1) : '0.0'
+}
+
+function countWords(text) {
+    const words = text.trim().match(/\b[\p{L}\p{N}'][\p{L}\p{N}'-]*/gu)
+    return words ? words.length : 0
+}
+
+function countHesitations(text) {
+    const matches = text.match(/\b(um+|uh+|erm+|hmm+|mm+)\b/gi)
+    return matches ? matches.length : 0
+}
+
+function formatTimestampList(secondsList) {
+    if (!secondsList.length) return 'none'
+    return secondsList.map((value) => `${toFixed1(value)}s`).join(', ')
+}
+
+function buildOutputText({ capturedAt, question, answer, metrics }) {
+    return [
+        'Transcript Output',
+        `Captured At: ${capturedAt}`,
+        `Question: ${question || '(none)'}`,
+        '',
+        'Answer:',
+        answer || '(no transcript captured)',
+        '',
+        'Interview Metrics',
+        `- Answer Length: ${toFixed1(metrics.answerLengthSec)}s`,
+        `- WPM: ${toFixed1(metrics.wpm)}`,
+        `- Hesitations Count: ${metrics.hesitationsCount}`,
+        `- Number of Gaze Deviations from Center: ${metrics.gazeDeviationCount}`,
+        `- Gaze Center Time: ${toFixed1(metrics.gazeCenterSec)}s / ${toFixed1(metrics.answerLengthSec)}s (${toFixed1(metrics.gazeCenterPct)}%)`,
+        `- Prolonged Eye-Closure Duration: ${toFixed1(metrics.prolongedClosureSec)}s (${toFixed1(metrics.prolongedClosurePct)}%)`,
+        `- Prolonged Eye-Closure Events: ${metrics.prolongedClosureEvents}`,
+        `- Prolonged Eye-Closure Timestamps: ${formatTimestampList(metrics.prolongedClosureTimestampsSec)}`,
+        `- Hand-to-Face Touch Frequency: ${toFixed1(metrics.handFaceTouchPerMin)}/min`,
+        `- Hand-to-Face Touch Duration: ${toFixed1(metrics.handFaceTouchDurationSec)}s`,
+        `- Hand-to-Face Regions: ${metrics.handFaceTouchRegions}`,
+        `- Shoulder Side Shift Peak: ${toFixed1(metrics.shoulderShiftPeakPct)}%`,
+        `- Shoulder Tilt Peak: ${toFixed1(metrics.shoulderTiltPeakDeg)}°`,
+        `- Shoulder Rotation Peak: ${toFixed1(metrics.shoulderRotationPeakDeg)}°`,
+        `- Shoulder Rotation Status: ${metrics.shoulderRotationStatus}`,
+    ].join('\n')
 }
 
 function floatTo16BitPCM(input) {
@@ -471,10 +519,24 @@ function App() {
     const sessionStartedAtRef = useRef(null)
     const debugEnabledRef = useRef(false)
     const recordingsFolderRef = useRef(null)
+    const recordingActiveRef = useRef(false)
+    const recordingStartedAtPerfRef = useRef(0)
+    const recordingLastFrameAtPerfRef = useRef(0)
     const shoulderBaselineRef = useRef({
         centerX: null,
         tiltDeg: null,
     })
+    const gazeDeviationCountRef = useRef(0)
+    const gazeCenteredTimeMsRef = useRef(0)
+    const lastGazeCenteredRef = useRef(null)
+    const prolongedClosureTotalMsRef = useRef(0)
+    const prolongedClosureTimestampsSecRef = useRef([])
+    const touchCountDuringRecordingRef = useRef(0)
+    const touchDurationMsRef = useRef(0)
+    const touchStartedAtMsRef = useRef(0)
+    const shoulderPeakDriftPctRef = useRef(0)
+    const shoulderPeakTiltDegRef = useRef(0)
+    const shoulderPeakRotationDegRef = useRef(0)
 
     const blinkTrackerRef = useRef({
         closed: false,
@@ -523,6 +585,7 @@ function App() {
     const [transcript, setTranscript] = useState('')
     const [recordedAudioBlob, setRecordedAudioBlob] = useState(null)
     const [recordingsFolderName, setRecordingsFolderName] = useState('')
+    const [outputText, setOutputText] = useState('')
 
     const hasKey = savedKey.length > 0
     const maskedSummary = hasKey
@@ -710,6 +773,22 @@ function App() {
         }
     }
 
+    function resetInterviewTracking() {
+        recordingStartedAtPerfRef.current = 0
+        recordingLastFrameAtPerfRef.current = 0
+        gazeDeviationCountRef.current = 0
+        gazeCenteredTimeMsRef.current = 0
+        lastGazeCenteredRef.current = null
+        prolongedClosureTotalMsRef.current = 0
+        prolongedClosureTimestampsSecRef.current = []
+        touchCountDuringRecordingRef.current = 0
+        touchDurationMsRef.current = 0
+        touchStartedAtMsRef.current = 0
+        shoulderPeakDriftPctRef.current = 0
+        shoulderPeakTiltDegRef.current = 0
+        shoulderPeakRotationDegRef.current = 0
+    }
+
     function runAnalysisLoop() {
         const video = videoRef.current
         const faceLandmarker = faceLandmarkerRef.current
@@ -784,6 +863,29 @@ function App() {
                         ? null
                         : Math.round(clamp01(1 - eyeContact) * 100)
 
+                if (recordingActiveRef.current) {
+                    const lastFrameAt = recordingLastFrameAtPerfRef.current
+                    const deltaMs = lastFrameAt > 0 ? Math.max(0, nowMs - lastFrameAt) : 0
+                    recordingLastFrameAtPerfRef.current = nowMs
+
+                    if (gazeDeviation != null) {
+                        const centered =
+                            gazeDeviation <= GAZE_CENTER_DEVIATION_THRESHOLD_PCT
+                        if (lastGazeCenteredRef.current === null) {
+                            lastGazeCenteredRef.current = centered
+                        } else if (lastGazeCenteredRef.current && !centered) {
+                            gazeDeviationCountRef.current += 1
+                            lastGazeCenteredRef.current = centered
+                        } else if (!lastGazeCenteredRef.current && centered) {
+                            lastGazeCenteredRef.current = centered
+                        }
+
+                        if (centered) {
+                            gazeCenteredTimeMsRef.current += deltaMs
+                        }
+                    }
+                }
+
                 const closureRatio = computeEyeClosureRatio(mainFace)
                 const closed = closureRatio != null && closureRatio < EYE_CLOSED_RATIO
                 const blinkTracker = blinkTrackerRef.current
@@ -796,6 +898,15 @@ function App() {
                     const duration = nowMs - blinkTracker.closedAt
                     if (duration >= BLINK_MIN_MS && duration <= BLINK_MAX_MS) {
                         setBlinkCount((prev) => prev + 1)
+                    }
+                    if (duration >= PROLONGED_CLOSURE_MS && recordingActiveRef.current) {
+                        prolongedClosureTotalMsRef.current += duration
+                        if (recordingStartedAtPerfRef.current > 0) {
+                            prolongedClosureTimestampsSecRef.current.push(
+                                (blinkTracker.closedAt - recordingStartedAtPerfRef.current) /
+                                1000,
+                            )
+                        }
                     }
                     blinkTracker.closed = false
                     blinkTracker.closedAt = 0
@@ -812,6 +923,16 @@ function App() {
                 const touchTracker = touchTrackerRef.current
                 if (touching && !touchTracker.touching) {
                     setTouchCount((prev) => prev + 1)
+                    if (recordingActiveRef.current) {
+                        touchCountDuringRecordingRef.current += 1
+                        touchStartedAtMsRef.current = nowMs
+                    }
+                }
+                if (!touching && touchTracker.touching && recordingActiveRef.current) {
+                    if (touchStartedAtMsRef.current > 0) {
+                        touchDurationMsRef.current += nowMs - touchStartedAtMsRef.current
+                        touchStartedAtMsRef.current = 0
+                    }
                 }
                 touchTracker.touching = touching
 
@@ -866,6 +987,27 @@ function App() {
                                 (Math.atan2(shoulderDepthDelta, shoulderWidth) * 180) /
                                 Math.PI,
                             )
+                        }
+
+                        if (recordingActiveRef.current) {
+                            if (frameShoulderDriftPct != null) {
+                                shoulderPeakDriftPctRef.current = Math.max(
+                                    shoulderPeakDriftPctRef.current,
+                                    frameShoulderDriftPct,
+                                )
+                            }
+                            if (frameShoulderTiltDeltaDeg != null) {
+                                shoulderPeakTiltDegRef.current = Math.max(
+                                    shoulderPeakTiltDegRef.current,
+                                    frameShoulderTiltDeltaDeg,
+                                )
+                            }
+                            if (frameShoulderRotationDeg != null) {
+                                shoulderPeakRotationDegRef.current = Math.max(
+                                    shoulderPeakRotationDegRef.current,
+                                    frameShoulderRotationDeg,
+                                )
+                            }
                         }
                     }
                 }
@@ -929,6 +1071,7 @@ function App() {
     function stopCamera() {
         stopAnalysisLoop()
         stopCameraStream()
+        recordingActiveRef.current = false
         setCameraStatus('idle')
         setAnalysisStatus('idle')
         setFacesDetected(0)
@@ -1241,13 +1384,18 @@ function App() {
         try {
             setBanner('')
             setTranscript('Recording answer...')
+            setOutputText('')
             sessionStartedAtRef.current = new Date().toISOString()
+            resetInterviewTracking()
 
             const stream = await navigator.mediaDevices.getUserMedia({
                 audio: true,
                 video: false,
             })
             audioStreamRef.current = stream
+            recordingActiveRef.current = true
+            recordingStartedAtPerfRef.current = performance.now()
+            recordingLastFrameAtPerfRef.current = recordingStartedAtPerfRef.current
 
             const mimeType = pickSupportedAudioMimeType()
             const recorder = mimeType
@@ -1266,6 +1414,7 @@ function App() {
             setIsRecording(true)
             setToast('Recording started.')
         } catch {
+            recordingActiveRef.current = false
             setBanner('Microphone access failed. Allow microphone permission and try again.')
             setTranscript('')
             stopAudioStream()
@@ -1284,6 +1433,8 @@ function App() {
             recorder.onstop = resolve
             recorder.stop()
         })
+
+        recordingActiveRef.current = false
 
         stopAudioStream()
 
@@ -1304,9 +1455,72 @@ function App() {
 
             const text = await transcribeAudioBlob(rawAudioBlob)
             setTranscript(text)
+
+            const answerLengthSec = Math.max(
+                0,
+                (performance.now() - recordingStartedAtPerfRef.current) / 1000,
+            )
+            const words = countWords(text)
+            const wpm = answerLengthSec > 0 ? words / (answerLengthSec / 60) : 0
+            const hesitationsCount = countHesitations(text)
+            const gazeCenterSec = gazeCenteredTimeMsRef.current / 1000
+            const gazeCenterPct =
+                answerLengthSec > 0 ? (gazeCenterSec / answerLengthSec) * 100 : 0
+            const prolongedClosureSec = prolongedClosureTotalMsRef.current / 1000
+            const prolongedClosurePct =
+                answerLengthSec > 0
+                    ? (prolongedClosureSec / answerLengthSec) * 100
+                    : 0
+
+            if (touchStartedAtMsRef.current > 0) {
+                touchDurationMsRef.current +=
+                    performance.now() - touchStartedAtMsRef.current
+                touchStartedAtMsRef.current = 0
+            }
+
+            const handFaceTouchDurationSec = touchDurationMsRef.current / 1000
+            const handFaceTouchPerMin =
+                answerLengthSec > 0
+                    ? touchCountDuringRecordingRef.current / (answerLengthSec / 60)
+                    : 0
+
+            const shoulderRotationStatusFromPeak =
+                shoulderPeakRotationDegRef.current >= SHOULDER_ROTATION_ALERT_DEG
+                    ? 'rotating too much'
+                    : 'facing forward'
+
+            setOutputText(
+                buildOutputText({
+                    capturedAt: new Date().toISOString(),
+                    question: questionInput.trim(),
+                    answer: text,
+                    metrics: {
+                        answerLengthSec,
+                        wpm,
+                        hesitationsCount,
+                        gazeDeviationCount: gazeDeviationCountRef.current,
+                        gazeCenterSec,
+                        gazeCenterPct,
+                        prolongedClosureSec,
+                        prolongedClosurePct,
+                        prolongedClosureEvents:
+                            prolongedClosureTimestampsSecRef.current.length,
+                        prolongedClosureTimestampsSec:
+                            prolongedClosureTimestampsSecRef.current,
+                        handFaceTouchPerMin,
+                        handFaceTouchDurationSec,
+                        handFaceTouchRegions: 'none',
+                        shoulderShiftPeakPct: shoulderPeakDriftPctRef.current,
+                        shoulderTiltPeakDeg: shoulderPeakTiltDegRef.current,
+                        shoulderRotationPeakDeg: shoulderPeakRotationDegRef.current,
+                        shoulderRotationStatus: shoulderRotationStatusFromPeak,
+                    },
+                }),
+            )
             setToast('Transcription completed.')
         } catch (error) {
             setTranscript('')
+            setOutputText('')
             setBanner(error.message || 'Transcription failed. Try again.')
             setToast(error.message || 'Transcription failed. Try again.')
         } finally {
@@ -1553,10 +1767,10 @@ function App() {
                     {banner && <p className="banner">{banner}</p>}
 
                     <div className="transcript-box">
-                        <h3>Transcript</h3>
-                        <p className="muted">
-                            {transcript ||
-                                'No transcript yet. Start recording to capture and transcribe your answer.'}
+                        <h3>Output</h3>
+                        <p className="output-text">
+                            {outputText ||
+                                'No output yet. Start recording to capture a transcript and interview metrics.'}
                         </p>
                     </div>
 

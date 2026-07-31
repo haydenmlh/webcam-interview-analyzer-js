@@ -246,6 +246,13 @@ h3 {
     background: var(--ghost-bg);
 }
 
+.output-text {
+    margin: 0.6rem 0 0;
+    color: var(--ink-900);
+    white-space: pre-wrap;
+    line-height: 1.45;
+}
+
 .face-detected-text {
     margin: 0.85rem 0 0;
     color: var(--ink-700);

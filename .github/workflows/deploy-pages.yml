@@ -31,6 +31,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Include GPL-3.0 license in published site
+        run: cp LICENSE dist/LICENSE
+
       - name: Publish to external pages repository
         uses: peaceiris/actions-gh-pages@v4
         with:
