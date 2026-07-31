@@ -2292,16 +2292,21 @@ function App() {
                 (performance.now() - recordingStartedAtPerfRef.current) / 1000,
             )
             const words = countWords(text)
-            const wpm = answerLengthSec > 0 ? words / (answerLengthSec / 60) : 0
+            const wpmRaw = answerLengthSec > 0 ? words / (answerLengthSec / 60) : 0
             const hesitationsCount = countHesitations(text)
-            const gazeCenterSec = gazeCenteredTimeMsRef.current / 1000
-            const gazeCenterPct =
-                answerLengthSec > 0 ? (gazeCenterSec / answerLengthSec) * 100 : 0
+            const gazeCenterSecRaw = gazeCenteredTimeMsRef.current / 1000
+            const gazeCenterPctRaw =
+                answerLengthSec > 0 ? (gazeCenterSecRaw / answerLengthSec) * 100 : 0
             const prolongedClosureSec = prolongedClosureTotalMsRef.current / 1000
             const prolongedClosurePct =
                 answerLengthSec > 0
                     ? (prolongedClosureSec / answerLengthSec) * 100
                     : 0
+
+            const answerLengthSecRounded = Math.round(answerLengthSec * 10) / 10
+            const gazeCenterSecRounded = Math.round(gazeCenterSecRaw * 10) / 10
+            const wpm = Math.round(wpmRaw)
+            const gazeCenterPct = Math.round(gazeCenterPctRaw)
 
             if (touchStartedAtMsRef.current > 0) {
                 touchDurationMsRef.current +=
@@ -2327,12 +2332,12 @@ function App() {
             const capturedAtIso = new Date().toISOString()
             const trimmedQuestion = questionInput.trim()
             const interviewMetrics = {
-                answerLengthSec,
+                answerLengthSec: answerLengthSecRounded,
                 wpm,
                 hesitationsCount,
                 gazeDeviationCount: gazeDeviationCountRef.current,
                 gazeDeviationDirectionCounts: { ...gazeDirectionCountsRef.current },
-                gazeCenterSec,
+                gazeCenterSec: gazeCenterSecRounded,
                 gazeCenterPct,
                 prolongedClosureSec,
                 prolongedClosurePct,
@@ -2433,7 +2438,7 @@ function App() {
     return (
         <div className="app-shell">
             <header className="topbar">
-                <h1>Mock Interview Analyzer</h1>
+                <h1>Mock Interviewer</h1>
                 <div className="topbar-actions">
                     <button
                         type="button"
@@ -2766,6 +2771,10 @@ function App() {
                     </div>
                 </section>
             </main>
+
+            <footer className="app-footer">
+                <p>Version 1.0.1</p>
+            </footer>
 
             {historyModalOpen && (
                 <div
