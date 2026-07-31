@@ -192,6 +192,10 @@ h3 {
     pointer-events: none;
 }
 
+.camera-overlay.hidden {
+    opacity: 0;
+}
+
 .camera-empty {
     display: grid;
     place-items: center;

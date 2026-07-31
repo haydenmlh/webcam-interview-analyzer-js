@@ -3,11 +3,16 @@ import {
     FaceLandmarker,
     FilesetResolver,
     HandLandmarker,
+    PoseLandmarker,
 } from '@mediapipe/tasks-vision'
+import lamejs from 'lamejs'
 import './App.css'
 
 const STORAGE_KEY = 'mia.deepgram.apiKey'
 const STORAGE_VALIDATED_AT = 'mia.deepgram.lastValidatedAt'
+const HANDLE_DB_NAME = 'mia-handle-db'
+const HANDLE_STORE_NAME = 'handles'
+const RECORDINGS_FOLDER_KEY = 'recordings-folder'
 
 const VALIDATION_RECOMMEND_DAYS = 30
 const INITIAL_NOW_MS = Date.now()
@@ -18,6 +23,8 @@ const DEFAULT_FACE_MODEL_URL =
     'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task'
 const DEFAULT_HAND_MODEL_URL =
     'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task'
+const DEFAULT_POSE_MODEL_URL =
+    'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task'
 const DEFAULT_DEEPGRAM_LISTEN_URL =
     'https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&filler_words=true'
 const DEFAULT_DEEPGRAM_SPEAK_URL =
@@ -28,6 +35,9 @@ const BLINK_MAX_MS = 450
 const PROLONGED_CLOSURE_MS = 800
 const EYE_CLOSED_RATIO = 0.18
 const HAND_FACE_TOUCH_RATIO = 0.12
+const SHOULDER_SHIFT_ALERT_PCT = 30
+const SHOULDER_TILT_ALERT_DEG = 12
+const SHOULDER_ROTATION_ALERT_DEG = 18
 
 function validateKeyFormat(rawValue) {
     const value = rawValue.trim()
@@ -103,10 +113,144 @@ function clearSavedValue(keyName) {
     }
 }
 
+function isFileSystemAccessSupported() {
+    return (
+        typeof window !== 'undefined' &&
+        'showDirectoryPicker' in window &&
+        'indexedDB' in window
+    )
+}
+
+function openHandleDb() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open(HANDLE_DB_NAME, 1)
+        request.onupgradeneeded = () => {
+            const db = request.result
+            if (!db.objectStoreNames.contains(HANDLE_STORE_NAME)) {
+                db.createObjectStore(HANDLE_STORE_NAME)
+            }
+        }
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () => reject(request.error)
+    })
+}
+
+async function savePersistedFolderHandle(handle) {
+    const db = await openHandleDb()
+    await new Promise((resolve, reject) => {
+        const tx = db.transaction(HANDLE_STORE_NAME, 'readwrite')
+        tx.objectStore(HANDLE_STORE_NAME).put(handle, RECORDINGS_FOLDER_KEY)
+        tx.oncomplete = resolve
+        tx.onerror = () => reject(tx.error)
+        tx.onabort = () => reject(tx.error)
+    })
+    db.close()
+}
+
+async function loadPersistedFolderHandle() {
+    const db = await openHandleDb()
+    const handle = await new Promise((resolve, reject) => {
+        const tx = db.transaction(HANDLE_STORE_NAME, 'readonly')
+        const request = tx.objectStore(HANDLE_STORE_NAME).get(RECORDINGS_FOLDER_KEY)
+        request.onsuccess = () => resolve(request.result || null)
+        request.onerror = () => reject(request.error)
+    })
+    db.close()
+    return handle
+}
+
+async function clearPersistedFolderHandle() {
+    const db = await openHandleDb()
+    await new Promise((resolve, reject) => {
+        const tx = db.transaction(HANDLE_STORE_NAME, 'readwrite')
+        tx.objectStore(HANDLE_STORE_NAME).delete(RECORDINGS_FOLDER_KEY)
+        tx.oncomplete = resolve
+        tx.onerror = () => reject(tx.error)
+        tx.onabort = () => reject(tx.error)
+    })
+    db.close()
+}
+
+async function ensureDirectoryPermission(handle) {
+    if (!handle) return false
+    if (handle.queryPermission) {
+        const current = await handle.queryPermission({ mode: 'readwrite' })
+        if (current === 'granted') return true
+    }
+    if (!handle.requestPermission) return false
+    const result = await handle.requestPermission({ mode: 'readwrite' })
+    return result === 'granted'
+}
+
+function buildAudioFileName(blobType) {
+    const now = new Date()
+    const stamp = now.toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19)
+    const extension =
+        blobType.includes('mpeg') || blobType.includes('mp3')
+            ? 'mp3'
+            : blobType.includes('mp4') || blobType.includes('m4a')
+                ? 'm4a'
+                : blobType.includes('ogg')
+                    ? 'ogg'
+                    : 'webm'
+    return `session-audio-${stamp}.${extension}`
+}
+
 function pickSupportedAudioMimeType() {
     const preferred = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']
     const supported = preferred.find((value) => MediaRecorder.isTypeSupported(value))
     return supported || ''
+}
+
+function floatTo16BitPCM(input) {
+    const output = new Int16Array(input.length)
+    for (let i = 0; i < input.length; i += 1) {
+        const sample = Math.max(-1, Math.min(1, input[i]))
+        output[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff
+    }
+    return output
+}
+
+function encodeAudioBufferToMp3(audioBuffer, kbps = 128) {
+    const channels = Math.min(audioBuffer.numberOfChannels, 2)
+    const sampleRate = audioBuffer.sampleRate
+    const encoder = new lamejs.Mp3Encoder(channels, sampleRate, kbps)
+    const blockSize = 1152
+
+    const left = floatTo16BitPCM(audioBuffer.getChannelData(0))
+    const right =
+        channels > 1
+            ? floatTo16BitPCM(audioBuffer.getChannelData(1))
+            : null
+
+    const output = []
+    for (let i = 0; i < left.length; i += blockSize) {
+        const leftChunk = left.subarray(i, i + blockSize)
+        const encoded =
+            channels > 1 && right
+                ? encoder.encodeBuffer(leftChunk, right.subarray(i, i + blockSize))
+                : encoder.encodeBuffer(leftChunk)
+        if (encoded.length > 0) output.push(new Int8Array(encoded))
+    }
+
+    const tail = encoder.flush()
+    if (tail.length > 0) output.push(new Int8Array(tail))
+
+    return new Blob(output, { type: 'audio/mpeg' })
+}
+
+async function convertAudioBlobToMp3(audioBlob) {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext
+    if (!AudioCtx) throw new Error('AudioContext is unavailable in this browser.')
+
+    const audioCtx = new AudioCtx()
+    try {
+        const arrayBuffer = await audioBlob.arrayBuffer()
+        const decoded = await audioCtx.decodeAudioData(arrayBuffer.slice(0))
+        return encodeAudioBufferToMp3(decoded)
+    } finally {
+        await audioCtx.close()
+    }
 }
 
 function safeTranscriptFromDeepgram(payload) {
@@ -117,15 +261,42 @@ function safeTranscriptFromDeepgram(payload) {
     )
 }
 
-function drawLandmarkSet(ctx, points, width, height, color) {
+function drawLandmarkSet(ctx, points, width, height, color, radius = 2.4) {
     ctx.fillStyle = color
     for (const point of points) {
         const x = point.x * width
         const y = point.y * height
         ctx.beginPath()
-        ctx.arc(x, y, 1.8, 0, Math.PI * 2)
+        ctx.arc(x, y, radius, 0, Math.PI * 2)
         ctx.fill()
     }
+}
+
+function drawFaceBoundingBox(ctx, points, width, height, color) {
+    if (!points?.length) return
+
+    let minX = 1
+    let minY = 1
+    let maxX = 0
+    let maxY = 0
+
+    for (const point of points) {
+        minX = Math.min(minX, point.x)
+        minY = Math.min(minY, point.y)
+        maxX = Math.max(maxX, point.x)
+        maxY = Math.max(maxY, point.y)
+    }
+
+    const boxX = minX * width
+    const boxY = minY * height
+    const boxW = (maxX - minX) * width
+    const boxH = (maxY - minY) * height
+
+    if (boxW <= 0 || boxH <= 0) return
+
+    ctx.strokeStyle = color
+    ctx.lineWidth = 2
+    ctx.strokeRect(boxX, boxY, boxW, boxH)
 }
 
 function averageX(landmarks, indexes) {
@@ -143,6 +314,12 @@ function distance2d(a, b) {
 
 function clamp01(value) {
     return Math.max(0, Math.min(1, value))
+}
+
+function normalizedAngleDiffDegrees(a, b) {
+    let diff = Math.abs(a - b) % 360
+    if (diff > 180) diff = 360 - diff
+    return diff
 }
 
 function computeEyeContactScore(faceLandmarks) {
@@ -263,6 +440,12 @@ function toSessionTextReport(report) {
         `- Prolonged eye closure events: ${report.metrics.prolongedEyeClosureCount}`,
         `- Hand-to-face touches: ${report.metrics.handToFaceTouchCount}`,
         `- Currently touching face: ${report.metrics.isTouchingFace ? 'yes' : 'no'}`,
+        `- Shoulder side shift: ${report.metrics.shoulderDriftPercent ?? 'n/a'}%`,
+        `- Shoulder side shift status: ${report.metrics.shoulderShiftStatus || 'n/a'}`,
+        `- Shoulder tilt delta: ${report.metrics.shoulderTiltDeltaDegrees ?? 'n/a'}°`,
+        `- Shoulder tilt status: ${report.metrics.shoulderTiltStatus || 'n/a'}`,
+        `- Shoulder rotation (yaw proxy): ${report.metrics.shoulderRotationDegrees ?? 'n/a'}°`,
+        `- Shoulder rotation status: ${report.metrics.shoulderRotationStatus || 'n/a'}`,
         '',
         'Transcript',
         report.transcript || '(no transcript captured)',
@@ -280,11 +463,18 @@ function App() {
     const lastVideoTimeRef = useRef(-1)
     const faceLandmarkerRef = useRef(null)
     const handLandmarkerRef = useRef(null)
+    const poseLandmarkerRef = useRef(null)
     const uiUpdateAtRef = useRef(0)
     const recorderRef = useRef(null)
     const chunksRef = useRef([])
     const questionAudioRef = useRef(null)
     const sessionStartedAtRef = useRef(null)
+    const debugEnabledRef = useRef(false)
+    const recordingsFolderRef = useRef(null)
+    const shoulderBaselineRef = useRef({
+        centerX: null,
+        tiltDeg: null,
+    })
 
     const blinkTrackerRef = useRef({
         closed: false,
@@ -322,6 +512,9 @@ function App() {
     const [prolongedClosureCount, setProlongedClosureCount] = useState(0)
     const [touchCount, setTouchCount] = useState(0)
     const [isTouchingFace, setIsTouchingFace] = useState(false)
+    const [shoulderDriftPct, setShoulderDriftPct] = useState(null)
+    const [shoulderTiltDeltaDeg, setShoulderTiltDeltaDeg] = useState(null)
+    const [shoulderRotationDeg, setShoulderRotationDeg] = useState(null)
 
     const [isRecording, setIsRecording] = useState(false)
     const [isTranscribing, setIsTranscribing] = useState(false)
@@ -329,6 +522,7 @@ function App() {
     const [questionInput, setQuestionInput] = useState('')
     const [transcript, setTranscript] = useState('')
     const [recordedAudioBlob, setRecordedAudioBlob] = useState(null)
+    const [recordingsFolderName, setRecordingsFolderName] = useState('')
 
     const hasKey = savedKey.length > 0
     const maskedSummary = hasKey
@@ -345,6 +539,8 @@ function App() {
         return ageMs > VALIDATION_RECOMMEND_DAYS * 24 * 60 * 60 * 1000
     }, [lastValidatedAt])
 
+    const fileSystemAccessSupported = useMemo(() => isFileSystemAccessSupported(), [])
+
     useEffect(() => {
         if (!toast) return undefined
         const timerId = window.setTimeout(() => setToast(''), 3500)
@@ -352,10 +548,43 @@ function App() {
     }, [toast])
 
     useEffect(() => {
+        let cancelled = false
+
+        if (!fileSystemAccessSupported) return () => { }
+
+        async function restoreFolderHandle() {
+            try {
+                const handle = await loadPersistedFolderHandle()
+                if (!handle) return
+
+                const granted = await ensureDirectoryPermission(handle)
+                if (!granted) return
+
+                recordingsFolderRef.current = handle
+                if (!cancelled) {
+                    setRecordingsFolderName(handle.name || 'Selected folder')
+                }
+            } catch {
+                // Ignore persistence restore issues and continue without a folder.
+            }
+        }
+
+        restoreFolderHandle()
+
+        return () => {
+            cancelled = true
+        }
+    }, [fileSystemAccessSupported])
+
+    useEffect(() => {
         if (!showKey) return undefined
         const timerId = window.setTimeout(() => setShowKey(false), 20000)
         return () => window.clearTimeout(timerId)
     }, [showKey, keyInput])
+
+    useEffect(() => {
+        debugEnabledRef.current = debugEnabled
+    }, [debugEnabled])
 
     useEffect(() => {
         function onEscape(event) {
@@ -378,6 +607,7 @@ function App() {
             stopAudioStream()
             faceLandmarkerRef.current?.close()
             handLandmarkerRef.current?.close()
+            poseLandmarkerRef.current?.close()
         }
     }, [])
 
@@ -403,7 +633,13 @@ function App() {
     }
 
     async function ensureLandmarkers() {
-        if (faceLandmarkerRef.current && handLandmarkerRef.current) return
+        if (
+            faceLandmarkerRef.current &&
+            handLandmarkerRef.current &&
+            poseLandmarkerRef.current
+        ) {
+            return
+        }
 
         setAnalysisStatus('loading')
 
@@ -437,6 +673,19 @@ function App() {
             },
         )
 
+        poseLandmarkerRef.current = await PoseLandmarker.createFromOptions(
+            wasmFileset,
+            {
+                baseOptions: {
+                    modelAssetPath:
+                        import.meta.env.VITE_POSE_LANDMARKER_MODEL_URL ||
+                        DEFAULT_POSE_MODEL_URL,
+                },
+                runningMode: 'VIDEO',
+                numPoses: 1,
+            },
+        )
+
         setAnalysisStatus('ready')
     }
 
@@ -452,28 +701,40 @@ function App() {
         setProlongedClosureCount(0)
         setTouchCount(0)
         setIsTouchingFace(false)
+        setShoulderDriftPct(null)
+        setShoulderTiltDeltaDeg(null)
+        setShoulderRotationDeg(null)
+        shoulderBaselineRef.current = {
+            centerX: null,
+            tiltDeg: null,
+        }
     }
 
     function runAnalysisLoop() {
         const video = videoRef.current
-        const canvas = overlayRef.current
         const faceLandmarker = faceLandmarkerRef.current
         const handLandmarker = handLandmarkerRef.current
+        const poseLandmarker = poseLandmarkerRef.current
 
-        if (!video || !canvas || !faceLandmarker || !handLandmarker) return
+        if (!video || !faceLandmarker || !handLandmarker || !poseLandmarker) return
 
         const tick = () => {
-            if (!videoRef.current || !overlayRef.current) return
+            if (!videoRef.current) return
 
             const frameVideo = videoRef.current
             const frameCanvas = overlayRef.current
-            const ctx = frameCanvas.getContext('2d')
-            if (!ctx) return
+            const ctx = frameCanvas?.getContext('2d') || null
 
             const width = frameVideo.videoWidth || 960
             const height = frameVideo.videoHeight || 540
-            frameCanvas.width = width
-            frameCanvas.height = height
+            if (frameCanvas) {
+                if (frameCanvas.width !== width) {
+                    frameCanvas.width = width
+                }
+                if (frameCanvas.height !== height) {
+                    frameCanvas.height = height
+                }
+            }
 
             if (
                 frameVideo.readyState >= 2 &&
@@ -484,18 +745,35 @@ function App() {
 
                 const faceResult = faceLandmarker.detectForVideo(frameVideo, nowMs)
                 const handResult = handLandmarker.detectForVideo(frameVideo, nowMs)
+                const poseResult = poseLandmarker.detectForVideo(frameVideo, nowMs)
 
-                ctx.clearRect(0, 0, width, height)
+                if (ctx) {
+                    ctx.clearRect(0, 0, width, height)
+                }
 
                 const faceLandmarks = faceResult?.faceLandmarks || []
                 const handLandmarks = handResult?.landmarks || []
+                const poseLandmarks = poseResult?.landmarks || []
 
-                if (debugEnabled) {
+                if (debugEnabledRef.current && ctx) {
                     for (const landmarkSet of faceLandmarks) {
                         drawLandmarkSet(ctx, landmarkSet, width, height, '#22a7a6')
+                        drawFaceBoundingBox(ctx, landmarkSet, width, height, '#b9f3f2')
                     }
                     for (const landmarkSet of handLandmarks) {
-                        drawLandmarkSet(ctx, landmarkSet, width, height, '#e77e23')
+                        drawLandmarkSet(ctx, landmarkSet, width, height, '#e77e23', 2.8)
+                    }
+                    for (const landmarkSet of poseLandmarks) {
+                        const leftShoulder = landmarkSet[11]
+                        const rightShoulder = landmarkSet[12]
+                        drawLandmarkSet(
+                            ctx,
+                            [leftShoulder, rightShoulder].filter(Boolean),
+                            width,
+                            height,
+                            '#f5dc6d',
+                            4.4,
+                        )
                     }
                 }
 
@@ -537,6 +815,61 @@ function App() {
                 }
                 touchTracker.touching = touching
 
+                const mainPose = poseLandmarks[0]
+                let frameShoulderDriftPct = null
+                let frameShoulderTiltDeltaDeg = null
+                let frameShoulderRotationDeg = null
+                if (mainPose) {
+                    const leftShoulder = mainPose[11]
+                    const rightShoulder = mainPose[12]
+                    if (leftShoulder && rightShoulder) {
+                        const shoulderWidth = Math.abs(rightShoulder.x - leftShoulder.x)
+                        const centerX = (leftShoulder.x + rightShoulder.x) / 2
+                        const tiltDeg =
+                            (Math.atan2(
+                                rightShoulder.y - leftShoulder.y,
+                                rightShoulder.x - leftShoulder.x,
+                            ) *
+                                180) /
+                            Math.PI
+
+                        if (shoulderBaselineRef.current.centerX == null) {
+                            shoulderBaselineRef.current.centerX = centerX
+                        }
+                        if (shoulderBaselineRef.current.tiltDeg == null) {
+                            shoulderBaselineRef.current.tiltDeg = tiltDeg
+                        }
+
+                        if (shoulderWidth > 0) {
+                            frameShoulderDriftPct = Math.round(
+                                (Math.abs(
+                                    centerX - shoulderBaselineRef.current.centerX,
+                                ) /
+                                    shoulderWidth) *
+                                100,
+                            )
+                        }
+
+                        frameShoulderTiltDeltaDeg = Math.round(
+                            normalizedAngleDiffDegrees(
+                                tiltDeg,
+                                shoulderBaselineRef.current.tiltDeg,
+                            ),
+                        )
+
+                        // Yaw proxy: larger left/right shoulder depth difference implies body rotation.
+                        const shoulderDepthDelta = Math.abs(
+                            (rightShoulder.z ?? 0) - (leftShoulder.z ?? 0),
+                        )
+                        if (shoulderWidth > 0) {
+                            frameShoulderRotationDeg = Math.round(
+                                (Math.atan2(shoulderDepthDelta, shoulderWidth) * 180) /
+                                Math.PI,
+                            )
+                        }
+                    }
+                }
+
                 if (nowMs - uiUpdateAtRef.current > 150) {
                     uiUpdateAtRef.current = nowMs
                     setFacesDetected(faceLandmarks.length)
@@ -544,6 +877,9 @@ function App() {
                     setEyeContactScore(eyeContact)
                     setGazeDeviationPct(gazeDeviation)
                     setIsTouchingFace(touching)
+                    setShoulderDriftPct(frameShoulderDriftPct)
+                    setShoulderTiltDeltaDeg(frameShoulderTiltDeltaDeg)
+                    setShoulderRotationDeg(frameShoulderRotationDeg)
                 }
             }
 
@@ -697,6 +1033,12 @@ function App() {
                 prolongedEyeClosureCount: prolongedClosureCount,
                 handToFaceTouchCount: touchCount,
                 isTouchingFace,
+                shoulderDriftPercent: shoulderDriftPct,
+                shoulderTiltDeltaDegrees: shoulderTiltDeltaDeg,
+                shoulderRotationDegrees: shoulderRotationDeg,
+                shoulderShiftStatus,
+                shoulderTiltStatus,
+                shoulderRotationStatus,
             },
             transcript,
         }
@@ -721,11 +1063,72 @@ function App() {
     function downloadRecording() {
         if (!recordedAudioBlob) return
         const extension =
-            recordedAudioBlob.type.includes('mp4') ||
-                recordedAudioBlob.type.includes('m4a')
-                ? 'm4a'
-                : 'webm'
+            recordedAudioBlob.type.includes('mpeg') ||
+                recordedAudioBlob.type.includes('mp3')
+                ? 'mp3'
+                : recordedAudioBlob.type.includes('mp4') ||
+                    recordedAudioBlob.type.includes('m4a')
+                    ? 'm4a'
+                    : 'webm'
         downloadBlob(recordedAudioBlob, `session-audio-${Date.now()}.${extension}`)
+    }
+
+    async function selectRecordingsFolder() {
+        if (!fileSystemAccessSupported) {
+            setBanner('Folder save is supported in Chromium browsers like Chrome or Edge.')
+            return
+        }
+
+        try {
+            const handle = await window.showDirectoryPicker({ mode: 'readwrite' })
+            const granted = await ensureDirectoryPermission(handle)
+            if (!granted) {
+                setBanner('Folder permission denied. Please allow write access to save files.')
+                return
+            }
+
+            recordingsFolderRef.current = handle
+            setRecordingsFolderName(handle.name || 'Selected folder')
+            await savePersistedFolderHandle(handle)
+            setToast('Recording folder selected.')
+        } catch {
+            // User may dismiss the picker.
+        }
+    }
+
+    async function clearRecordingsFolder() {
+        recordingsFolderRef.current = null
+        setRecordingsFolderName('')
+        try {
+            await clearPersistedFolderHandle()
+        } catch {
+            // Ignore persistence cleanup failures.
+        }
+        setToast('Recording folder cleared.')
+    }
+
+    async function saveAudioToSelectedFolder(audioBlob) {
+        const folderHandle = recordingsFolderRef.current
+        if (!folderHandle) return false
+
+        try {
+            const granted = await ensureDirectoryPermission(folderHandle)
+            if (!granted) {
+                setBanner('Folder write permission was not granted. Select folder again.')
+                return false
+            }
+
+            const fileName = buildAudioFileName(audioBlob.type || 'audio/webm')
+            const fileHandle = await folderHandle.getFileHandle(fileName, { create: true })
+            const writable = await fileHandle.createWritable()
+            await writable.write(audioBlob)
+            await writable.close()
+            setToast(`Saved audio to folder as ${fileName}.`)
+            return true
+        } catch {
+            setBanner('Saving to selected folder failed. Re-select the folder and retry.')
+            return false
+        }
     }
 
     async function speakQuestion() {
@@ -885,12 +1288,21 @@ function App() {
         stopAudioStream()
 
         try {
-            const audioBlob = new Blob(chunksRef.current, {
+            const rawAudioBlob = new Blob(chunksRef.current, {
                 type: recorder.mimeType || 'audio/webm',
             })
-            setRecordedAudioBlob(audioBlob)
 
-            const text = await transcribeAudioBlob(audioBlob)
+            let storageAudioBlob = rawAudioBlob
+            try {
+                storageAudioBlob = await convertAudioBlobToMp3(rawAudioBlob)
+            } catch {
+                setBanner('MP3 conversion failed in this browser; using original audio format.')
+            }
+
+            setRecordedAudioBlob(storageAudioBlob)
+            await saveAudioToSelectedFolder(storageAudioBlob)
+
+            const text = await transcribeAudioBlob(rawAudioBlob)
             setTranscript(text)
             setToast('Transcription completed.')
         } catch (error) {
@@ -914,6 +1326,24 @@ function App() {
                     : 'Analysis not started'
 
     const faceDetectedLabel = facesDetected > 0 ? 'Face detected' : 'No face detected'
+    const shoulderShiftStatus =
+        shoulderDriftPct == null
+            ? 'n/a'
+            : shoulderDriftPct >= SHOULDER_SHIFT_ALERT_PCT
+                ? 'too much movement'
+                : 'steady'
+    const shoulderTiltStatus =
+        shoulderTiltDeltaDeg == null
+            ? 'n/a'
+            : shoulderTiltDeltaDeg >= SHOULDER_TILT_ALERT_DEG
+                ? 'tilting too much'
+                : 'level'
+    const shoulderRotationStatus =
+        shoulderRotationDeg == null
+            ? 'n/a'
+            : shoulderRotationDeg >= SHOULDER_ROTATION_ALERT_DEG
+                ? 'rotating too much'
+                : 'facing forward'
 
     return (
         <div className="app-shell">
@@ -944,9 +1374,10 @@ function App() {
 
                     <div className="camera-frame">
                         <video ref={videoRef} className="camera-video" muted playsInline />
-                        {debugEnabled && (
-                            <canvas ref={overlayRef} className="camera-overlay" />
-                        )}
+                        <canvas
+                            ref={overlayRef}
+                            className={`camera-overlay${debugEnabled ? '' : ' hidden'}`}
+                        />
                         {cameraStatus !== 'ready' && (
                             <div className="camera-empty">
                                 <p>
@@ -1012,6 +1443,27 @@ function App() {
                                 <p className="metric-label">Touching face now</p>
                                 <p className="metric-value">{isTouchingFace ? 'yes' : 'no'}</p>
                             </article>
+                            <article className="metric-card">
+                                <p className="metric-label">Shoulder side shift</p>
+                                <p className="metric-value">
+                                    {shoulderDriftPct == null ? 'n/a' : `${shoulderDriftPct}%`}
+                                </p>
+                                <p className="metric-label">{shoulderShiftStatus}</p>
+                            </article>
+                            <article className="metric-card">
+                                <p className="metric-label">Shoulder tilt delta</p>
+                                <p className="metric-value">
+                                    {shoulderTiltDeltaDeg == null ? 'n/a' : `${shoulderTiltDeltaDeg}°`}
+                                </p>
+                                <p className="metric-label">{shoulderTiltStatus}</p>
+                            </article>
+                            <article className="metric-card">
+                                <p className="metric-label">Shoulder rotation</p>
+                                <p className="metric-value">
+                                    {shoulderRotationDeg == null ? 'n/a' : `${shoulderRotationDeg}°`}
+                                </p>
+                                <p className="metric-label">{shoulderRotationStatus}</p>
+                            </article>
                         </div>
                     ) : (
                         <p className="face-detected-text">{faceDetectedLabel}</p>
@@ -1023,6 +1475,32 @@ function App() {
                     <p className="muted">
                         Add your Deepgram API key in Settings, then record an answer and transcribe it.
                     </p>
+                    <p className="muted">
+                        {recordingsFolderName
+                            ? `Auto-saving recordings to folder: ${recordingsFolderName}`
+                            : fileSystemAccessSupported
+                                ? 'No save folder selected. You can still download files manually.'
+                                : 'Direct folder save is unavailable in this browser; use Download Audio.'}
+                    </p>
+                    <div className="actions wrap">
+                        <button
+                            type="button"
+                            className="btn ghost"
+                            onClick={selectRecordingsFolder}
+                            disabled={!fileSystemAccessSupported}
+                        >
+                            Select Save Folder
+                        </button>
+                        {recordingsFolderName && (
+                            <button
+                                type="button"
+                                className="btn ghost"
+                                onClick={clearRecordingsFolder}
+                            >
+                                Clear Save Folder
+                            </button>
+                        )}
+                    </div>
                     <label htmlFor="interview-question" className="label">
                         Interview question
                     </label>
