@@ -846,7 +846,7 @@ function App() {
             }
 
             recorderRef.current = recorder
-            recorder.start(250)
+            recorder.start()
             setIsRecording(true)
             setToast('Recording started.')
         } catch {
