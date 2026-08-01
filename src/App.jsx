@@ -46,7 +46,7 @@ const SHOULDER_TILT_ALERT_DEG = 12
 const SHOULDER_ROTATION_ALERT_DEG = 18
 const GAZE_CENTER_DEVIATION_THRESHOLD_PCT = 25
 const GAZE_DIRECTION_EXIT_THRESHOLD_PCT = 24
-const GAZE_DIRECTION_RETURN_THRESHOLD_PCT = 15
+const GAZE_DIRECTION_RETURN_THRESHOLD_PCT = 20
 const GAZE_DIRECTION_DOMINANCE_PCT = 4
 
 function validateKeyFormat(rawValue) {
@@ -3232,7 +3232,12 @@ function App() {
                     </div>
 
                     <div className={`camera-frame${isPortraitVideo ? ' portrait' : ''}`}>
-                        <video ref={videoRef} className="camera-video" muted playsInline />
+                        <video
+                            ref={videoRef}
+                            className="camera-video"
+                            muted
+                            playsInline
+                        />
                         <canvas
                             ref={overlayRef}
                             className={`camera-overlay${debugEnabled ? '' : ' hidden'}`}
@@ -3537,39 +3542,7 @@ function App() {
                         )}
                     </div>
 
-                    {isDesktopViewport && (
-                        <div className="session-history-summary">
-                            <div className={`session-history-box${isFolderFeatureDisabled ? ' disabled-box' : ''}`}>
-                                <div className="session-history-text">
-                                    <p className="session-history-title">Previous Answers</p>
-                                    <p className="muted session-history-count">
-                                        {isIphoneClient
-                                            ? 'Previous answers are unavailable on this device.'
-                                            : recordingsFolderName
-                                                ? `Questions found: ${previousAnswers.length}`
-                                                : 'Select an output folder in Settings to load previous answers.'}
-                                    </p>
-                                </div>
-                                <span
-                                    className={`disabled-tooltip-wrap${isPreviousAnswersViewDisabled && previousAnswersViewDisabledReason ? ' has-tooltip' : ''}`}
-                                    data-disabled-reason={previousAnswersViewDisabledReason}
-                                    onPointerDown={(event) =>
-                                        suppressDisabledTooltipPointerDefault(event, isPreviousAnswersViewDisabled)
-                                    }
-                                >
-                                    <button
-                                        type="button"
-                                        className="btn ghost"
-                                        onClick={openPreviousAnswersModal}
-                                        disabled={isPreviousAnswersViewDisabled}
-                                    >
-                                        {isLoadingPreviousAnswers ? 'Loading...' : 'View'}
-                                    </button>
-                                </span>
-                            </div>
-                        </div>
-                    )}
-                    {previousAnswersError && <p className="warning">{previousAnswersError}</p>}
+                    {isDesktopViewport && previousAnswersError && <p className="warning">{previousAnswersError}</p>}
                 </section>
             </main>
 
