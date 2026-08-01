@@ -19,6 +19,15 @@ Use this template for future releases:
 -
 ```
 
+## [1.4.1] - 2026-08-01
+
+### Changed
+- Next Question no-next state now uses a desaturated disabled-look style aligned with recording controls (`#5399a5` with white text).
+- Next Question was simplified back to a single desktop button after style comparison testing.
+
+### Fixed
+- Replaced the native title hover on Next Question (no-next state) with an in-app popup tooltip shown above the button on hover/focus, while preserving click-to-open Questions Import behavior.
+
 ## [1.4.0] - 2026-08-01
 
 ### Added

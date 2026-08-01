@@ -847,6 +847,7 @@ function App() {
     const [settingsOpen, setSettingsOpen] = useState(false)
     const [confirmRemoveOpen, setConfirmRemoveOpen] = useState(false)
     const [confirmFolderSelectOpen, setConfirmFolderSelectOpen] = useState(false)
+    const [pendingDeleteAction, setPendingDeleteAction] = useState(null)
     const [savedKey, setSavedKey] = useState(() => getSavedValue(STORAGE_KEY))
     const [lastValidatedAt, setLastValidatedAt] = useState(() =>
         getSavedValue(STORAGE_VALIDATED_AT),
@@ -872,7 +873,8 @@ function App() {
     const [questionsDrawerOpen, setQuestionsDrawerOpen] = useState(false)
     const [summaryModalOpen, setSummaryModalOpen] = useState(false)
     const [questionsBulkInput, setQuestionsBulkInput] = useState('')
-    const [importedQuestionKeys, setImportedQuestionKeys] = useState([])
+    const [nextQuestionCursor, setNextQuestionCursor] = useState(0)
+    const [answeredQuestionKeys, setAnsweredQuestionKeys] = useState([])
 
     const [facesDetected, setFacesDetected] = useState(0)
     const [handsDetected, setHandsDetected] = useState(0)
@@ -1269,26 +1271,37 @@ function App() {
         [parsedDrawerQuestions],
     )
 
-    const remainingBankQuestionCount = useMemo(
-        () =>
-            parsedDrawerQuestionKeys.filter(
-                (key) => key && !importedQuestionKeys.includes(key),
-            ).length,
-        [importedQuestionKeys, parsedDrawerQuestionKeys],
+    const answeredQuestionKeySet = useMemo(
+        () => new Set(answeredQuestionKeys.filter(Boolean)),
+        [answeredQuestionKeys],
     )
 
-    const nextUnimportedQuestion = useMemo(() => {
-        for (let i = 0; i < parsedDrawerQuestions.length; i += 1) {
-            const key = parsedDrawerQuestionKeys[i]
-            if (key && !importedQuestionKeys.includes(key)) {
-                return parsedDrawerQuestions[i]
-            }
-        }
-        return ''
-    }, [importedQuestionKeys, parsedDrawerQuestionKeys, parsedDrawerQuestions])
+    const unansweredDrawerQuestions = useMemo(
+        () =>
+            parsedDrawerQuestions.filter((_, index) => {
+                const key = parsedDrawerQuestionKeys[index]
+                return key && !answeredQuestionKeySet.has(key)
+            }),
+        [answeredQuestionKeySet, parsedDrawerQuestionKeys, parsedDrawerQuestions],
+    )
+
+    const remainingBankQuestionCount = unansweredDrawerQuestions.length
 
     const shouldPromptQuestionImport =
-        !parsedDrawerQuestions.length || !nextUnimportedQuestion
+        !parsedDrawerQuestions.length || !unansweredDrawerQuestions.length
+
+    const showNoNextQuestionTooltip =
+        shouldPromptQuestionImport && !isImportQuestionDisabled
+
+    const noNextQuestionTooltipText =
+        'No next question, click to add new questions.'
+
+    const nextQuestionTitle =
+        isImportQuestionDisabled
+            ? 'Unavailable while recording/transcribing/question audio is active.'
+            : showNoNextQuestionTooltip
+                ? undefined
+                : `${remainingBankQuestionCount} question(s) remaining in bank`
 
     const overallInterviewSummary = useMemo(() => {
         if (!interviewSummaries.length) {
@@ -1345,16 +1358,9 @@ function App() {
     }
 
     function importQuestion(questionText, options = {}) {
-        const { closePanel = true, markImported = true } = options
+        const { closePanel = true } = options
         const nextQuestion = questionText.trim()
         if (!nextQuestion) return
-
-        const questionKey = normalizeQuestionKey(nextQuestion)
-        if (markImported && questionKey) {
-            setImportedQuestionKeys((prev) =>
-                prev.includes(questionKey) ? prev : [...prev, questionKey],
-            )
-        }
 
         setQuestionInput(nextQuestion)
         setBanner('')
@@ -1363,19 +1369,49 @@ function App() {
         }
     }
 
+    function removeParsedQuestionAt(index) {
+        setPendingDeleteAction({ kind: 'parsed-question', index })
+    }
+
+    function performRemoveParsedQuestionAt(index) {
+        const parsed = questionsBulkInput
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean)
+
+        const questionToRemove = parsed[index]
+        if (!questionToRemove) return
+
+        const nextParsed = parsed.filter((_, parsedIndex) => parsedIndex !== index)
+        setQuestionsBulkInput(nextParsed.join('\n'))
+
+        setNextQuestionCursor(0)
+
+        setToast('Question removed from import list.')
+    }
+
     function handleNextQuestionAction() {
         if (isImportQuestionDisabled) return
 
-        if (!parsedDrawerQuestions.length || !nextUnimportedQuestion) {
+        if (!parsedDrawerQuestions.length || !unansweredDrawerQuestions.length) {
             closeSummaryModal()
             setQuestionsDrawerOpen(true)
             return
         }
 
-        importQuestion(nextUnimportedQuestion, {
+        const nextIndex = nextQuestionCursor % unansweredDrawerQuestions.length
+        const nextQuestion = unansweredDrawerQuestions[nextIndex]
+        if (!nextQuestion) return
+
+        importQuestion(nextQuestion, {
             closePanel: false,
-            markImported: true,
         })
+
+        setNextQuestionCursor((prev) =>
+            unansweredDrawerQuestions.length
+                ? (prev + 1) % unansweredDrawerQuestions.length
+                : 0,
+        )
     }
 
     useEffect(() => {
@@ -1424,6 +1460,10 @@ function App() {
                 setConfirmFolderSelectOpen(false)
                 return
             }
+            if (pendingDeleteAction) {
+                setPendingDeleteAction(null)
+                return
+            }
             if (settingsOpen) {
                 setSettingsOpen(false)
                 return
@@ -1438,6 +1478,7 @@ function App() {
     }, [
         confirmRemoveOpen,
         confirmFolderSelectOpen,
+        pendingDeleteAction,
         settingsOpen,
         historyModalOpen,
         closePreviousAnswersModal,
@@ -2256,10 +2297,14 @@ function App() {
             return
         }
 
-        const confirmed = window.confirm(
-            'Delete this previous answer and its saved files? This cannot be undone.',
-        )
-        if (!confirmed) return
+        setPendingDeleteAction({ kind: 'previous-answer' })
+    }
+
+    async function performDeleteSelectedPreviousAnswer() {
+        if (!selectedPreviousAnswer) {
+            setToast('Select an answer first.')
+            return
+        }
 
         const deleteResult = await deleteAnswerFilesFromSelectedFolder(selectedPreviousAnswer)
         if (!deleteResult.ok) {
@@ -2295,10 +2340,14 @@ function App() {
             return
         }
 
-        const confirmed = window.confirm(
-            'Delete this summary answer and its saved files? This cannot be undone.',
-        )
-        if (!confirmed) return
+        setPendingDeleteAction({ kind: 'summary-answer' })
+    }
+
+    async function performDeleteSelectedSummaryAnswer() {
+        if (!selectedSummary) {
+            setToast('Select a summary answer first.')
+            return
+        }
 
         const deleteResult = await deleteAnswerFilesFromSelectedFolder(selectedSummary)
         if (!deleteResult.ok) {
@@ -2318,6 +2367,27 @@ function App() {
                 ? 'Summary answer removed. No linked files were found to delete.'
                 : 'Summary answer and related files deleted.',
         )
+    }
+
+    async function confirmPendingDeleteAction() {
+        if (!pendingDeleteAction) return
+
+        const action = pendingDeleteAction
+        setPendingDeleteAction(null)
+
+        if (action.kind === 'parsed-question') {
+            performRemoveParsedQuestionAt(action.index)
+            return
+        }
+
+        if (action.kind === 'previous-answer') {
+            await performDeleteSelectedPreviousAnswer()
+            return
+        }
+
+        if (action.kind === 'summary-answer') {
+            await performDeleteSelectedSummaryAnswer()
+        }
     }
 
     function downloadVideoRecording() {
@@ -2776,6 +2846,16 @@ function App() {
                 videoRecorder.start()
             }
             setIsRecording(true)
+
+            const startedQuestionKey = normalizeQuestionKey(questionInput)
+            if (startedQuestionKey) {
+                setAnsweredQuestionKeys((prev) =>
+                    prev.includes(startedQuestionKey)
+                        ? prev
+                        : [...prev, startedQuestionKey],
+                )
+            }
+
             setToast(mode === 'video' ? 'Video recording started.' : 'Audio recording started.')
         } catch {
             recordingActiveRef.current = false
@@ -3340,21 +3420,24 @@ function App() {
                         </p>
                         <div className="question-row-actions">
                             {isDesktopViewport ? (
-                                <button
-                                    type="button"
-                                    className={`btn ghost question-next-btn${shouldPromptQuestionImport && !isImportQuestionDisabled ? ' btn-disabled-look' : ''}`}
-                                    onClick={handleNextQuestionAction}
-                                    disabled={isImportQuestionDisabled}
-                                    title={
-                                        isImportQuestionDisabled
-                                            ? 'Unavailable while recording/transcribing/question audio is active.'
-                                            : shouldPromptQuestionImport
-                                                ? 'No next question, click to add new questions.'
-                                                : `${remainingBankQuestionCount} question(s) remaining in bank`
-                                    }
+                                <div
+                                    className={`disabled-tooltip-wrap question-next-tooltip-wrap${showNoNextQuestionTooltip ? ' has-tooltip' : ''}`}
                                 >
-                                    Next Question
-                                </button>
+                                    <button
+                                        type="button"
+                                        className={`btn ghost question-next-btn${showNoNextQuestionTooltip ? ' btn-disabled-look' : ''}`}
+                                        onClick={handleNextQuestionAction}
+                                        disabled={isImportQuestionDisabled}
+                                        title={nextQuestionTitle}
+                                    >
+                                        Next Question
+                                    </button>
+                                    {showNoNextQuestionTooltip ? (
+                                        <span className="question-next-hover-tooltip" role="tooltip">
+                                            {noNextQuestionTooltipText}
+                                        </span>
+                                    ) : null}
+                                </div>
                             ) : (
                                 <div className="question-bank-actions">
                                     <button
@@ -3367,21 +3450,24 @@ function App() {
                                     >
                                         Questions List
                                     </button>
-                                    <button
-                                        type="button"
-                                        className={`btn ghost question-next-btn${shouldPromptQuestionImport && !isImportQuestionDisabled ? ' btn-disabled-look' : ''}`}
-                                        onClick={handleNextQuestionAction}
-                                        disabled={isImportQuestionDisabled}
-                                        title={
-                                            isImportQuestionDisabled
-                                                ? 'Unavailable while recording/transcribing/question audio is active.'
-                                                : shouldPromptQuestionImport
-                                                    ? 'No next question, click to add new questions.'
-                                                    : `${remainingBankQuestionCount} question(s) remaining in bank`
-                                        }
+                                    <div
+                                        className={`disabled-tooltip-wrap question-next-tooltip-wrap${showNoNextQuestionTooltip ? ' has-tooltip' : ''}`}
                                     >
-                                        Next Question
-                                    </button>
+                                        <button
+                                            type="button"
+                                            className={`btn ghost question-next-btn${showNoNextQuestionTooltip ? ' btn-disabled-look' : ''}`}
+                                            onClick={handleNextQuestionAction}
+                                            disabled={isImportQuestionDisabled}
+                                            title={nextQuestionTitle}
+                                        >
+                                            Next Question
+                                        </button>
+                                        {showNoNextQuestionTooltip ? (
+                                            <span className="question-next-hover-tooltip" role="tooltip">
+                                                {noNextQuestionTooltipText}
+                                            </span>
+                                        ) : null}
+                                    </div>
                                 </div>
                             )}
                             <label className="debug-toggle question-tts-toggle">
@@ -3896,7 +3982,7 @@ function App() {
                         onClick={(event) => event.stopPropagation()}
                     >
                         <div className="history-modal-header">
-                            <h2 id="questions-modal-title">Questions</h2>
+                            <h2 id="questions-modal-title">Questions Import</h2>
                             <button
                                 type="button"
                                 className="btn ghost history-close-btn"
@@ -3927,23 +4013,52 @@ function App() {
                                     <h3>Parsed Questions</h3>
                                     {parsedDrawerQuestions.length ? (
                                         <div className="question-list-items">
-                                            {parsedDrawerQuestions.map((question, index) => (
-                                                <div key={`${question}-${index}`} className="question-list-item">
-                                                    <p className="muted">
-                                                        {index + 1}. {question}
-                                                    </p>
-                                                    <button
-                                                        type="button"
-                                                        className="btn"
-                                                        onClick={() => {
-                                                            importQuestion(question)
-                                                        }}
-                                                        disabled={isImportQuestionDisabled}
-                                                    >
-                                                        Import
-                                                    </button>
-                                                </div>
-                                            ))}
+                                            {parsedDrawerQuestions.map((question, index) => {
+                                                const questionKey = parsedDrawerQuestionKeys[index]
+                                                const answeredBefore =
+                                                    Boolean(questionKey) &&
+                                                    answeredQuestionKeySet.has(questionKey)
+
+                                                return (
+                                                    <div key={`${question}-${index}`} className="question-list-item">
+                                                        <div className="question-list-item-text">
+                                                            <p className="muted">
+                                                                {index + 1}. {question}
+                                                            </p>
+                                                            {answeredBefore && (
+                                                                <span className="question-answered-indicator">
+                                                                    Answered before
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                        <div className="question-list-item-actions">
+                                                            <button
+                                                                type="button"
+                                                                className="btn"
+                                                                onClick={() => {
+                                                                    importQuestion(question)
+                                                                }}
+                                                                disabled={isImportQuestionDisabled}
+                                                            >
+                                                                Answer
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                className="btn danger question-delete-btn"
+                                                                onClick={() => {
+                                                                    removeParsedQuestionAt(index)
+                                                                }}
+                                                                aria-label={`Delete question ${index + 1}`}
+                                                                title="Delete question"
+                                                            >
+                                                                <span className="material-symbols-outlined" aria-hidden="true">
+                                                                    delete
+                                                                </span>
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                )
+                                            })}
                                         </div>
                                     ) : (
                                         <p className="muted">Add at least one line to create importable questions.</p>
@@ -4150,6 +4265,46 @@ function App() {
                                 type="button"
                                 className="btn ghost"
                                 onClick={() => setConfirmFolderSelectOpen(false)}
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {pendingDeleteAction && (
+                <div className="overlay" role="presentation">
+                    <div
+                        className="modal compact"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="delete-confirm-title"
+                    >
+                        <h2 id="delete-confirm-title">
+                            {pendingDeleteAction.kind === 'parsed-question'
+                                ? 'Delete question?'
+                                : pendingDeleteAction.kind === 'previous-answer'
+                                    ? 'Delete previous answer?'
+                                    : 'Delete answer from summary?'}
+                        </h2>
+                        <p className="muted">
+                            {pendingDeleteAction.kind === 'parsed-question'
+                                ? 'This question will be removed from the Questions Import list.'
+                                : 'This will delete the selected answer and linked saved files. This cannot be undone.'}
+                        </p>
+                        <div className="actions">
+                            <button
+                                type="button"
+                                className="btn danger"
+                                onClick={confirmPendingDeleteAction}
+                            >
+                                Delete
+                            </button>
+                            <button
+                                type="button"
+                                className="btn ghost"
+                                onClick={() => setPendingDeleteAction(null)}
                             >
                                 Cancel
                             </button>
