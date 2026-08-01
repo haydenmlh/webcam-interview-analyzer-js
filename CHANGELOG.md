@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented in this file.
 
+## Release Template
+
+Use this template for future releases:
+
+```md
+## [X.Y.Z] - YYYY-MM-DD
+
+### Added
+-
+
+### Changed
+-
+
+### Fixed
+-
+```
+
 ## [1.1.0] - 2026-08-01
 
 ### Added
