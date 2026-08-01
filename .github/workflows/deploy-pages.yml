@@ -41,6 +41,6 @@ jobs:
           external_repository: haydenmlh/webcam-interview-analyzer-page
           publish_branch: gh-pages
           publish_dir: ./dist
-          cname: webcam-analyzer.haydenmlh.com
+          cname: interview.haydenmlh.com
           force_orphan: true
           commit_message: "Deploy from source: ${{ github.sha }}"
