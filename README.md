@@ -2,7 +2,7 @@
 
 Mock Interviewer is a React + Vite web app for practicing interview answers with live camera posture cues, audio/video recording, and Deepgram-powered transcription.
 
-Current app version: 1.0.3
+Current app version: 1.1.0
 
 ## Highlights
 
@@ -10,8 +10,9 @@ Current app version: 1.0.3
 - Live MediaPipe analysis (face, hand, and pose) with feedback metrics
 - Start Video Recording and Start Audio Recording workflows
 - Stop and Transcribe flow with transcript and interview metrics
-- Copy Text and Copy JSON actions for generated outputs
-- Download Video and Download Audio actions
+- Add to Summary action for current answer/transcript
+- Copy Summary for Gem export in Gemini-friendly markdown format
+- Download Video and Download Audio actions when folder access is unavailable
 - Save session files to a selected folder when File System Access is supported
 - Previous Answers modal with recorded media and metrics history
 - Interview question text-to-speech option
@@ -62,6 +63,10 @@ If VITE_DEEPGRAM_VALIDATE_URL is not set, keys are saved after local format vali
 
 - Deepgram transcription and text-to-speech requests are performed from the browser using the user-provided key.
 - Folder-based save/history features rely on the browser File System Access API and permission grants.
+
+## Changelog
+
+- See [CHANGELOG.md](CHANGELOG.md) for release history, recent feature additions, and general bug-fix categories.
 
 ## GitHub Pages and custom domain
 

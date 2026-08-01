@@ -834,6 +834,12 @@ function App() {
         typeof window !== 'undefined' ? window.innerWidth > 860 : true,
     )
     const [isPortraitVideo, setIsPortraitVideo] = useState(false)
+    const [isDesktopViewport, setIsDesktopViewport] = useState(() =>
+        typeof window !== 'undefined' ? window.innerWidth > 860 : true,
+    )
+    const [questionsDrawerOpen, setQuestionsDrawerOpen] = useState(false)
+    const [summaryModalOpen, setSummaryModalOpen] = useState(false)
+    const [questionsBulkInput, setQuestionsBulkInput] = useState('')
 
     const [facesDetected, setFacesDetected] = useState(0)
     const [handsDetected, setHandsDetected] = useState(0)
@@ -863,6 +869,8 @@ function App() {
     const [recordedVideoBlob, setRecordedVideoBlob] = useState(null)
     const [recordingsFolderName, setRecordingsFolderName] = useState('')
     const [outputText, setOutputText] = useState('')
+    const [interviewSummaries, setInterviewSummaries] = useState([])
+    const [selectedSummaryId, setSelectedSummaryId] = useState('')
     const [previousAnswers, setPreviousAnswers] = useState([])
     const [isLoadingPreviousAnswers, setIsLoadingPreviousAnswers] = useState(false)
     const [previousAnswersError, setPreviousAnswersError] = useState('')
@@ -1116,15 +1124,18 @@ function App() {
     const isVideoStartDisabled = isTranscribing || cameraStatus !== 'ready'
     const videoStartDisabledReason =
         cameraStatus !== 'ready' ? 'Camera access is not allowed yet' : ''
+    const isImportQuestionDisabled = isRecording || isTranscribing || isSpeakingQuestion
 
     const isPreviousAnswersViewDisabled =
         isFolderFeatureDisabled || !recordingsFolderName || isLoadingPreviousAnswers
     const previousAnswersViewDisabledReason =
         isIphoneClient
-            ? 'Previous answers are unavailable on iPhone browsers'
-            : !fileSystemAccessSupported || !recordingsFolderName
-                ? 'Folder access is not allowed yet'
-                : ''
+            ? 'Previous answers are unavailable because folder access is not allowed on iPhone browsers.'
+            : !fileSystemAccessSupported
+                ? 'Previous answers are unavailable because folder access is not allowed in this browser.'
+                : !recordingsFolderName
+                    ? 'Select a save folder in Settings to enable previous answers.'
+                    : ''
 
     useEffect(() => {
         let cancelled = false
@@ -1157,6 +1168,86 @@ function App() {
     }, [fileSystemAccessSupported, loadPreviousAnswers])
 
     useEffect(() => {
+        function onResize() {
+            setIsDesktopViewport(window.innerWidth > 860)
+        }
+
+        window.addEventListener('resize', onResize)
+        return () => window.removeEventListener('resize', onResize)
+    }, [])
+
+    const parsedDrawerQuestions = useMemo(
+        () =>
+            questionsBulkInput
+                .split(/\r?\n/)
+                .map((line) => line.trim())
+                .filter(Boolean),
+        [questionsBulkInput],
+    )
+
+    const overallInterviewSummary = useMemo(() => {
+        if (!interviewSummaries.length) {
+            return {
+                totalAnswers: 0,
+                averageWpm: 0,
+                averageAnswerLengthSec: 0,
+                averageHesitations: 0,
+                averageGazeCenterPct: 0,
+            }
+        }
+
+        const totals = interviewSummaries.reduce(
+            (acc, item) => {
+                acc.wpm += Number(item.metrics?.wpm) || 0
+                acc.answerLengthSec += Number(item.metrics?.answerLengthSec) || 0
+                acc.hesitationsCount += Number(item.metrics?.hesitationsCount) || 0
+                acc.gazeCenterPct += Number(item.metrics?.gazeCenterPct) || 0
+                return acc
+            },
+            { wpm: 0, answerLengthSec: 0, hesitationsCount: 0, gazeCenterPct: 0 },
+        )
+
+        const count = interviewSummaries.length
+        return {
+            totalAnswers: count,
+            averageWpm: Math.round(totals.wpm / count),
+            averageAnswerLengthSec: Number((totals.answerLengthSec / count).toFixed(1)),
+            averageHesitations: Number((totals.hesitationsCount / count).toFixed(1)),
+            averageGazeCenterPct: Math.round(totals.gazeCenterPct / count),
+        }
+    }, [interviewSummaries])
+
+    const selectedSummary = useMemo(() => {
+        if (!interviewSummaries.length) return null
+        return (
+            interviewSummaries.find((item) => item.id === selectedSummaryId) ||
+            interviewSummaries[0]
+        )
+    }, [interviewSummaries, selectedSummaryId])
+
+    function openSummaryModal() {
+        if (interviewSummaries.length && !selectedSummaryId) {
+            setSelectedSummaryId(interviewSummaries[0].id)
+        }
+        setSummaryModalOpen(true)
+    }
+
+    function closeSummaryModal() {
+        setSummaryModalOpen(false)
+    }
+
+    function importQuestion(questionText) {
+        const nextQuestion = questionText.trim()
+        if (!nextQuestion) return
+
+        setQuestionInput(nextQuestion)
+        setBanner('')
+        if (isDesktopViewport) {
+            setQuestionsDrawerOpen(false)
+        }
+    }
+
+    useEffect(() => {
         return () => {
             revokeHistoryMediaUrls(selectedHistoryMediaRef.current)
         }
@@ -1186,6 +1277,14 @@ function App() {
     useEffect(() => {
         function onEscape(event) {
             if (event.key !== 'Escape') return
+            if (summaryModalOpen) {
+                closeSummaryModal()
+                return
+            }
+            if (questionsDrawerOpen) {
+                setQuestionsDrawerOpen(false)
+                return
+            }
             if (confirmRemoveOpen) {
                 setConfirmRemoveOpen(false)
                 return
@@ -1205,7 +1304,15 @@ function App() {
 
         window.addEventListener('keydown', onEscape)
         return () => window.removeEventListener('keydown', onEscape)
-    }, [confirmRemoveOpen, confirmFolderSelectOpen, settingsOpen, historyModalOpen, closePreviousAnswersModal])
+    }, [
+        confirmRemoveOpen,
+        confirmFolderSelectOpen,
+        settingsOpen,
+        historyModalOpen,
+        closePreviousAnswersModal,
+        questionsDrawerOpen,
+        summaryModalOpen,
+    ])
 
     useEffect(() => {
         return () => {
@@ -1857,16 +1964,6 @@ function App() {
         }
     }
 
-    async function copyJsonReportToClipboard() {
-        const report = buildSessionReport()
-        try {
-            await navigator.clipboard.writeText(JSON.stringify(report, null, 2))
-            setToast('JSON copied to clipboard.')
-        } catch {
-            setToast('Could not copy JSON to clipboard.')
-        }
-    }
-
     async function copyOutputToClipboard() {
         if (!outputText) {
             setToast('No output to copy yet.')
@@ -1878,6 +1975,84 @@ function App() {
             setToast('Output copied to clipboard.')
         } catch {
             setToast('Could not copy output to clipboard.')
+        }
+    }
+
+    function addCurrentAnswerToSummary() {
+        const question = questionInput.trim()
+        const answerTranscript = transcript?.trim() || outputText?.trim()
+
+        if (!answerTranscript) {
+            setToast('No transcript or output available to add.')
+            return
+        }
+
+        const summaryEntry = {
+            id: crypto.randomUUID(),
+            capturedAt: new Date().toISOString(),
+            question: question || '(no question)',
+            transcript: answerTranscript,
+            metrics: buildSessionReport({ question, transcript: answerTranscript }).metrics,
+        }
+
+        setInterviewSummaries((prev) => [summaryEntry, ...prev])
+        setSelectedSummaryId(summaryEntry.id)
+        setToast('Added current answer to summary.')
+    }
+
+    async function copySummaryToClipboard() {
+        if (!interviewSummaries.length) {
+            setToast('No summary data to copy yet.')
+            return
+        }
+
+        const totals = overallInterviewSummary
+        const sections = [
+            '# Interview Summary for Gemini',
+            '',
+            `Generated: ${new Date().toISOString()}`,
+            '',
+            '## Total Metrics',
+            `- Total answers: ${totals.totalAnswers}`,
+            `- Average WPM: ${totals.averageWpm}`,
+            `- Average answer length (sec): ${totals.averageAnswerLengthSec}`,
+            `- Average hesitations: ${totals.averageHesitations}`,
+            `- Average gaze center (%): ${totals.averageGazeCenterPct}`,
+            '',
+            '## Answers',
+        ]
+
+        interviewSummaries.forEach((item, index) => {
+            const answerNumber = interviewSummaries.length - index
+            sections.push(`### Answer ${answerNumber}`)
+            sections.push(`- Captured: ${new Date(item.capturedAt).toLocaleString()}`)
+            sections.push(`- Question: ${item.question}`)
+            sections.push('')
+            sections.push('Transcript:')
+            sections.push('```text')
+            sections.push(item.transcript || '(no transcript captured)')
+            sections.push('```')
+            sections.push('')
+            sections.push('Metrics:')
+
+            const metricEntries = Object.entries(item.metrics || {})
+            if (!metricEntries.length) {
+                sections.push('- n/a')
+            } else {
+                metricEntries.forEach(([key, value]) => {
+                    sections.push(`- ${key}: ${String(value ?? 'n/a')}`)
+                })
+            }
+            sections.push('')
+        })
+
+        const summaryMarkdown = sections.join('\n')
+
+        try {
+            await navigator.clipboard.writeText(summaryMarkdown)
+            setToast('Summary for Gem copied to clipboard.')
+        } catch {
+            setToast('Could not copy summary to clipboard.')
         }
     }
 
@@ -2102,10 +2277,10 @@ function App() {
         return text || 'No transcript was returned for this recording.'
     }
 
-    async function speakQuestionIfEnabled() {
+    async function speakQuestionIfEnabled(questionText = questionInput) {
         if (!readQuestionWithTts) return
 
-        const text = questionInput.trim()
+        const text = questionText.trim()
         if (!text) {
             setBanner('Read (TTS) Question is enabled, but the question is empty.')
             return
@@ -2167,7 +2342,7 @@ function App() {
         }
     }
 
-    async function startRecording(mode = 'audio') {
+    async function startRecording(mode = 'audio', importedQuestion = '') {
         if (isRecording || isTranscribing) return
 
         if (!hasKey) {
@@ -2190,7 +2365,8 @@ function App() {
             resetInterviewTracking()
             recalibrateTorsoBaseline()
 
-            await speakQuestionIfEnabled()
+            const ttsQuestion = importedQuestion.trim() || questionInput.trim()
+            await speakQuestionIfEnabled(ttsQuestion)
 
             const stream = await navigator.mediaDevices.getUserMedia({
                 audio: true,
@@ -2418,6 +2594,17 @@ function App() {
                 interviewMetrics,
             }
 
+            const summaryEntry = {
+                id: crypto.randomUUID(),
+                capturedAt: capturedAtIso,
+                question: trimmedQuestion || '(no question)',
+                transcript: text || '(no transcript captured)',
+                metrics: interviewMetrics,
+            }
+
+            setInterviewSummaries((prev) => [summaryEntry, ...prev])
+            setSelectedSummaryId(summaryEntry.id)
+
             await saveSessionArtifactsToSelectedFolder({
                 capturedAtIso,
                 question: trimmedQuestion,
@@ -2509,18 +2696,104 @@ function App() {
                 <section
                     className={`panel camera-panel${centerCameraLayout ? ' centered-camera-panel' : ''}`}
                 >
+                    {isDesktopViewport && (
+                        <button
+                            type="button"
+                            className="question-peek-tab"
+                            onClick={() => {
+                                setQuestionsDrawerOpen((prev) => {
+                                    const next = !prev
+                                    if (next) closeSummaryModal()
+                                    return next
+                                })
+                            }}
+                            aria-expanded={questionsDrawerOpen}
+                            aria-controls="question-drawer-panel"
+                            title={questionsDrawerOpen ? 'Hide questions panel' : 'Show questions panel'}
+                        >
+                            Questions
+                        </button>
+                    )}
+                    {isDesktopViewport && (
+                        <button
+                            type="button"
+                            className="summary-peek-tab"
+                            onClick={() => {
+                                if (summaryModalOpen) {
+                                    closeSummaryModal()
+                                    return
+                                }
+                                setQuestionsDrawerOpen(false)
+                                openSummaryModal()
+                            }}
+                            aria-expanded={summaryModalOpen}
+                            aria-controls="summary-modal"
+                            title={summaryModalOpen ? 'Hide summary modal' : 'Show summary modal'}
+                        >
+                            Summary
+                        </button>
+                    )}
+                    {isDesktopViewport && (
+                        <span
+                            className={`disabled-tooltip-wrap previous-peek-tab-wrap${isPreviousAnswersViewDisabled && previousAnswersViewDisabledReason ? ' has-tooltip' : ''}`}
+                            data-disabled-reason={previousAnswersViewDisabledReason}
+                        >
+                            <button
+                                type="button"
+                                className="previous-peek-tab"
+                                onClick={() => {
+                                    setQuestionsDrawerOpen(false)
+                                    closeSummaryModal()
+                                    void openPreviousAnswersModal()
+                                }}
+                                disabled={isPreviousAnswersViewDisabled}
+                            >
+                                {isLoadingPreviousAnswers ? 'Loading...' : 'Previous Answers'}
+                            </button>
+                        </span>
+                    )}
+
                     <div className="camera-heading-row">
                         <h2>{debugEnabled ? 'Camera View (JS MediaPipe)' : 'Camera View'}</h2>
                         <div className="camera-heading-controls">
                             {cameraActionButton}
-                            <label className="debug-toggle">
-                                <input
-                                    type="checkbox"
-                                    checked={debugEnabled}
-                                    onChange={(event) => setDebugEnabled(event.target.checked)}
-                                />
-                                <span>Debug</span>
-                            </label>
+                            {isDesktopViewport && (
+                                <div className="camera-heading-recording-actions">
+                                    {!isRecording ? (
+                                        <>
+                                            <span
+                                                className={`disabled-tooltip-wrap${isVideoStartDisabled && videoStartDisabledReason ? ' has-tooltip' : ''}`}
+                                                data-disabled-reason={videoStartDisabledReason}
+                                            >
+                                                <button
+                                                    type="button"
+                                                    className="btn"
+                                                    onClick={() => startRecording('video')}
+                                                    disabled={isVideoStartDisabled}
+                                                >
+                                                    Start Video Recording
+                                                </button>
+                                            </span>
+                                            <button
+                                                type="button"
+                                                className="btn ghost"
+                                                onClick={() => startRecording('audio')}
+                                                disabled={isTranscribing}
+                                            >
+                                                Start Audio Recording
+                                            </button>
+                                        </>
+                                    ) : (
+                                        <button
+                                            type="button"
+                                            className="btn"
+                                            onClick={stopRecordingAndTranscribe}
+                                        >
+                                            Stop and Transcribe
+                                        </button>
+                                    )}
+                                </div>
+                            )}
                         </div>
                     </div>
 
@@ -2580,6 +2853,66 @@ function App() {
                             </>
                         )}
                     </div>
+
+                    {isDesktopViewport && (
+                        <aside
+                            id="question-drawer-panel"
+                            className={`question-drawer${questionsDrawerOpen ? ' open' : ''}`}
+                            aria-hidden={!questionsDrawerOpen}
+                        >
+                            <div className="question-drawer-inner">
+                                <div className="question-drawer-head">
+                                    <h3>Questions</h3>
+                                    <button
+                                        type="button"
+                                        className="btn ghost"
+                                        onClick={() => setQuestionsDrawerOpen(false)}
+                                    >
+                                        Close
+                                    </button>
+                                </div>
+                                <p className="muted">Enter multiple questions, one per line.</p>
+                                <textarea
+                                    className="field question-list-field"
+                                    value={questionsBulkInput}
+                                    onChange={(event) => setQuestionsBulkInput(event.target.value)}
+                                    rows={6}
+                                    placeholder={[
+                                        'Tell me about a challenging project you worked on.',
+                                        'Describe a time you handled conflicting priorities.',
+                                        'What is one technical decision you would revisit?',
+                                    ].join('\n')}
+                                />
+
+                                <div className="question-list-parsed">
+                                    <h3>Parsed Questions</h3>
+                                    {parsedDrawerQuestions.length ? (
+                                        <div className="question-list-items">
+                                            {parsedDrawerQuestions.map((question, index) => (
+                                                <div key={`${question}-${index}`} className="question-list-item">
+                                                    <p className="muted">
+                                                        {index + 1}. {question}
+                                                    </p>
+                                                    <button
+                                                        type="button"
+                                                        className="btn"
+                                                        onClick={() => {
+                                                            importQuestion(question)
+                                                        }}
+                                                        disabled={isImportQuestionDisabled}
+                                                    >
+                                                        Import
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <p className="muted">Add at least one line to create importable questions.</p>
+                                    )}
+                                </div>
+                            </div>
+                        </aside>
+                    )}
 
                     {debugEnabled ? (
                         <div className="metrics-grid metrics-grid-wide">
@@ -2673,41 +3006,43 @@ function App() {
                             </button>
                         </div>
                     )}
-                    <div className="actions wrap recording-actions">
-                        {!isRecording ? (
-                            <>
-                                <span
-                                    className={`disabled-tooltip-wrap start-video-wrap${isVideoStartDisabled && videoStartDisabledReason ? ' has-tooltip' : ''}`}
-                                    data-disabled-reason={videoStartDisabledReason}
-                                >
+                    {!isDesktopViewport && (
+                        <div className="actions wrap recording-actions">
+                            {!isRecording ? (
+                                <>
+                                    <span
+                                        className={`disabled-tooltip-wrap start-video-wrap${isVideoStartDisabled && videoStartDisabledReason ? ' has-tooltip' : ''}`}
+                                        data-disabled-reason={videoStartDisabledReason}
+                                    >
+                                        <button
+                                            type="button"
+                                            className="btn"
+                                            onClick={() => startRecording('video')}
+                                            disabled={isVideoStartDisabled}
+                                        >
+                                            Start Video Recording
+                                        </button>
+                                    </span>
                                     <button
                                         type="button"
-                                        className="btn"
-                                        onClick={() => startRecording('video')}
-                                        disabled={isVideoStartDisabled}
+                                        className="btn ghost"
+                                        onClick={() => startRecording('audio')}
+                                        disabled={isTranscribing}
                                     >
-                                        Start Video Recording
+                                        Start Audio Recording
                                     </button>
-                                </span>
+                                </>
+                            ) : (
                                 <button
                                     type="button"
-                                    className="btn ghost"
-                                    onClick={() => startRecording('audio')}
-                                    disabled={isTranscribing}
+                                    className="btn"
+                                    onClick={stopRecordingAndTranscribe}
                                 >
-                                    Start Audio Recording
+                                    Stop and Transcribe
                                 </button>
-                            </>
-                        ) : (
-                            <button
-                                type="button"
-                                className="btn"
-                                onClick={stopRecordingAndTranscribe}
-                            >
-                                Stop and Transcribe
-                            </button>
-                        )}
-                    </div>
+                            )}
+                        </div>
+                    )}
                     <div className="label question-row">
                         <label htmlFor="interview-question" className="question-main-label">
                             Interview question
@@ -2729,7 +3064,7 @@ function App() {
                         onChange={(event) => setQuestionInput(event.target.value)}
                         autoComplete="off"
                         rows={2}
-                        placeholder="Tell me about a challenging project you worked on."
+                        placeholder="Type your answer here, or import from the questions tab"
                     />
                     {hasKey && showKeyStatus && <p className="key-status">{maskedSummary}</p>}
                     {needsRevalidation && (
@@ -2760,68 +3095,64 @@ function App() {
                     <div className="actions wrap export-actions">
                         <button
                             type="button"
-                            className="btn ghost"
-                            onClick={() => {
-                                void copyOutputToClipboard()
-                            }}
+                            className="btn"
+                            onClick={addCurrentAnswerToSummary}
+                            disabled={!transcript && !outputText}
                         >
-                            Copy Text
+                            Add to Summary
                         </button>
-                        <button
-                            type="button"
-                            className="btn ghost"
-                            onClick={() => {
-                                void copyJsonReportToClipboard()
-                            }}
-                        >
-                            Copy JSON
-                        </button>
-                        <button
-                            type="button"
-                            className="btn ghost"
-                            onClick={downloadVideoRecording}
-                            disabled={!recordedVideoBlob}
-                        >
-                            Download Video
-                        </button>
-                        <button
-                            type="button"
-                            className="btn ghost"
-                            onClick={downloadAudioRecording}
-                            disabled={!recordedAudioBlob}
-                        >
-                            Download Audio
-                        </button>
-                    </div>
-
-                    <div className="session-history-summary">
-                        <div className={`session-history-box${isFolderFeatureDisabled ? ' disabled-box' : ''}`}>
-                            <div className="session-history-text">
-                                <p className="session-history-title">Previous Answers</p>
-                                <p className="muted session-history-count">
-                                    {isIphoneClient
-                                        ? 'Previous answers are unavailable on iPhone browsers.'
-                                        : recordingsFolderName
-                                            ? `Questions found: ${previousAnswers.length}`
-                                            : 'Select an output folder in Settings to load previous answers.'}
-                                </p>
-                            </div>
-                            <span
-                                className={`disabled-tooltip-wrap${isPreviousAnswersViewDisabled && previousAnswersViewDisabledReason ? ' has-tooltip' : ''}`}
-                                data-disabled-reason={previousAnswersViewDisabledReason}
-                            >
+                        {(isFolderFeatureDisabled || !recordingsFolderName) && (
+                            <>
                                 <button
                                     type="button"
                                     className="btn ghost"
-                                    onClick={openPreviousAnswersModal}
-                                    disabled={isPreviousAnswersViewDisabled}
+                                    onClick={downloadVideoRecording}
+                                    disabled={!recordedVideoBlob}
                                 >
-                                    {isLoadingPreviousAnswers ? 'Loading...' : 'View'}
+                                    Download Video
                                 </button>
-                            </span>
-                        </div>
-                        {previousAnswersError && <p className="warning">{previousAnswersError}</p>}
+                                <button
+                                    type="button"
+                                    className="btn ghost"
+                                    onClick={downloadAudioRecording}
+                                    disabled={!recordedAudioBlob}
+                                >
+                                    Download Audio
+                                </button>
+                            </>
+                        )}
                     </div>
+
+                    {!isDesktopViewport && (
+                        <div className="session-history-summary">
+                            <div className={`session-history-box${isFolderFeatureDisabled ? ' disabled-box' : ''}`}>
+                                <div className="session-history-text">
+                                    <p className="session-history-title">Previous Answers</p>
+                                    <p className="muted session-history-count">
+                                        {isIphoneClient
+                                            ? 'Previous answers are unavailable on iPhone browsers.'
+                                            : recordingsFolderName
+                                                ? `Questions found: ${previousAnswers.length}`
+                                                : 'Select an output folder in Settings to load previous answers.'}
+                                    </p>
+                                </div>
+                                <span
+                                    className={`disabled-tooltip-wrap${isPreviousAnswersViewDisabled && previousAnswersViewDisabledReason ? ' has-tooltip' : ''}`}
+                                    data-disabled-reason={previousAnswersViewDisabledReason}
+                                >
+                                    <button
+                                        type="button"
+                                        className="btn ghost"
+                                        onClick={openPreviousAnswersModal}
+                                        disabled={isPreviousAnswersViewDisabled}
+                                    >
+                                        {isLoadingPreviousAnswers ? 'Loading...' : 'View'}
+                                    </button>
+                                </span>
+                            </div>
+                        </div>
+                    )}
+                    {previousAnswersError && <p className="warning">{previousAnswersError}</p>}
                 </section>
             </main>
 
@@ -3017,6 +3348,137 @@ function App() {
                 </div>
             )}
 
+            {summaryModalOpen && (
+                <div
+                    className="overlay"
+                    role="presentation"
+                    onPointerDown={(event) => {
+                        if (event.target === event.currentTarget) {
+                            closeSummaryModal()
+                        }
+                    }}
+                >
+                    <div
+                        id="summary-modal"
+                        className="modal summary-modal"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="summary-title"
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        <div className="history-modal-header">
+                            <h2 id="summary-title">Interview Summary</h2>
+                            <div className="summary-header-actions">
+                                <button
+                                    type="button"
+                                    className="btn ghost"
+                                    onClick={copySummaryToClipboard}
+                                    disabled={!interviewSummaries.length}
+                                >
+                                    Copy Summary for Gem
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn ghost history-close-btn"
+                                    onClick={closeSummaryModal}
+                                    aria-label="Close"
+                                    title="Close"
+                                >
+                                    X
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="history-modal-grid summary-modal-grid">
+                            <aside className="history-overview summary-overview">
+                                <div className="history-overview-head">
+                                    <h3>Overall Metrics</h3>
+                                </div>
+                                <p className="muted">{overallInterviewSummary.totalAnswers} answer(s)</p>
+
+                                <div className="summary-overall-grid">
+                                    <article className="summary-stat-card">
+                                        <p className="metric-label">Total answers</p>
+                                        <p className="metric-value">{overallInterviewSummary.totalAnswers}</p>
+                                    </article>
+                                    <article className="summary-stat-card">
+                                        <p className="metric-label">Avg WPM</p>
+                                        <p className="metric-value">{overallInterviewSummary.averageWpm}</p>
+                                    </article>
+                                    <article className="summary-stat-card">
+                                        <p className="metric-label">Avg answer length</p>
+                                        <p className="metric-value">{overallInterviewSummary.averageAnswerLengthSec}s</p>
+                                    </article>
+                                    <article className="summary-stat-card">
+                                        <p className="metric-label">Avg hesitations</p>
+                                        <p className="metric-value">{overallInterviewSummary.averageHesitations}</p>
+                                    </article>
+                                    <article className="summary-stat-card">
+                                        <p className="metric-label">Avg gaze center</p>
+                                        <p className="metric-value">{overallInterviewSummary.averageGazeCenterPct}%</p>
+                                    </article>
+                                </div>
+
+                                <h3 className="summary-question-list-title">Answers</h3>
+                                <div className="history-overview-list">
+                                    {interviewSummaries.map((item, index) => (
+                                        <button
+                                            key={item.id}
+                                            type="button"
+                                            className={`history-overview-item${selectedSummary?.id === item.id ? ' active' : ''}`}
+                                            onClick={() => setSelectedSummaryId(item.id)}
+                                        >
+                                            <strong>Q{interviewSummaries.length - index}</strong>
+                                            <span>{new Date(item.capturedAt).toLocaleString()}</span>
+                                            <span>{item.question}</span>
+                                        </button>
+                                    ))}
+                                    {!interviewSummaries.length && (
+                                        <p className="muted">No completed answers yet. Record and transcribe to populate summary data.</p>
+                                    )}
+                                </div>
+                            </aside>
+
+                            <section className="history-detail">
+                                {selectedSummary ? (
+                                    <div className="history-detail-layout">
+                                        <div className="history-detail-top">
+                                            <div className="history-detail-title-block">
+                                                <h3>{selectedSummary.question}</h3>
+                                                <p className="metric-label history-detail-meta">
+                                                    {new Date(selectedSummary.capturedAt).toLocaleString()}
+                                                </p>
+                                            </div>
+                                        </div>
+
+                                        <div className="history-detail-scroll">
+                                            <div className="transcript-box history-transcript">
+                                                <h3>Full Transcript</h3>
+                                                <p className="output-text">{selectedSummary.transcript}</p>
+                                            </div>
+
+                                            <div className="transcript-box history-metrics">
+                                                <h3>Per-Answer Metrics</h3>
+                                                <div className="history-metrics-grid">
+                                                    {Object.entries(selectedSummary.metrics || {}).map(([key, value]) => (
+                                                        <div key={key} className="history-metric-row">
+                                                            <span className="metric-label">{key}</span>
+                                                            <span>{String(value ?? 'n/a')}</span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <p className="muted">Select an answer from the overview to inspect details.</p>
+                                )}
+                            </section>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {settingsOpen && (
                 <div
                     className="overlay"
@@ -3094,6 +3556,21 @@ function App() {
                         <p className="privacy-note">
                             Do not share screenshots of this page while key is visible.
                         </p>
+
+                        <div className="settings-section">
+                            <label className="label">Camera Debug Overlay</label>
+                            <p className="muted">
+                                Enable landmark and posture debugging overlays in Camera View.
+                            </p>
+                            <label className="debug-toggle">
+                                <input
+                                    type="checkbox"
+                                    checked={debugEnabled}
+                                    onChange={(event) => setDebugEnabled(event.target.checked)}
+                                />
+                                <span>Debug</span>
+                            </label>
+                        </div>
 
                         <div className="settings-section">
                             <label className="label">Desktop Layout</label>
@@ -3200,7 +3677,7 @@ function App() {
                     >
                         <h2 id="folder-select-title">Select Save Folder</h2>
                         <p className="muted">
-                            Select a local empty folder to automatically save the output and camera/audio recordings. This folder can be changed in settings screen.
+                            Choose a local folder to automatically save transcripts and video/audio recordings. You can change this folder anytime in Settings.
                         </p>
                         <div className="actions">
                             <button type="button" className="btn" onClick={selectRecordingsFolder}>
