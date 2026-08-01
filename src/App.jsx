@@ -858,6 +858,7 @@ function App() {
     const [readQuestionWithTts, setReadQuestionWithTts] = useState(true)
     const [questionInput, setQuestionInput] = useState('')
     const [transcript, setTranscript] = useState('')
+    const [recordedAudioBlob, setRecordedAudioBlob] = useState(null)
     const [recordedVideoBlob, setRecordedVideoBlob] = useState(null)
     const [recordingsFolderName, setRecordingsFolderName] = useState('')
     const [outputText, setOutputText] = useState('')
@@ -1881,7 +1882,7 @@ function App() {
         }
     }
 
-    function downloadRecording() {
+    function downloadVideoRecording() {
         if (!recordedVideoBlob) return
         const extension =
             recordedVideoBlob.type.includes('mp4')
@@ -1890,6 +1891,21 @@ function App() {
                     ? 'webm'
                     : 'mp4'
         downloadBlob(recordedVideoBlob, `session-video-${Date.now()}.${extension}`)
+    }
+
+    function downloadAudioRecording() {
+        if (!recordedAudioBlob) return
+        const extension =
+            recordedAudioBlob.type.includes('mpeg') || recordedAudioBlob.type.includes('mp3')
+                ? 'mp3'
+                : recordedAudioBlob.type.includes('ogg')
+                    ? 'ogg'
+                    : recordedAudioBlob.type.includes('mp4') || recordedAudioBlob.type.includes('m4a')
+                        ? 'm4a'
+                        : recordedAudioBlob.type.includes('webm')
+                            ? 'webm'
+                            : 'audio'
+        downloadBlob(recordedAudioBlob, `session-audio-${Date.now()}.${extension}`)
     }
 
     async function selectRecordingsFolder() {
@@ -2189,6 +2205,7 @@ function App() {
 
             chunksRef.current = []
             videoChunksRef.current = []
+            setRecordedAudioBlob(null)
             setRecordedVideoBlob(null)
 
             recorder.ondataavailable = (event) => {
@@ -2260,6 +2277,7 @@ function App() {
             } catch {
                 setBanner('MP3 conversion failed in this browser; using original audio format.')
             }
+            setRecordedAudioBlob(storageAudioBlob)
 
             let finalVideoBlob = null
             const shouldSaveVideo = recordingModeRef.current === 'video'
@@ -2736,10 +2754,18 @@ function App() {
                         <button
                             type="button"
                             className="btn ghost"
-                            onClick={downloadRecording}
+                            onClick={downloadVideoRecording}
                             disabled={!recordedVideoBlob}
                         >
-                            Download Video + Audio
+                            Download Video
+                        </button>
+                        <button
+                            type="button"
+                            className="btn ghost"
+                            onClick={downloadAudioRecording}
+                            disabled={!recordedAudioBlob}
+                        >
+                            Download Audio
                         </button>
                     </div>
 
