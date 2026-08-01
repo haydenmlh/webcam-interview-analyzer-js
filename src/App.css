@@ -423,6 +423,10 @@ h3 {
     max-width: min(100%, 340px);
 }
 
+.session-history-box.disabled-box {
+    opacity: 0.65;
+}
+
 .session-history-text {
     min-width: 0;
     display: grid;
@@ -860,6 +864,11 @@ h3 {
 }
 
 @media (max-width: 600px) {
+
+    .recording-actions>.start-video-wrap {
+        flex: 1 1 100%;
+        width: 100%;
+    }
 
     .camera-heading-row {
         flex-wrap: wrap;

@@ -892,7 +892,13 @@ function App() {
         return ageMs > VALIDATION_RECOMMEND_DAYS * 24 * 60 * 60 * 1000
     }, [lastValidatedAt])
 
+    const isIphoneClient = useMemo(() => {
+        if (typeof navigator === 'undefined') return false
+        return /iPhone/i.test(navigator.userAgent)
+    }, [])
+
     const fileSystemAccessSupported = useMemo(() => isFileSystemAccessSupported(), [])
+    const isFolderFeatureDisabled = !fileSystemAccessSupported || isIphoneClient
 
     useEffect(() => {
         if (!toast) return undefined
@@ -954,6 +960,12 @@ function App() {
     }
 
     const loadPreviousAnswers = useCallback(async () => {
+        if (isIphoneClient) {
+            setPreviousAnswers([])
+            setPreviousAnswersError('Previous answers are unavailable on iPhone browsers.')
+            return []
+        }
+
         if (!fileSystemAccessSupported) {
             setPreviousAnswers([])
             setPreviousAnswersError('File access is unavailable in this browser.')
@@ -1068,7 +1080,7 @@ function App() {
         } finally {
             setIsLoadingPreviousAnswers(false)
         }
-    }, [fileSystemAccessSupported])
+    }, [fileSystemAccessSupported, isIphoneClient])
 
     async function openPreviousAnswersModal() {
         const items = await loadPreviousAnswers()
@@ -1106,11 +1118,13 @@ function App() {
         cameraStatus !== 'ready' ? 'Camera access is not allowed yet' : ''
 
     const isPreviousAnswersViewDisabled =
-        !fileSystemAccessSupported || !recordingsFolderName || isLoadingPreviousAnswers
+        isFolderFeatureDisabled || !recordingsFolderName || isLoadingPreviousAnswers
     const previousAnswersViewDisabledReason =
-        !fileSystemAccessSupported || !recordingsFolderName
-            ? 'Folder access is not allowed yet'
-            : ''
+        isIphoneClient
+            ? 'Previous answers are unavailable on iPhone browsers'
+            : !fileSystemAccessSupported || !recordingsFolderName
+                ? 'Folder access is not allowed yet'
+                : ''
 
     useEffect(() => {
         let cancelled = false
@@ -1737,6 +1751,11 @@ function App() {
     }
 
     function openSelectRecordingsFolderModal() {
+        if (isIphoneClient) {
+            setBanner('Recording save folder is unavailable on iPhone browsers.')
+            return
+        }
+
         if (!fileSystemAccessSupported) {
             setBanner('Folder save is supported in Chromium browsers like Chrome or Edge.')
             return
@@ -1910,6 +1929,11 @@ function App() {
     }
 
     async function selectRecordingsFolder() {
+        if (isIphoneClient) {
+            setBanner('Recording save folder is unavailable on iPhone browsers.')
+            return
+        }
+
         if (!fileSystemAccessSupported) {
             setBanner('Folder save is supported in Chromium browsers like Chrome or Edge.')
             return
@@ -2638,7 +2662,7 @@ function App() {
                 </section>
 
                 <section className={`panel session${centerCameraLayout ? ' centered-session-panel' : ''}`}>
-                    {fileSystemAccessSupported && !recordingsFolderName && (
+                    {!isFolderFeatureDisabled && !recordingsFolderName && (
                         <div className="actions wrap">
                             <button
                                 type="button"
@@ -2649,11 +2673,11 @@ function App() {
                             </button>
                         </div>
                     )}
-                    <div className="actions wrap">
+                    <div className="actions wrap recording-actions">
                         {!isRecording ? (
                             <>
                                 <span
-                                    className={`disabled-tooltip-wrap${isVideoStartDisabled && videoStartDisabledReason ? ' has-tooltip' : ''}`}
+                                    className={`disabled-tooltip-wrap start-video-wrap${isVideoStartDisabled && videoStartDisabledReason ? ' has-tooltip' : ''}`}
                                     data-disabled-reason={videoStartDisabledReason}
                                 >
                                     <button
@@ -2771,13 +2795,15 @@ function App() {
                     </div>
 
                     <div className="session-history-summary">
-                        <div className="session-history-box">
+                        <div className={`session-history-box${isFolderFeatureDisabled ? ' disabled-box' : ''}`}>
                             <div className="session-history-text">
                                 <p className="session-history-title">Previous Answers</p>
                                 <p className="muted session-history-count">
-                                    {recordingsFolderName
-                                        ? `Questions found: ${previousAnswers.length}`
-                                        : 'Select an output folder in Settings to load previous answers.'}
+                                    {isIphoneClient
+                                        ? 'Previous answers are unavailable on iPhone browsers.'
+                                        : recordingsFolderName
+                                            ? `Questions found: ${previousAnswers.length}`
+                                            : 'Select an output folder in Settings to load previous answers.'}
                                 </p>
                             </div>
                             <span
@@ -3099,18 +3125,20 @@ function App() {
                         <div className="settings-section">
                             <label className="label">Recording Save Folder</label>
                             <p className="muted">
-                                {recordingsFolderName
-                                    ? `Current folder: ${recordingsFolderName}`
-                                    : fileSystemAccessSupported
-                                        ? 'No folder selected. Recordings can still be downloaded manually.'
-                                        : 'Folder selection is unavailable in this browser.'}
+                                {isIphoneClient
+                                    ? 'Recording save folder is unavailable on iPhone browsers.'
+                                    : recordingsFolderName
+                                        ? `Current folder: ${recordingsFolderName}`
+                                        : fileSystemAccessSupported
+                                            ? 'No folder selected. Recordings can still be downloaded manually.'
+                                            : 'Folder selection is unavailable in this browser.'}
                             </p>
                             <div className="actions wrap">
                                 <button
                                     type="button"
                                     className="btn ghost"
                                     onClick={openSelectRecordingsFolderModal}
-                                    disabled={!fileSystemAccessSupported}
+                                    disabled={isFolderFeatureDisabled}
                                 >
                                     {recordingsFolderName ? 'Change Save Folder' : 'Select Save Folder'}
                                 </button>
@@ -3119,6 +3147,7 @@ function App() {
                                         type="button"
                                         className="btn ghost"
                                         onClick={clearRecordingsFolder}
+                                        disabled={isFolderFeatureDisabled}
                                     >
                                         Clear Save Folder
                                     </button>
