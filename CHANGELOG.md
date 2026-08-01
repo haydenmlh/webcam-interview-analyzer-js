@@ -19,6 +19,52 @@ Use this template for future releases:
 -
 ```
 
+## [1.4.0] - 2026-08-01
+
+### Added
+- Next Question now opens the Questions Import modal when there are no available unanswered questions.
+- Next Question hover guidance for empty bank/exhausted state: "No next question, click to add new questions."
+
+### Changed
+- Desktop side-tab labels updated for clarity:
+  - Questions -> Questions Import
+  - Summary -> Session Summary
+- Side-tab sizing/spacing adjusted so all three desktop tabs support two-line labels with consistent vertical spacing.
+
+### Fixed
+- Summary and Previous Answers side-tab spacing regressions after two-line tab updates.
+
+## [1.3.0] - 2026-08-01
+
+### Added
+- Delete Answer actions in both Interview Session Summary and Previous Answers detail views.
+- Folder-backed file deletion flow that removes linked JSON/TXT/audio/video files when deleting an answer.
+
+### Changed
+- Previous Answers action layout updates:
+  - Add to Summary now stays disabled when the selected answer already exists in summary.
+  - Copy action renamed to "Copy Transcript and Metrics".
+  - Delete actions now use red danger styling.
+- Summary and history naming refresh:
+  - "Interview Session Summary" title
+  - "Copy Session Summary for Gem" action label
+
+### Fixed
+- Summary modal sizing and column split alignment with Previous Answers.
+- Summary overall-metrics selection now correctly opens aggregate details in the right pane.
+
+## [1.2.1] - 2026-08-01
+
+### Changed
+- Settings modal title updated to "Settings" with a sticky top header and dedicated close (X) button.
+- Deepgram key action buttons (Show key / Remove key) repositioned below the API key input for improved form flow.
+- Mobile question controls refined: Questions List and Next Question now share equal-width row actions.
+
+### Fixed
+- Mobile settings header spacing/anchoring issues that caused content to leak during scroll.
+- Mobile settings close button width/stretch behavior.
+- Mobile view cleanup: hid Previous Answers panel section and Recording Save Folder settings section.
+
 ## [1.2.0] - 2026-08-01
 
 ### Added
