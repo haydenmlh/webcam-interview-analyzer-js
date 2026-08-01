@@ -8,6 +8,7 @@ import {
 import { FFmpeg } from '@ffmpeg/ffmpeg'
 import { fetchFile, toBlobURL } from '@ffmpeg/util'
 import lamejs from 'lamejs'
+import { APP_VERSION } from './version'
 import './App.css'
 
 const STORAGE_KEY = 'mia.deepgram.apiKey'
@@ -2799,7 +2800,7 @@ function App() {
             </main>
 
             <footer className="app-footer">
-                <p>Version 1.0.1</p>
+                <p>Version {APP_VERSION}</p>
             </footer>
 
             {historyModalOpen && (

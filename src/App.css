@@ -830,6 +830,14 @@ h3 {
         flex: 1 1 180px;
     }
 
+    .actions>.disabled-tooltip-wrap {
+        flex: 1 1 180px;
+    }
+
+    .actions>.disabled-tooltip-wrap>.btn {
+        width: 100%;
+    }
+
     .metrics-grid {
         grid-template-columns: 1fr;
     }
