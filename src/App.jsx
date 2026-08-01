@@ -2845,7 +2845,13 @@ function App() {
                                 {selectedPreviousAnswer ? (
                                     <div className="history-detail-layout">
                                         <div className="history-detail-top">
-                                            <h3>{selectedPreviousAnswer.question}</h3>
+                                            <div className="history-detail-title-block">
+                                                <h3>{selectedPreviousAnswer.question}</h3>
+                                                <p className="metric-label history-detail-meta">
+                                                    {selectedPreviousAnswer.source} ·{' '}
+                                                    {new Date(selectedPreviousAnswer.capturedAt).toLocaleString()}
+                                                </p>
+                                            </div>
                                             <button
                                                 type="button"
                                                 className="btn ghost history-copy-btn"
@@ -2857,11 +2863,6 @@ function App() {
                                         </div>
 
                                         <div className="history-detail-scroll">
-                                            <p className="metric-label history-detail-meta">
-                                                {selectedPreviousAnswer.source} ·{' '}
-                                                {new Date(selectedPreviousAnswer.capturedAt).toLocaleString()}
-                                            </p>
-
                                             <div className="transcript-box history-media">
                                                 <div className="history-media-head">
                                                     <h3>Recording</h3>
