@@ -19,6 +19,34 @@ Use this template for future releases:
 -
 ```
 
+## [1.2.0] - 2026-08-01
+
+### Added
+- Next Question action beside Interview question to pull the next unimported question from the Questions bank.
+- Material Symbols icons for theme toggle and settings controls.
+- Mobile Questions modal access from the Interview question area, including a Questions List button.
+- Date-folder organization for saved sessions (for example `YYYY-MM-DD`) with recursive Previous Answers loading.
+- Folder/date badges in Previous Answers to show where each report is stored.
+
+### Changed
+- Questions desktop experience moved from slide-in drawer to modal while retaining the existing question bank/import UI.
+- Recording controls moved to the bottom of the camera panel for both desktop and mobile.
+- Camera preview/frame now uses full camera panel width.
+- Camera and interview/transcript panels were rebalanced and aligned to matched centered widths.
+- Header/topbar sizing and spacing refined for a more compact layout.
+- Header controls now use Material Symbols with reduced icon button sizing.
+- Mobile Interview question controls now place the title above actions, with Questions List and Next Question as equal-width row actions.
+- Mobile camera header keeps Camera View and Allow Camera Access on the same row.
+
+### Fixed
+- Prevent duplicate additions for the same summary entry.
+- Skip summary/metrics/file saves when transcript is empty.
+- Side-tab positioning and camera-panel spacing refinements.
+- No-face status and recording action spacing cleanup in camera panel.
+- Mobile tooltip dismissal no longer shifts focus into the interview question field.
+- Disabled Previous Answers tooltip interactions no longer trigger mobile scroll jumps.
+- Interview question input placeholder text corrected to "Type your question here".
+
 ## [1.1.0] - 2026-08-01
 
 ### Added

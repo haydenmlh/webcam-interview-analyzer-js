@@ -691,10 +691,38 @@ function sanitizeQuestionForFileName(question) {
     return (safeText || 'question').slice(0, 30)
 }
 
+function normalizeQuestionKey(questionText) {
+    return sanitizeDisplayText(questionText, '')
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim()
+}
+
 function buildSessionFileBaseName(capturedAtIso, question) {
     const stamp = formatSessionTimestamp(capturedAtIso)
     const safeQuestion = sanitizeQuestionForFileName(question)
     return `${stamp}_${safeQuestion}`
+}
+
+function buildSessionDateFolderName(capturedAtIso) {
+    const source = capturedAtIso || new Date().toISOString()
+    const parsed = new Date(source)
+    const safeDate = Number.isNaN(parsed.getTime()) ? new Date() : parsed
+    const year = safeDate.getFullYear()
+    const month = String(safeDate.getMonth() + 1).padStart(2, '0')
+    const day = String(safeDate.getDate()).padStart(2, '0')
+    return `${year}-${month}-${day}`
+}
+
+function getSummaryFingerprint(entry) {
+    return JSON.stringify({
+        question: sanitizeDisplayText(entry?.question, '(no question)'),
+        transcript: sanitizeDisplayText(entry?.transcript, '(no transcript captured)'),
+        metrics:
+            entry?.metrics && typeof entry.metrics === 'object'
+                ? entry.metrics
+                : null,
+    })
 }
 
 function splitFileName(fileName) {
@@ -707,15 +735,17 @@ function splitFileName(fileName) {
     }
 }
 
-function parseSessionJsonReport(fileName, content, fallbackDateIso, sortTime) {
+function parseSessionJsonReport(fileName, content, fallbackDateIso, sortTime, folderPath = '') {
     try {
         const parsed = JSON.parse(content)
         const { baseName } = splitFileName(fileName)
         const parsedTextFileName = sanitizeDisplayText(parsed?.savedFiles?.textFileName, '')
+        const sourcePath = folderPath ? `${folderPath}/${fileName}` : fileName
         return {
-            id: `${baseName}-${sortTime}-json`,
+            id: `${sourcePath}-${sortTime}-json`,
             baseName,
-            source: sanitizeDisplayText(fileName, 'unknown-file'),
+            source: sanitizeDisplayText(sourcePath, 'unknown-file'),
+            folderPath,
             capturedAt: sanitizeDisplayText(
                 parsed?.generatedAt ?? parsed?.capturedAt,
                 fallbackDateIso,
@@ -840,6 +870,7 @@ function App() {
     const [questionsDrawerOpen, setQuestionsDrawerOpen] = useState(false)
     const [summaryModalOpen, setSummaryModalOpen] = useState(false)
     const [questionsBulkInput, setQuestionsBulkInput] = useState('')
+    const [importedQuestionKeys, setImportedQuestionKeys] = useState([])
 
     const [facesDetected, setFacesDetected] = useState(0)
     const [handsDetected, setHandsDetected] = useState(0)
@@ -865,10 +896,10 @@ function App() {
     const [readQuestionWithTts, setReadQuestionWithTts] = useState(true)
     const [questionInput, setQuestionInput] = useState('')
     const [transcript, setTranscript] = useState('')
+    const [latestInterviewMetrics, setLatestInterviewMetrics] = useState(null)
     const [recordedAudioBlob, setRecordedAudioBlob] = useState(null)
     const [recordedVideoBlob, setRecordedVideoBlob] = useState(null)
     const [recordingsFolderName, setRecordingsFolderName] = useState('')
-    const [outputText, setOutputText] = useState('')
     const [interviewSummaries, setInterviewSummaries] = useState([])
     const [selectedSummaryId, setSelectedSummaryId] = useState('')
     const [previousAnswers, setPreviousAnswers] = useState([])
@@ -999,44 +1030,58 @@ function App() {
             }
 
             const allFileEntries = []
-            const fileHandleByName = new Map()
-            const mediaByBaseName = new Map()
+            const fileHandleByFolderAndName = new Map()
+            const mediaByFolderAndBaseName = new Map()
             const parsedItems = []
             const mediaExtensions = new Set(['mp3', 'm4a', 'ogg', 'wav', 'webm', 'mp4', 'mov'])
 
-            for await (const [entryName, entryHandle] of folderHandle.entries()) {
-                if (entryHandle.kind !== 'file') continue
-                const parts = splitFileName(entryName)
-                fileHandleByName.set(entryName, entryHandle)
+            async function collectFileEntriesFromDirectory(directoryHandle, folderPath = '') {
+                for await (const [entryName, entryHandle] of directoryHandle.entries()) {
+                    if (entryHandle.kind === 'directory') {
+                        const childPath = folderPath ? `${folderPath}/${entryName}` : entryName
+                        await collectFileEntriesFromDirectory(entryHandle, childPath)
+                        continue
+                    }
 
-                allFileEntries.push({
-                    name: entryName,
-                    handle: entryHandle,
-                    baseName: parts.baseName,
-                    extension: parts.extension,
-                })
+                    if (entryHandle.kind !== 'file') continue
+                    const parts = splitFileName(entryName)
+                    const scopedNameKey = `${folderPath}/${entryName}`
+                    const scopedBaseKey = `${folderPath}/${parts.baseName}`
 
-                if (!mediaExtensions.has(parts.extension)) continue
+                    fileHandleByFolderAndName.set(scopedNameKey, entryHandle)
 
-                const existing = mediaByBaseName.get(parts.baseName) || {
-                    audioHandle: null,
-                    videoHandle: null,
-                    audioFileName: '',
-                    videoFileName: '',
+                    allFileEntries.push({
+                        name: entryName,
+                        folderPath,
+                        handle: entryHandle,
+                        baseName: parts.baseName,
+                        extension: parts.extension,
+                    })
+
+                    if (!mediaExtensions.has(parts.extension)) continue
+
+                    const existing = mediaByFolderAndBaseName.get(scopedBaseKey) || {
+                        audioHandle: null,
+                        videoHandle: null,
+                        audioFileName: '',
+                        videoFileName: '',
+                    }
+
+                    if (parts.extension === 'mp4' || parts.extension === 'mov') {
+                        existing.videoHandle = entryHandle
+                        existing.videoFileName = entryName
+                    }
+
+                    if (parts.extension === 'mp3' || parts.extension === 'm4a' || parts.extension === 'ogg' || parts.extension === 'wav') {
+                        existing.audioHandle = entryHandle
+                        existing.audioFileName = entryName
+                    }
+
+                    mediaByFolderAndBaseName.set(scopedBaseKey, existing)
                 }
-
-                if (parts.extension === 'mp4' || parts.extension === 'mov') {
-                    existing.videoHandle = entryHandle
-                    existing.videoFileName = entryName
-                }
-
-                if (parts.extension === 'mp3' || parts.extension === 'm4a' || parts.extension === 'ogg' || parts.extension === 'wav') {
-                    existing.audioHandle = entryHandle
-                    existing.audioFileName = entryName
-                }
-
-                mediaByBaseName.set(parts.baseName, existing)
             }
+
+            await collectFileEntriesFromDirectory(folderHandle)
 
             for (const entry of allFileEntries) {
                 if (entry.extension !== 'json') continue
@@ -1051,19 +1096,22 @@ function App() {
                     content,
                     fallbackDateIso,
                     file.lastModified || 0,
+                    entry.folderPath,
                 )
                 if (!parsed) continue
 
+                const scopedName = (name) => `${entry.folderPath}/${name}`
+                const scopedBaseKey = `${entry.folderPath}/${entry.baseName}`
                 const byNameAudio = parsed.audioFileName
-                    ? fileHandleByName.get(parsed.audioFileName) || null
+                    ? fileHandleByFolderAndName.get(scopedName(parsed.audioFileName)) || null
                     : null
                 const byNameVideo = parsed.videoFileName
-                    ? fileHandleByName.get(parsed.videoFileName) || null
+                    ? fileHandleByFolderAndName.get(scopedName(parsed.videoFileName)) || null
                     : null
                 const byNameText = parsed.textFileName
-                    ? fileHandleByName.get(parsed.textFileName) || null
+                    ? fileHandleByFolderAndName.get(scopedName(parsed.textFileName)) || null
                     : null
-                const byBaseMedia = mediaByBaseName.get(entry.baseName)
+                const byBaseMedia = mediaByFolderAndBaseName.get(scopedBaseKey)
                 const fallbackTextFileName = `${entry.baseName}.txt`
 
                 parsedItems.push({
@@ -1072,7 +1120,10 @@ function App() {
                     videoHandle: byNameVideo || byBaseMedia?.videoHandle || null,
                     audioFileName: parsed.audioFileName || byBaseMedia?.audioFileName || '',
                     videoFileName: parsed.videoFileName || byBaseMedia?.videoFileName || '',
-                    textHandle: byNameText || fileHandleByName.get(fallbackTextFileName) || null,
+                    textHandle:
+                        byNameText ||
+                        fileHandleByFolderAndName.get(scopedName(fallbackTextFileName)) ||
+                        null,
                     textFileName: parsed.textFileName || fallbackTextFileName,
                 })
             }
@@ -1137,6 +1188,11 @@ function App() {
                     ? 'Select a save folder in Settings to enable previous answers.'
                     : ''
 
+    function suppressDisabledTooltipPointerDefault(event, isDisabled) {
+        if (!isDisabled) return
+        event.preventDefault()
+    }
+
     useEffect(() => {
         let cancelled = false
 
@@ -1184,6 +1240,29 @@ function App() {
                 .filter(Boolean),
         [questionsBulkInput],
     )
+
+    const parsedDrawerQuestionKeys = useMemo(
+        () => parsedDrawerQuestions.map((question) => normalizeQuestionKey(question)),
+        [parsedDrawerQuestions],
+    )
+
+    const remainingBankQuestionCount = useMemo(
+        () =>
+            parsedDrawerQuestionKeys.filter(
+                (key) => key && !importedQuestionKeys.includes(key),
+            ).length,
+        [importedQuestionKeys, parsedDrawerQuestionKeys],
+    )
+
+    const nextUnimportedQuestion = useMemo(() => {
+        for (let i = 0; i < parsedDrawerQuestions.length; i += 1) {
+            const key = parsedDrawerQuestionKeys[i]
+            if (key && !importedQuestionKeys.includes(key)) {
+                return parsedDrawerQuestions[i]
+            }
+        }
+        return ''
+    }, [importedQuestionKeys, parsedDrawerQuestionKeys, parsedDrawerQuestions])
 
     const overallInterviewSummary = useMemo(() => {
         if (!interviewSummaries.length) {
@@ -1236,13 +1315,21 @@ function App() {
         setSummaryModalOpen(false)
     }
 
-    function importQuestion(questionText) {
+    function importQuestion(questionText, options = {}) {
+        const { closePanel = true, markImported = true } = options
         const nextQuestion = questionText.trim()
         if (!nextQuestion) return
 
+        const questionKey = normalizeQuestionKey(nextQuestion)
+        if (markImported && questionKey) {
+            setImportedQuestionKeys((prev) =>
+                prev.includes(questionKey) ? prev : [...prev, questionKey],
+            )
+        }
+
         setQuestionInput(nextQuestion)
         setBanner('')
-        if (isDesktopViewport) {
+        if (closePanel) {
             setQuestionsDrawerOpen(false)
         }
     }
@@ -1964,26 +2051,13 @@ function App() {
         }
     }
 
-    async function copyOutputToClipboard() {
-        if (!outputText) {
-            setToast('No output to copy yet.')
-            return
-        }
-
-        try {
-            await navigator.clipboard.writeText(outputText)
-            setToast('Output copied to clipboard.')
-        } catch {
-            setToast('Could not copy output to clipboard.')
-        }
-    }
-
     function addCurrentAnswerToSummary() {
         const question = questionInput.trim()
-        const answerTranscript = transcript?.trim() || outputText?.trim()
+        const answerTranscript = transcript?.trim()
+        const metricsForSummary = latestInterviewMetrics || null
 
-        if (!answerTranscript) {
-            setToast('No transcript or output available to add.')
+        if (!answerTranscript || !metricsForSummary) {
+            setToast('No transcript with metrics available to add yet.')
             return
         }
 
@@ -1992,7 +2066,17 @@ function App() {
             capturedAt: new Date().toISOString(),
             question: question || '(no question)',
             transcript: answerTranscript,
-            metrics: buildSessionReport({ question, transcript: answerTranscript }).metrics,
+            metrics: metricsForSummary,
+        }
+
+        const candidateFingerprint = getSummaryFingerprint(summaryEntry)
+        const existingEntry = interviewSummaries.find(
+            (item) => getSummaryFingerprint(item) === candidateFingerprint,
+        )
+        if (existingEntry) {
+            setSelectedSummaryId(existingEntry.id)
+            setToast('This answer is already in summary.')
+            return
         }
 
         setInterviewSummaries((prev) => [summaryEntry, ...prev])
@@ -2148,8 +2232,7 @@ function App() {
         setToast('Recording folder cleared.')
     }
 
-    async function writeBlobToSelectedFolder(fileName, blob) {
-        const folderHandle = recordingsFolderRef.current
+    async function writeBlobToSelectedFolder(folderHandle, fileName, blob) {
         if (!folderHandle) return false
 
         try {
@@ -2187,6 +2270,17 @@ function App() {
             return null
         }
 
+        const dateFolderName = buildSessionDateFolderName(capturedAtIso)
+        let targetFolderHandle
+        try {
+            targetFolderHandle = await folderHandle.getDirectoryHandle(dateFolderName, {
+                create: true,
+            })
+        } catch {
+            setBanner('Could not create a date folder in the selected output folder.')
+            return null
+        }
+
         const baseName = buildSessionFileBaseName(capturedAtIso, question)
         const jsonFileName = `${baseName}.json`
         const textFileName = `${baseName}.txt`
@@ -2210,9 +2304,8 @@ function App() {
         const reportForSave = {
             ...report,
             outputText: outputBlock,
-            audioFileName,
-            videoFileName,
             savedFiles: {
+                folder: dateFolderName,
                 jsonFileName,
                 textFileName,
                 audioFileName,
@@ -2221,26 +2314,28 @@ function App() {
         }
 
         const jsonOk = await writeBlobToSelectedFolder(
+            targetFolderHandle,
             jsonFileName,
             new Blob([JSON.stringify(reportForSave, null, 2)], {
                 type: 'application/json',
             }),
         )
         const textOk = await writeBlobToSelectedFolder(
+            targetFolderHandle,
             textFileName,
             new Blob([outputBlock], {
                 type: 'text/plain;charset=utf-8',
             }),
         )
         const audioOk = audioBlob
-            ? await writeBlobToSelectedFolder(audioFileName, audioBlob)
+            ? await writeBlobToSelectedFolder(targetFolderHandle, audioFileName, audioBlob)
             : false
         const videoOk = videoBlob
-            ? await writeBlobToSelectedFolder(videoFileName, videoBlob)
+            ? await writeBlobToSelectedFolder(targetFolderHandle, videoFileName, videoBlob)
             : true
 
         if (jsonOk && textOk && audioOk && videoOk) {
-            setToast(`Saved session files to ${recordingsFolderName}.`)
+            setToast(`Saved session files to ${recordingsFolderName}/${dateFolderName}.`)
             await loadPreviousAnswers()
             return reportForSave
         }
@@ -2274,7 +2369,7 @@ function App() {
 
         const payload = await response.json()
         const text = safeTranscriptFromDeepgram(payload)
-        return text || 'No transcript was returned for this recording.'
+        return text
     }
 
     async function speakQuestionIfEnabled(questionText = questionInput) {
@@ -2360,7 +2455,7 @@ function App() {
             recordingModeRef.current = mode
             setBanner('')
             setTranscript('Recording answer...')
-            setOutputText('')
+            setLatestInterviewMetrics(null)
             sessionStartedAtRef.current = new Date().toISOString()
             resetInterviewTracking()
             recalibrateTorsoBaseline()
@@ -2504,15 +2599,24 @@ function App() {
             }
 
             const text = await transcribeAudioBlob(rawAudioBlob)
-            setTranscript(text)
+            const normalizedTranscript = text.trim()
+            if (!normalizedTranscript) {
+                setTranscript('')
+                setLatestInterviewMetrics(null)
+                setBanner('No transcript was returned; summary and session files were not saved.')
+                setToast('No transcript returned.')
+                return
+            }
+
+            setTranscript(normalizedTranscript)
 
             const answerLengthSec = Math.max(
                 0,
                 (performance.now() - recordingStartedAtPerfRef.current) / 1000,
             )
-            const words = countWords(text)
+            const words = countWords(normalizedTranscript)
             const wpmRaw = answerLengthSec > 0 ? words / (answerLengthSec / 60) : 0
-            const hesitationsCount = countHesitations(text)
+            const hesitationsCount = countHesitations(normalizedTranscript)
             const gazeCenterSecRaw = gazeCenteredTimeMsRef.current / 1000
             const gazeCenterPctRaw =
                 answerLengthSec > 0 ? (gazeCenterSecRaw / answerLengthSec) * 100 : 0
@@ -2578,18 +2682,18 @@ function App() {
             const outputBlock = buildOutputText({
                 capturedAt: capturedAtIso,
                 question: trimmedQuestion,
-                answer: text,
+                answer: normalizedTranscript,
                 metrics: interviewMetrics,
             })
 
-            setOutputText(outputBlock)
+            setLatestInterviewMetrics(interviewMetrics)
 
             const sessionReport = {
                 ...buildSessionReport({
                     generatedAt: capturedAtIso,
                     sessionEndedAt: capturedAtIso,
                     question: trimmedQuestion,
-                    transcript: text,
+                    transcript: normalizedTranscript,
                 }),
                 interviewMetrics,
             }
@@ -2598,12 +2702,20 @@ function App() {
                 id: crypto.randomUUID(),
                 capturedAt: capturedAtIso,
                 question: trimmedQuestion || '(no question)',
-                transcript: text || '(no transcript captured)',
+                transcript: normalizedTranscript,
                 metrics: interviewMetrics,
             }
 
-            setInterviewSummaries((prev) => [summaryEntry, ...prev])
-            setSelectedSummaryId(summaryEntry.id)
+            const candidateFingerprint = getSummaryFingerprint(summaryEntry)
+            const existingEntry = interviewSummaries.find(
+                (item) => getSummaryFingerprint(item) === candidateFingerprint,
+            )
+            if (existingEntry) {
+                setSelectedSummaryId(existingEntry.id)
+            } else {
+                setInterviewSummaries((prev) => [summaryEntry, ...prev])
+                setSelectedSummaryId(summaryEntry.id)
+            }
 
             await saveSessionArtifactsToSelectedFolder({
                 capturedAtIso,
@@ -2617,7 +2729,7 @@ function App() {
             setToast('Transcription completed.')
         } catch (error) {
             setTranscript('')
-            setOutputText('')
+            setLatestInterviewMetrics(null)
             setBanner(error.message || 'Transcription failed. Try again.')
             setToast(error.message || 'Transcription failed. Try again.')
         } finally {
@@ -2646,9 +2758,8 @@ function App() {
         shoulderRotationDeg == null
             ? 'n/a'
             : describeTorsoRotation(shoulderRotationDeg, SHOULDER_ROTATION_ALERT_DEG)
-    const outputDisplayText =
-        outputText ||
-        'No output yet. Start recording to capture a transcript and interview metrics.'
+    const transcriptDisplayText =
+        transcript || 'No transcript yet. Start recording to capture your answer transcript.'
     const cameraActionButton =
         cameraStatus === 'ready' ? (
             <button type="button" className="btn ghost" onClick={stopCamera}>
@@ -2668,27 +2779,33 @@ function App() {
     return (
         <div className="app-shell">
             <header className="topbar">
-                <h1>Mock Interviewer</h1>
-                <div className="topbar-actions">
-                    <button
-                        type="button"
-                        className="btn ghost theme-toggle"
-                        onClick={() => setDarkMode((prev) => !prev)}
-                        aria-label={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
-                        aria-pressed={darkMode}
-                        title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
-                    >
-                        <span aria-hidden="true">{darkMode ? '\u263D' : '\u2600'}</span>
-                    </button>
-                    <button
-                        type="button"
-                        className="btn ghost settings-cog"
-                        onClick={openSettings}
-                        aria-label="Open settings"
-                        title="Settings"
-                    >
-                        &#9881;
-                    </button>
+                <div className="topbar-inner">
+                    <h1>Mock Interviewer</h1>
+                    <div className="topbar-actions">
+                        <button
+                            type="button"
+                            className="btn ghost theme-toggle"
+                            onClick={() => setDarkMode((prev) => !prev)}
+                            aria-label={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+                            aria-pressed={darkMode}
+                            title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+                        >
+                            <span className="material-symbols-outlined topbar-icon" aria-hidden="true">
+                                {darkMode ? 'dark_mode' : 'light_mode'}
+                            </span>
+                        </button>
+                        <button
+                            type="button"
+                            className="btn ghost settings-cog"
+                            onClick={openSettings}
+                            aria-label="Open settings"
+                            title="Settings"
+                        >
+                            <span className="material-symbols-outlined topbar-icon" aria-hidden="true">
+                                settings
+                            </span>
+                        </button>
+                    </div>
                 </div>
             </header>
 
@@ -2708,8 +2825,8 @@ function App() {
                                 })
                             }}
                             aria-expanded={questionsDrawerOpen}
-                            aria-controls="question-drawer-panel"
-                            title={questionsDrawerOpen ? 'Hide questions panel' : 'Show questions panel'}
+                            aria-controls="questions-modal"
+                            title={questionsDrawerOpen ? 'Hide questions modal' : 'Show questions modal'}
                         >
                             Questions
                         </button>
@@ -2737,6 +2854,9 @@ function App() {
                         <span
                             className={`disabled-tooltip-wrap previous-peek-tab-wrap${isPreviousAnswersViewDisabled && previousAnswersViewDisabledReason ? ' has-tooltip' : ''}`}
                             data-disabled-reason={previousAnswersViewDisabledReason}
+                            onPointerDown={(event) =>
+                                suppressDisabledTooltipPointerDefault(event, isPreviousAnswersViewDisabled)
+                            }
                         >
                             <button
                                 type="button"
@@ -2757,43 +2877,6 @@ function App() {
                         <h2>{debugEnabled ? 'Camera View (JS MediaPipe)' : 'Camera View'}</h2>
                         <div className="camera-heading-controls">
                             {cameraActionButton}
-                            {isDesktopViewport && (
-                                <div className="camera-heading-recording-actions">
-                                    {!isRecording ? (
-                                        <>
-                                            <span
-                                                className={`disabled-tooltip-wrap${isVideoStartDisabled && videoStartDisabledReason ? ' has-tooltip' : ''}`}
-                                                data-disabled-reason={videoStartDisabledReason}
-                                            >
-                                                <button
-                                                    type="button"
-                                                    className="btn"
-                                                    onClick={() => startRecording('video')}
-                                                    disabled={isVideoStartDisabled}
-                                                >
-                                                    Start Video Recording
-                                                </button>
-                                            </span>
-                                            <button
-                                                type="button"
-                                                className="btn ghost"
-                                                onClick={() => startRecording('audio')}
-                                                disabled={isTranscribing}
-                                            >
-                                                Start Audio Recording
-                                            </button>
-                                        </>
-                                    ) : (
-                                        <button
-                                            type="button"
-                                            className="btn"
-                                            onClick={stopRecordingAndTranscribe}
-                                        >
-                                            Stop and Transcribe
-                                        </button>
-                                    )}
-                                </div>
-                            )}
                         </div>
                     </div>
 
@@ -2814,8 +2897,48 @@ function App() {
                         )}
                     </div>
 
-                    <div className="actions wrap camera-controls-row">
-                        {debugEnabled ? (
+                    {!debugEnabled && cameraStatus === 'ready' && facesDetected === 0 ? (
+                        <p className="face-detected-text">No face detected</p>
+                    ) : null}
+
+                    <div className="actions wrap recording-actions camera-recording-actions">
+                        {!isRecording ? (
+                            <>
+                                <button
+                                    type="button"
+                                    className="btn ghost"
+                                    onClick={() => startRecording('audio')}
+                                    disabled={isTranscribing}
+                                >
+                                    Start Audio Recording
+                                </button>
+                                <span
+                                    className={`disabled-tooltip-wrap start-video-wrap${isVideoStartDisabled && videoStartDisabledReason ? ' has-tooltip' : ''}`}
+                                    data-disabled-reason={videoStartDisabledReason}
+                                >
+                                    <button
+                                        type="button"
+                                        className="btn"
+                                        onClick={() => startRecording('video')}
+                                        disabled={isVideoStartDisabled}
+                                    >
+                                        Start Video Recording
+                                    </button>
+                                </span>
+                            </>
+                        ) : (
+                            <button
+                                type="button"
+                                className="btn"
+                                onClick={stopRecordingAndTranscribe}
+                            >
+                                Stop and Transcribe
+                            </button>
+                        )}
+                    </div>
+
+                    {debugEnabled && (
+                        <div className="actions wrap camera-controls-row">
                             <div className="baseline-controls">
                                 <div className="baseline-button-row">
                                     <button
@@ -2845,73 +2968,7 @@ function App() {
                                     recording.
                                 </p>
                             </div>
-                        ) : (
-                            <>
-                                {cameraStatus === 'ready' && facesDetected === 0 ? (
-                                    <p className="face-detected-text">No face detected</p>
-                                ) : null}
-                            </>
-                        )}
-                    </div>
-
-                    {isDesktopViewport && (
-                        <aside
-                            id="question-drawer-panel"
-                            className={`question-drawer${questionsDrawerOpen ? ' open' : ''}`}
-                            aria-hidden={!questionsDrawerOpen}
-                        >
-                            <div className="question-drawer-inner">
-                                <div className="question-drawer-head">
-                                    <h3>Questions</h3>
-                                    <button
-                                        type="button"
-                                        className="btn ghost"
-                                        onClick={() => setQuestionsDrawerOpen(false)}
-                                    >
-                                        Close
-                                    </button>
-                                </div>
-                                <p className="muted">Enter multiple questions, one per line.</p>
-                                <textarea
-                                    className="field question-list-field"
-                                    value={questionsBulkInput}
-                                    onChange={(event) => setQuestionsBulkInput(event.target.value)}
-                                    rows={6}
-                                    placeholder={[
-                                        'Tell me about a challenging project you worked on.',
-                                        'Describe a time you handled conflicting priorities.',
-                                        'What is one technical decision you would revisit?',
-                                    ].join('\n')}
-                                />
-
-                                <div className="question-list-parsed">
-                                    <h3>Parsed Questions</h3>
-                                    {parsedDrawerQuestions.length ? (
-                                        <div className="question-list-items">
-                                            {parsedDrawerQuestions.map((question, index) => (
-                                                <div key={`${question}-${index}`} className="question-list-item">
-                                                    <p className="muted">
-                                                        {index + 1}. {question}
-                                                    </p>
-                                                    <button
-                                                        type="button"
-                                                        className="btn"
-                                                        onClick={() => {
-                                                            importQuestion(question)
-                                                        }}
-                                                        disabled={isImportQuestionDisabled}
-                                                    >
-                                                        Import
-                                                    </button>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    ) : (
-                                        <p className="muted">Add at least one line to create importable questions.</p>
-                                    )}
-                                </div>
-                            </div>
-                        </aside>
+                        </div>
                     )}
 
                     {debugEnabled ? (
@@ -3006,65 +3063,96 @@ function App() {
                             </button>
                         </div>
                     )}
-                    {!isDesktopViewport && (
-                        <div className="actions wrap recording-actions">
-                            {!isRecording ? (
-                                <>
-                                    <span
-                                        className={`disabled-tooltip-wrap start-video-wrap${isVideoStartDisabled && videoStartDisabledReason ? ' has-tooltip' : ''}`}
-                                        data-disabled-reason={videoStartDisabledReason}
-                                    >
-                                        <button
-                                            type="button"
-                                            className="btn"
-                                            onClick={() => startRecording('video')}
-                                            disabled={isVideoStartDisabled}
-                                        >
-                                            Start Video Recording
-                                        </button>
-                                    </span>
-                                    <button
-                                        type="button"
-                                        className="btn ghost"
-                                        onClick={() => startRecording('audio')}
-                                        disabled={isTranscribing}
-                                    >
-                                        Start Audio Recording
-                                    </button>
-                                </>
-                            ) : (
+                    <div className="label question-row">
+                        <p className="question-main-label">
+                            Interview question
+                        </p>
+                        <div className="question-row-actions">
+                            {isDesktopViewport ? (
                                 <button
                                     type="button"
-                                    className="btn"
-                                    onClick={stopRecordingAndTranscribe}
+                                    className="btn ghost question-next-btn"
+                                    onClick={() => {
+                                        if (!nextUnimportedQuestion) return
+                                        importQuestion(nextUnimportedQuestion, {
+                                            closePanel: false,
+                                            markImported: true,
+                                        })
+                                    }}
+                                    disabled={
+                                        isImportQuestionDisabled ||
+                                        !parsedDrawerQuestions.length ||
+                                        !nextUnimportedQuestion
+                                    }
+                                    title={
+                                        !parsedDrawerQuestions.length
+                                            ? 'Add questions in the Questions modal first.'
+                                            : !nextUnimportedQuestion
+                                                ? 'All questions in the bank have already been imported.'
+                                                : `${remainingBankQuestionCount} question(s) remaining in bank`
+                                    }
                                 >
-                                    Stop and Transcribe
+                                    Next Question
                                 </button>
+                            ) : (
+                                <div className="question-bank-actions">
+                                    <button
+                                        type="button"
+                                        className="btn ghost question-bank-btn"
+                                        onClick={() => {
+                                            closeSummaryModal()
+                                            setQuestionsDrawerOpen(true)
+                                        }}
+                                    >
+                                        Questions List
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn ghost question-next-btn"
+                                        onClick={() => {
+                                            if (!nextUnimportedQuestion) return
+                                            importQuestion(nextUnimportedQuestion, {
+                                                closePanel: false,
+                                                markImported: true,
+                                            })
+                                        }}
+                                        disabled={
+                                            isImportQuestionDisabled ||
+                                            !parsedDrawerQuestions.length ||
+                                            !nextUnimportedQuestion
+                                        }
+                                        title={
+                                            !parsedDrawerQuestions.length
+                                                ? 'Add questions in the Questions modal first.'
+                                                : !nextUnimportedQuestion
+                                                    ? 'All questions in the bank have already been imported.'
+                                                    : `${remainingBankQuestionCount} question(s) remaining in bank`
+                                        }
+                                    >
+                                        Next Question
+                                    </button>
+                                </div>
                             )}
+                            <label className="debug-toggle question-tts-toggle">
+                                <input
+                                    type="checkbox"
+                                    checked={readQuestionWithTts}
+                                    onChange={(event) => setReadQuestionWithTts(event.target.checked)}
+                                    disabled={isRecording || isTranscribing || isSpeakingQuestion}
+                                />
+                                <span>Read (TTS) Question</span>
+                            </label>
                         </div>
-                    )}
-                    <div className="label question-row">
-                        <label htmlFor="interview-question" className="question-main-label">
-                            Interview question
-                        </label>
-                        <label className="debug-toggle question-tts-toggle">
-                            <input
-                                type="checkbox"
-                                checked={readQuestionWithTts}
-                                onChange={(event) => setReadQuestionWithTts(event.target.checked)}
-                                disabled={isRecording || isTranscribing || isSpeakingQuestion}
-                            />
-                            <span>Read (TTS) Question</span>
-                        </label>
                     </div>
                     <textarea
                         id="interview-question"
                         className="field question-field"
+                        aria-label="Interview question"
                         value={questionInput}
                         onChange={(event) => setQuestionInput(event.target.value)}
                         autoComplete="off"
                         rows={2}
-                        placeholder="Type your answer here, or import from the questions tab"
+                        placeholder="Type your question here, or import from the questions tab"
                     />
                     {hasKey && showKeyStatus && <p className="key-status">{maskedSummary}</p>}
                     {needsRevalidation && (
@@ -3075,21 +3163,10 @@ function App() {
                     {banner && <p className="banner">{banner}</p>}
 
                     <div
-                        className="transcript-box copyable-output session-output-box"
-                        role="button"
-                        tabIndex={0}
-                        onClick={copyOutputToClipboard}
-                        onKeyDown={(event) => {
-                            if (event.key === 'Enter' || event.key === ' ') {
-                                event.preventDefault()
-                                void copyOutputToClipboard()
-                            }
-                        }}
-                        aria-label="Copy output to clipboard"
-                        title="Copy output to clipboard"
+                        className="transcript-box session-output-box"
                     >
-                        <h3>Output</h3>
-                        <p className="output-text">{outputDisplayText}</p>
+                        <h3>Transcript</h3>
+                        <p className="output-text">{transcriptDisplayText}</p>
                     </div>
 
                     <div className="actions wrap export-actions">
@@ -3097,7 +3174,7 @@ function App() {
                             type="button"
                             className="btn"
                             onClick={addCurrentAnswerToSummary}
-                            disabled={!transcript && !outputText}
+                            disabled={!transcript || !latestInterviewMetrics || isRecording || isTranscribing}
                         >
                             Add to Summary
                         </button>
@@ -3139,6 +3216,9 @@ function App() {
                                 <span
                                     className={`disabled-tooltip-wrap${isPreviousAnswersViewDisabled && previousAnswersViewDisabledReason ? ' has-tooltip' : ''}`}
                                     data-disabled-reason={previousAnswersViewDisabledReason}
+                                    onPointerDown={(event) =>
+                                        suppressDisabledTooltipPointerDefault(event, isPreviousAnswersViewDisabled)
+                                    }
                                 >
                                     <button
                                         type="button"
@@ -3217,6 +3297,11 @@ function App() {
                                         >
                                             <strong>{item.question}</strong>
                                             <span>{new Date(item.capturedAt).toLocaleString()}</span>
+                                            {item.folderPath ? (
+                                                <span className="history-folder-chip">{item.folderPath}</span>
+                                            ) : (
+                                                <span className="history-folder-chip history-folder-chip-root">root</span>
+                                            )}
                                         </button>
                                     ))}
                                     {!previousAnswers.length && (
@@ -3232,6 +3317,7 @@ function App() {
                                             <div className="history-detail-title-block">
                                                 <h3>{selectedPreviousAnswer.question}</h3>
                                                 <p className="metric-label history-detail-meta">
+                                                    {selectedPreviousAnswer.folderPath ? `${selectedPreviousAnswer.folderPath} · ` : ''}
                                                     {selectedPreviousAnswer.source} ·{' '}
                                                     {new Date(selectedPreviousAnswer.capturedAt).toLocaleString()}
                                                 </p>
@@ -3474,6 +3560,84 @@ function App() {
                                     <p className="muted">Select an answer from the overview to inspect details.</p>
                                 )}
                             </section>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {questionsDrawerOpen && (
+                <div
+                    className="overlay"
+                    role="presentation"
+                    onPointerDown={(event) => {
+                        if (event.target === event.currentTarget) {
+                            setQuestionsDrawerOpen(false)
+                        }
+                    }}
+                >
+                    <div
+                        id="questions-modal"
+                        className="modal question-modal"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="questions-modal-title"
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        <div className="history-modal-header">
+                            <h2 id="questions-modal-title">Questions</h2>
+                            <button
+                                type="button"
+                                className="btn ghost history-close-btn"
+                                onClick={() => setQuestionsDrawerOpen(false)}
+                                aria-label="Close"
+                                title="Close"
+                            >
+                                X
+                            </button>
+                        </div>
+
+                        <div className="question-modal-body">
+                            <div className="question-drawer-inner question-modal-inner">
+                                <p className="muted">Enter multiple questions, one per line.</p>
+                                <textarea
+                                    className="field question-list-field"
+                                    value={questionsBulkInput}
+                                    onChange={(event) => setQuestionsBulkInput(event.target.value)}
+                                    rows={6}
+                                    placeholder={[
+                                        'Tell me about a challenging project you worked on.',
+                                        'Describe a time you handled conflicting priorities.',
+                                        'What is one technical decision you would revisit?',
+                                    ].join('\n')}
+                                />
+
+                                <div className="question-list-parsed">
+                                    <h3>Parsed Questions</h3>
+                                    {parsedDrawerQuestions.length ? (
+                                        <div className="question-list-items">
+                                            {parsedDrawerQuestions.map((question, index) => (
+                                                <div key={`${question}-${index}`} className="question-list-item">
+                                                    <p className="muted">
+                                                        {index + 1}. {question}
+                                                    </p>
+                                                    <button
+                                                        type="button"
+                                                        className="btn"
+                                                        onClick={() => {
+                                                            importQuestion(question)
+                                                        }}
+                                                        disabled={isImportQuestionDisabled}
+                                                    >
+                                                        Import
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <p className="muted">Add at least one line to create importable questions.</p>
+                                    )}
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
