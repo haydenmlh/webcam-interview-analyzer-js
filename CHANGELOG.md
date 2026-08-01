@@ -19,6 +19,34 @@ Use this template for future releases:
 -
 ```
 
+## [1.4.3] - 2026-08-01
+
+### Changed
+- Mobile camera header controls were refined so Allow Camera Access uses a narrower width and is positioned above the secondary camera control.
+- Start Audio Recording and Start Video Recording actions are now centered in the camera panel.
+
+### Fixed
+- Removed Mock Interview Mode completely, including its button, rendering logic, and styles, restoring the standard camera preview behavior.
+
+## [1.4.2] - 2026-08-01
+
+### Changed
+- Next Question no-next state now uses a recording-style disabled appearance with `#5399a5` and white text.
+- Next Question guidance now appears as an in-app tooltip above the button on hover/focus (instead of the native title tooltip) while preserving click-to-open Questions Import behavior.
+
+### Fixed
+- Removed the Previous Answers box from the question/transcript panel on desktop.
+- Removed the remaining Previous Answers panel warning surface from mobile in the same question/transcript area.
+
+## [1.4.1] - 2026-08-01
+
+### Changed
+- Next Question no-next state now uses a desaturated disabled-look style aligned with recording controls (`#5399a5` with white text).
+- Next Question was simplified back to a single desktop button after style comparison testing.
+
+### Fixed
+- Replaced the native title hover on Next Question (no-next state) with an in-app popup tooltip shown above the button on hover/focus, while preserving click-to-open Questions Import behavior.
+
 ## [1.4.0] - 2026-08-01
 
 ### Added
