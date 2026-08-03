@@ -21,6 +21,9 @@ const STORAGE_VALIDATED_AT = 'mia.deepgram.lastValidatedAt'
 const STORAGE_THEME = 'mia.theme'
 const STORAGE_FALLBACK_WITHOUT_KEY = 'mia.speech.fallbackWithoutDeepgramKey'
 const STORAGE_AUTO_ADD_SUMMARY = 'mia.autoAddSummary'
+const STORAGE_CV_TEXT = 'mia.cvText'
+const STORAGE_JD_TEXT = 'mia.jdText'
+const STORAGE_COMPANY_NAME = 'mia.companyName'
 const HANDLE_DB_NAME = 'mia-handle-db'
 const HANDLE_STORE_NAME = 'handles'
 const RECORDINGS_FOLDER_KEY = 'recordings-folder'
@@ -900,7 +903,7 @@ function App() {
     )
     const [autoAddCompletedAnswersToSummary, setAutoAddCompletedAnswersToSummary] = useState(() => {
         const saved = getSavedValue(STORAGE_AUTO_ADD_SUMMARY)
-        return saved ? saved === 'true' : true
+        return saved ? saved === 'true' : false
     })
 
     const [cameraStatus, setCameraStatus] = useState('idle')
@@ -914,9 +917,15 @@ function App() {
     )
     const [questionsDrawerOpen, setQuestionsDrawerOpen] = useState(false)
     const [summaryModalOpen, setSummaryModalOpen] = useState(false)
+    const [cvJdModalOpen, setCvJdModalOpen] = useState(false)
     const [questionsBulkInput, setQuestionsBulkInput] = useState('')
     const [nextQuestionCursor, setNextQuestionCursor] = useState(0)
     const [answeredQuestionKeys, setAnsweredQuestionKeys] = useState([])
+    const [cvText, setCvText] = useState(() => getSavedValue(STORAGE_CV_TEXT))
+    const [jdText, setJdText] = useState(() => getSavedValue(STORAGE_JD_TEXT))
+    const [companyNameInput, setCompanyNameInput] = useState(() =>
+        getSavedValue(STORAGE_COMPANY_NAME),
+    )
 
     const [facesDetected, setFacesDetected] = useState(0)
     const [handsDetected, setHandsDetected] = useState(0)
@@ -1015,6 +1024,18 @@ function App() {
             autoAddCompletedAnswersToSummary ? 'true' : 'false',
         )
     }, [autoAddCompletedAnswersToSummary])
+
+    useEffect(() => {
+        setSavedValue(STORAGE_CV_TEXT, cvText)
+    }, [cvText])
+
+    useEffect(() => {
+        setSavedValue(STORAGE_JD_TEXT, jdText)
+    }, [jdText])
+
+    useEffect(() => {
+        setSavedValue(STORAGE_COMPANY_NAME, companyNameInput)
+    }, [companyNameInput])
 
     useEffect(() => {
         if (!showKeyStatus) return undefined
@@ -1431,6 +1452,58 @@ function App() {
         setSummaryModalOpen(false)
     }
 
+    function openCvJdModal() {
+        setCvJdModalOpen(true)
+    }
+
+    function closeCvJdModal() {
+        setCvJdModalOpen(false)
+    }
+
+    function buildCvJdForGeminiMarkdown() {
+        const companyName = companyNameInput.trim()
+        const candidateCv = cvText.trim()
+        const jobDescription = jdText.trim()
+
+        if (!companyName && !candidateCv && !jobDescription) {
+            return null
+        }
+
+        const sections = [
+            '# CV and JD Context for Gemini',
+            '',
+            `Generated: ${new Date().toISOString()}`,
+            `Company Name: ${companyName || '(not provided)'}`,
+            '',
+            '## Candidate CV',
+            '```text',
+            candidateCv || '(not provided)',
+            '```',
+            '',
+            '## Job Description',
+            '```text',
+            jobDescription || '(not provided)',
+            '```',
+        ]
+
+        return sections.join('\n')
+    }
+
+    async function copyCvJdForGemini() {
+        const outputMarkdown = buildCvJdForGeminiMarkdown()
+        if (!outputMarkdown) {
+            setToast('Add CV, JD, or company name before copying.')
+            return
+        }
+
+        try {
+            await navigator.clipboard.writeText(outputMarkdown)
+            setToast('CV, JD, and company name copied for Gemini.')
+        } catch {
+            setToast('Could not copy CV/JD content.')
+        }
+    }
+
     function importQuestion(questionText, options = {}) {
         const { closePanel = true } = options
         const nextQuestion = questionText.trim()
@@ -1522,6 +1595,10 @@ function App() {
                 closeSummaryModal()
                 return
             }
+            if (cvJdModalOpen) {
+                closeCvJdModal()
+                return
+            }
             if (questionsDrawerOpen) {
                 setQuestionsDrawerOpen(false)
                 return
@@ -1558,6 +1635,7 @@ function App() {
         closePreviousAnswersModal,
         questionsDrawerOpen,
         summaryModalOpen,
+        cvJdModalOpen,
     ])
 
     useEffect(() => {
@@ -3373,6 +3451,7 @@ function App() {
                                 setQuestionsDrawerOpen((prev) => {
                                     const next = !prev
                                     if (next) closeSummaryModal()
+                                    if (next) closeCvJdModal()
                                     return next
                                 })
                             }}
@@ -3392,6 +3471,7 @@ function App() {
                                     closeSummaryModal()
                                     return
                                 }
+                                closeCvJdModal()
                                 setQuestionsDrawerOpen(false)
                                 openSummaryModal()
                             }}
@@ -3415,6 +3495,7 @@ function App() {
                                 className="previous-peek-tab"
                                 onClick={() => {
                                     setQuestionsDrawerOpen(false)
+                                    closeCvJdModal()
                                     closeSummaryModal()
                                     void openPreviousAnswersModal()
                                 }}
@@ -3423,6 +3504,24 @@ function App() {
                                 {isLoadingPreviousAnswers ? 'Loading...' : 'Previous Answers'}
                             </button>
                         </span>
+                    )}
+
+                    {isDesktopViewport && (
+                        <button
+                            type="button"
+                            className="cvjd-peek-tab"
+                            onClick={() => {
+                                setQuestionsDrawerOpen(false)
+                                closeSummaryModal()
+                                closePreviousAnswersModal()
+                                openCvJdModal()
+                            }}
+                            aria-expanded={cvJdModalOpen}
+                            aria-controls="cvjd-modal"
+                            title={cvJdModalOpen ? 'Hide CV and JD modal' : 'Show CV and JD modal'}
+                        >
+                            Input CV/JD
+                        </button>
                     )}
 
                     <div className="camera-heading-row">
@@ -3775,10 +3874,10 @@ function App() {
                                 onChange={(event) => setAutoAddCompletedAnswersToSummary(event.target.checked)}
                                 disabled={isRecording || isTranscribing}
                             />
-                            <span>Auto add completed answers to summary</span>
+                            <span>Auto-add completed answers to summary</span>
                         </label>
                         {(isFolderFeatureDisabled || !recordingsFolderName) && (
-                            <>
+                            <div className="export-download-actions">
                                 <button
                                     type="button"
                                     className="btn ghost"
@@ -3795,7 +3894,7 @@ function App() {
                                 >
                                     Download Audio
                                 </button>
-                            </>
+                            </div>
                         )}
                     </div>
 
@@ -4193,6 +4292,117 @@ function App() {
                 </div>
             )}
 
+            {cvJdModalOpen && (
+                <div
+                    className="overlay"
+                    role="presentation"
+                    onPointerDown={(event) => {
+                        if (event.target === event.currentTarget) {
+                            closeCvJdModal()
+                        }
+                    }}
+                >
+                    <div
+                        id="cvjd-modal"
+                        className="modal summary-modal cvjd-modal"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="cvjd-title"
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        <div className="history-modal-header">
+                            <h2 id="cvjd-title">
+                                CV and JD {companyNameInput.trim() ? `- ${companyNameInput.trim()}` : ''}
+                            </h2>
+                            <div className="summary-header-actions">
+                                <button
+                                    type="button"
+                                    className="btn ghost"
+                                    onClick={copyCvJdForGemini}
+                                >
+                                    Copy CV, JD and Company Name for Gemini
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn ghost history-close-btn"
+                                    onClick={closeCvJdModal}
+                                    aria-label="Close"
+                                    title="Close"
+                                >
+                                    X
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="history-modal-grid summary-modal-grid">
+                            <aside className="history-overview summary-overview cvjd-overview">
+                                <h3>Gemini Context</h3>
+                                <p className="muted">
+                                    Save your candidate profile and target role details here for quick Gemini prompts.
+                                </p>
+                                <div className="history-metrics-grid">
+                                    <div className="history-metric-row">
+                                        <span className="metric-label">Company</span>
+                                        <span>{companyNameInput.trim() ? 'Set' : 'Missing'}</span>
+                                    </div>
+                                    <div className="history-metric-row">
+                                        <span className="metric-label">CV</span>
+                                        <span>{cvText.trim() ? 'Set' : 'Missing'}</span>
+                                    </div>
+                                    <div className="history-metric-row">
+                                        <span className="metric-label">JD</span>
+                                        <span>{jdText.trim() ? 'Set' : 'Missing'}</span>
+                                    </div>
+                                </div>
+                            </aside>
+
+                            <section className="history-detail cvjd-detail">
+                                <div className="history-detail-layout">
+                                    <div className="history-detail-scroll cvjd-detail-scroll">
+                                        <label htmlFor="cvjd-company" className="label cvjd-label">
+                                            Company Name
+                                        </label>
+                                        <input
+                                            id="cvjd-company"
+                                            type="text"
+                                            className="field cvjd-field"
+                                            value={companyNameInput}
+                                            onChange={(event) => setCompanyNameInput(event.target.value)}
+                                            placeholder="Example: Contoso"
+                                            autoComplete="off"
+                                        />
+
+                                        <label htmlFor="cvjd-cv" className="label cvjd-label">
+                                            CV
+                                        </label>
+                                        <textarea
+                                            id="cvjd-cv"
+                                            className="field cvjd-textarea"
+                                            value={cvText}
+                                            onChange={(event) => setCvText(event.target.value)}
+                                            rows={12}
+                                            placeholder="Paste your CV here"
+                                        />
+
+                                        <label htmlFor="cvjd-jd" className="label cvjd-label">
+                                            Job Description (JD)
+                                        </label>
+                                        <textarea
+                                            id="cvjd-jd"
+                                            className="field cvjd-textarea"
+                                            value={jdText}
+                                            onChange={(event) => setJdText(event.target.value)}
+                                            rows={12}
+                                            placeholder="Paste the job description here"
+                                        />
+                                    </div>
+                                </div>
+                            </section>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {questionsDrawerOpen && (
                 <div
                     className="overlay"
@@ -4344,7 +4554,7 @@ function App() {
                                     value={keyInput}
                                     onChange={(event) => updateInput(event.target.value)}
                                     onBlur={validateOnBlur}
-                                    aria-describedby="key-help key-error"
+                                    aria-describedby={fieldError ? 'key-error' : undefined}
                                     className={fieldError ? 'field field-error' : 'field'}
                                     autoComplete="off"
                                 />
@@ -4374,20 +4584,7 @@ function App() {
                                         Remove key
                                     </button>
                                 )}
-                            </div>
-                            <p id="key-help" className="help-text">Use a valid Deepgram API key from your Deepgram account.</p>
-                            {fieldError && (
-                                <p id="key-error" className="error-text" aria-live="polite">
-                                    {fieldError}
-                                </p>
-                            )}
-
-                            <div className="settings-section">
-                                <label className="label">Missing-Key Fallback</label>
-                                <p className="muted">
-                                    If Deepgram key is missing, start recording with local Whisper fallback.
-                                </p>
-                                <label className="debug-toggle">
+                                <label className="debug-toggle" title="Use local fallback when Deepgram key is missing">
                                     <input
                                         type="checkbox"
                                         checked={fallbackWithoutDeepgramKey}
@@ -4398,6 +4595,11 @@ function App() {
                                     <span>Use fallback when Deepgram key is missing</span>
                                 </label>
                             </div>
+                            {fieldError && (
+                                <p id="key-error" className="error-text" aria-live="polite">
+                                    {fieldError}
+                                </p>
+                            )}
 
                             <p className="privacy-note">
                                 Anyone with access to this browser profile can use this key until you remove it.
@@ -4456,11 +4658,6 @@ function App() {
                                 </div>
                             )}
 
-                            <div className="actions wrap">
-                                <button type="button" className="btn ghost" onClick={closeSettings}>
-                                    Exit
-                                </button>
-                            </div>
                         </div>
                     </div>
                 </div>
