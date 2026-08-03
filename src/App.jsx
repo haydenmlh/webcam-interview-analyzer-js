@@ -23,12 +23,15 @@ const STORAGE_SHOW_SELF_VIEW = 'mia.showSelfView'
 const STORAGE_ENABLE_CAMERA = 'mia.enableCamera'
 const STORAGE_FALLBACK_WITHOUT_KEY = 'mia.speech.fallbackWithoutDeepgramKey'
 const STORAGE_AUTO_ADD_SUMMARY = 'mia.autoAddSummary'
+const STORAGE_AUTO_SAVE_MEDIA_TO_FOLDER = 'mia.autoSaveMediaToFolder'
+const STORAGE_DEEPGRAM_DEBUG = 'mia.deepgram.debug'
 const STORAGE_CV_TEXT = 'mia.cvText'
 const STORAGE_JD_TEXT = 'mia.jdText'
 const STORAGE_COMPANY_NAME = 'mia.companyName'
 const HANDLE_DB_NAME = 'mia-handle-db'
 const HANDLE_STORE_NAME = 'handles'
 const RECORDINGS_FOLDER_KEY = 'recordings-folder'
+const RECYCLE_BIN_FOLDER_NAME = '_Recycle Bin'
 
 const VALIDATION_RECOMMEND_DAYS = 30
 const INITIAL_NOW_MS = Date.now()
@@ -689,6 +692,18 @@ function buildSessionDateFolderName(capturedAtIso) {
     return `${year}-${month}-${day}`
 }
 
+function formatReadableCapturedDate(value) {
+    const parsed = new Date(value)
+    if (Number.isNaN(parsed.getTime())) {
+        return sanitizeDisplayText(value, 'unknown-date')
+    }
+
+    const month = parsed.toLocaleString('en-US', { month: 'short' })
+    const day = parsed.getDate()
+    const year = parsed.getFullYear()
+    return `${month}/${day}/${year}`
+}
+
 function getSummaryFingerprint(entry) {
     return JSON.stringify({
         question: sanitizeDisplayText(entry?.question, '(no question)'),
@@ -837,6 +852,14 @@ function App() {
         const saved = getSavedValue(STORAGE_AUTO_ADD_SUMMARY)
         return saved ? saved === 'true' : false
     })
+    const [autoSaveMediaToFolder, setAutoSaveMediaToFolder] = useState(() => {
+        const saved = getSavedValue(STORAGE_AUTO_SAVE_MEDIA_TO_FOLDER)
+        return saved ? saved === 'true' : true
+    })
+    const [deepgramDebugEnabled, setDeepgramDebugEnabled] = useState(() => {
+        const saved = getSavedValue(STORAGE_DEEPGRAM_DEBUG)
+        return saved === 'true'
+    })
 
     const [cameraStatus, setCameraStatus] = useState('idle')
     const [hasCameraAccess, setHasCameraAccess] = useState(false)
@@ -975,6 +998,20 @@ function App() {
             autoAddCompletedAnswersToSummary ? 'true' : 'false',
         )
     }, [autoAddCompletedAnswersToSummary])
+
+    useEffect(() => {
+        setSavedValue(
+            STORAGE_AUTO_SAVE_MEDIA_TO_FOLDER,
+            autoSaveMediaToFolder ? 'true' : 'false',
+        )
+    }, [autoSaveMediaToFolder])
+
+    useEffect(() => {
+        setSavedValue(
+            STORAGE_DEEPGRAM_DEBUG,
+            deepgramDebugEnabled ? 'true' : 'false',
+        )
+    }, [deepgramDebugEnabled])
 
     useEffect(() => {
         setSavedValue(STORAGE_CV_TEXT, cvText)
@@ -1357,19 +1394,15 @@ function App() {
         [answeredQuestionKeys],
     )
 
-    const unansweredDrawerQuestions = useMemo(
-        () =>
-            parsedDrawerQuestions.filter((_, index) => {
-                const key = parsedDrawerQuestionKeys[index]
-                return key && !answeredQuestionKeySet.has(key)
-            }),
-        [answeredQuestionKeySet, parsedDrawerQuestionKeys, parsedDrawerQuestions],
-    )
-
-    const remainingBankQuestionCount = unansweredDrawerQuestions.length
+    const currentQuestionListNumber = useMemo(() => {
+        const currentQuestionKey = normalizeQuestionKey(questionInput)
+        if (!currentQuestionKey) return 0
+        const index = parsedDrawerQuestionKeys.findIndex((key) => key === currentQuestionKey)
+        return index >= 0 ? index + 1 : 0
+    }, [parsedDrawerQuestionKeys, questionInput])
 
     const shouldPromptQuestionImport =
-        !parsedDrawerQuestions.length || !unansweredDrawerQuestions.length
+        !parsedDrawerQuestions.length
 
     const showNoNextQuestionTooltip =
         shouldPromptQuestionImport && !isImportQuestionDisabled
@@ -1382,7 +1415,7 @@ function App() {
             ? 'Unavailable while recording/transcribing/question audio is active.'
             : showNoNextQuestionTooltip
                 ? undefined
-                : `${remainingBankQuestionCount} question(s) remaining in bank`
+                : `${parsedDrawerQuestions.length} question(s) in question list`
 
     const overallInterviewSummary = useMemo(() => {
         if (!interviewSummaries.length) {
@@ -1533,14 +1566,14 @@ function App() {
     function handleNextQuestionAction() {
         if (isImportQuestionDisabled) return
 
-        if (!parsedDrawerQuestions.length || !unansweredDrawerQuestions.length) {
+        if (!parsedDrawerQuestions.length) {
             closeSummaryModal()
             setQuestionsDrawerOpen(true)
             return
         }
 
-        const nextIndex = nextQuestionCursor % unansweredDrawerQuestions.length
-        const nextQuestion = unansweredDrawerQuestions[nextIndex]
+        const nextIndex = nextQuestionCursor % parsedDrawerQuestions.length
+        const nextQuestion = parsedDrawerQuestions[nextIndex]
         if (!nextQuestion) return
 
         importQuestion(nextQuestion, {
@@ -1548,8 +1581,8 @@ function App() {
         })
 
         setNextQuestionCursor((prev) =>
-            unansweredDrawerQuestions.length
-                ? (prev + 1) % unansweredDrawerQuestions.length
+            parsedDrawerQuestions.length
+                ? (prev + 1) % parsedDrawerQuestions.length
                 : 0,
         )
     }
@@ -2398,7 +2431,7 @@ function App() {
         interviewSummaries.forEach((item, index) => {
             const answerNumber = interviewSummaries.length - index
             sections.push(`### Answer ${answerNumber}`)
-            sections.push(`- Captured: ${new Date(item.capturedAt).toLocaleString()}`)
+            sections.push(`- Captured: ${formatReadableCapturedDate(item.capturedAt)}`)
             sections.push(`- Question: ${item.question}`)
             sections.push('')
             sections.push('Transcript:')
@@ -2536,6 +2569,32 @@ function App() {
         downloadBlob(recordedAudioBlob, `session-audio-${Date.now()}.${extension}`)
     }
 
+    function downloadSelectedRecording() {
+        const prefersVideo = recordingModeRef.current === 'video'
+
+        if (prefersVideo) {
+            if (recordedVideoBlob) {
+                downloadVideoRecording()
+                return
+            }
+            if (recordedAudioBlob) {
+                downloadAudioRecording()
+                return
+            }
+        } else {
+            if (recordedAudioBlob) {
+                downloadAudioRecording()
+                return
+            }
+            if (recordedVideoBlob) {
+                downloadVideoRecording()
+                return
+            }
+        }
+
+        setToast('No recording available to download yet.')
+    }
+
     async function copySelectedAnswerTextFile() {
         if (!selectedPreviousAnswer) {
             setToast('Select an answer first.')
@@ -2640,8 +2699,8 @@ function App() {
 
         setToast(
             deleteResult.skipped
-                ? 'Previous answer removed. No linked files were found to delete.'
-                : 'Previous answer and related files deleted.',
+                ? 'Previous answer removed. No linked files were found to move.'
+                : `Previous answer removed. Related files moved to ${RECYCLE_BIN_FOLDER_NAME}.`,
         )
     }
 
@@ -2771,6 +2830,22 @@ function App() {
         return currentHandle
     }
 
+    async function ensureDirectoryPath(rootHandle, relativePath) {
+        if (!relativePath) return rootHandle
+
+        const segments = relativePath
+            .split('/')
+            .map((part) => part.trim())
+            .filter(Boolean)
+
+        let currentHandle = rootHandle
+        for (const segment of segments) {
+            currentHandle = await currentHandle.getDirectoryHandle(segment, { create: true })
+        }
+
+        return currentHandle
+    }
+
     function listAnswerFileNames(answerEntry) {
         const names = new Set()
         const rawNames = [
@@ -2795,7 +2870,7 @@ function App() {
     async function deleteAnswerFilesFromSelectedFolder(answerEntry) {
         const fileNames = listAnswerFileNames(answerEntry)
         if (!fileNames.length) {
-            return { ok: true, deletedCount: 0, skipped: true }
+            return { ok: true, movedCount: 0, skipped: true }
         }
 
         const folderHandle = recordingsFolderRef.current
@@ -2814,11 +2889,13 @@ function App() {
             }
         }
 
+        const answerFolderPath = answerEntry?.folderPath || answerEntry?.savedFiles?.folder || ''
+
         let targetFolderHandle
         try {
             targetFolderHandle = await resolveFolderHandleFromRelativePath(
                 folderHandle,
-                answerEntry?.folderPath || answerEntry?.savedFiles?.folder || '',
+                answerFolderPath,
             )
         } catch {
             return {
@@ -2827,12 +2904,38 @@ function App() {
             }
         }
 
-        let deletedCount = 0
+        let recycleFolderHandle
+        try {
+            const recycleRootHandle = await folderHandle.getDirectoryHandle(RECYCLE_BIN_FOLDER_NAME, {
+                create: true,
+            })
+            recycleFolderHandle = await ensureDirectoryPath(
+                recycleRootHandle,
+                answerFolderPath || 'root',
+            )
+        } catch {
+            return {
+                ok: false,
+                message: 'Could not prepare recycle bin folder for this answer.',
+            }
+        }
+
+        let movedCount = 0
         let failedCount = 0
         for (const fileName of fileNames) {
             try {
+                const sourceFileHandle = await targetFolderHandle.getFileHandle(fileName)
+                const sourceFile = await sourceFileHandle.getFile()
+
+                const recycleFileHandle = await recycleFolderHandle.getFileHandle(fileName, {
+                    create: true,
+                })
+                const writable = await recycleFileHandle.createWritable()
+                await writable.write(sourceFile)
+                await writable.close()
+
                 await targetFolderHandle.removeEntry(fileName)
-                deletedCount += 1
+                movedCount += 1
             } catch (error) {
                 if (error?.name === 'NotFoundError') continue
                 failedCount += 1
@@ -2842,11 +2945,11 @@ function App() {
         if (failedCount > 0) {
             return {
                 ok: false,
-                message: 'Could not delete one or more files for this answer.',
+                message: 'Could not move one or more files to the recycle bin folder.',
             }
         }
 
-        return { ok: true, deletedCount, skipped: false }
+        return { ok: true, movedCount, skipped: false }
     }
 
     async function saveSessionArtifactsToSelectedFolder({
@@ -2856,6 +2959,7 @@ function App() {
         outputBlock,
         audioBlob,
         videoBlob,
+        shouldAutoSaveMedia,
     }) {
         const folderHandle = recordingsFolderRef.current
         if (!folderHandle) return null
@@ -2888,14 +2992,14 @@ function App() {
                     : audioBlob?.type?.includes('mp4') || audioBlob?.type?.includes('m4a')
                         ? 'm4a'
                         : 'webm'
-        const audioFileName = `${baseName}.${audioExt}`
         const videoExt =
             videoBlob?.type?.includes('mp4')
                 ? 'mp4'
                 : videoBlob?.type?.includes('webm')
                     ? 'webm'
                     : 'mp4'
-        const videoFileName = videoBlob ? `${baseName}.${videoExt}` : ''
+        const videoFileName = shouldAutoSaveMedia && videoBlob ? `${baseName}.${videoExt}` : ''
+        const audioFileName = shouldAutoSaveMedia && audioBlob ? `${baseName}.${audioExt}` : ''
 
         const reportForSave = {
             ...report,
@@ -2923,10 +3027,10 @@ function App() {
                 type: 'text/plain;charset=utf-8',
             }),
         )
-        const audioOk = audioBlob
+        const audioOk = shouldAutoSaveMedia && audioBlob
             ? await writeBlobToSelectedFolder(targetFolderHandle, audioFileName, audioBlob)
-            : false
-        const videoOk = videoBlob
+            : true
+        const videoOk = shouldAutoSaveMedia && videoBlob
             ? await writeBlobToSelectedFolder(targetFolderHandle, videoFileName, videoBlob)
             : true
 
@@ -3344,6 +3448,7 @@ function App() {
                 outputBlock,
                 audioBlob: storageAudioBlob,
                 videoBlob: shouldSaveVideo ? finalVideoBlob : null,
+                shouldAutoSaveMedia: autoSaveMediaToFolder,
             })
 
             if (savedReport?.savedFiles && autoAddCompletedAnswersToSummary && autoSummaryEntryId) {
@@ -3771,23 +3876,15 @@ function App() {
                 <section className={`panel session${centerCameraLayout ? ' centered-session-panel' : ''}`}>
 
                     <div className="actions wrap export-actions">
-                        {(isFolderFeatureDisabled || !recordingsFolderName) && (
+                        {(isFolderFeatureDisabled || !autoSaveMediaToFolder) && (
                             <div className="export-download-actions">
                                 <button
                                     type="button"
                                     className="btn ghost"
-                                    onClick={downloadVideoRecording}
-                                    disabled={!recordedVideoBlob}
+                                    onClick={downloadSelectedRecording}
+                                    disabled={!recordedAudioBlob && !recordedVideoBlob}
                                 >
-                                    Download Video
-                                </button>
-                                <button
-                                    type="button"
-                                    className="btn ghost"
-                                    onClick={downloadAudioRecording}
-                                    disabled={!recordedAudioBlob}
-                                >
-                                    Download Audio
+                                    Download Recording
                                 </button>
                             </div>
                         )}
@@ -3824,6 +3921,9 @@ function App() {
                     <div className="label question-row">
                         <p className="question-main-label">
                             Interview question
+                            {currentQuestionListNumber
+                                ? ` (#${currentQuestionListNumber})`
+                                : ''}
                         </p>
                         <div className="question-row-actions">
                             {isDesktopViewport ? (
@@ -3900,10 +4000,10 @@ function App() {
                         </p>
                     )}
                     {banner && <p className="banner">{banner}</p>}
-                    {transcriptionProviderStatus && (
+                    {deepgramDebugEnabled && transcriptionProviderStatus && (
                         <p className="muted">{transcriptionProviderStatus}</p>
                     )}
-                    {questionTtsProviderStatus && (
+                    {deepgramDebugEnabled && questionTtsProviderStatus && (
                         <p className="muted">{questionTtsProviderStatus}</p>
                     )}
 
@@ -3999,7 +4099,7 @@ function App() {
                                             onClick={openSelectRecordingsFolderModal}
                                             disabled={isFolderFeatureDisabled}
                                         >
-                                            Select Folder
+                                            Reselect Folder
                                         </button>
                                         <button
                                             type="button"
@@ -4024,7 +4124,7 @@ function App() {
                                             onClick={() => selectPreviousAnswer(item)}
                                         >
                                             <strong>{item.question}</strong>
-                                            <span>{new Date(item.capturedAt).toLocaleString()}</span>
+                                            <span>{formatReadableCapturedDate(item.capturedAt)}</span>
                                             {item.folderPath ? (
                                                 <span className="history-folder-chip">{item.folderPath}</span>
                                             ) : (
@@ -4047,7 +4147,7 @@ function App() {
                                                 <p className="metric-label history-detail-meta">
                                                     {selectedPreviousAnswer.folderPath ? `${selectedPreviousAnswer.folderPath} · ` : ''}
                                                     {selectedPreviousAnswer.source} ·{' '}
-                                                    {new Date(selectedPreviousAnswer.capturedAt).toLocaleString()}
+                                                    {formatReadableCapturedDate(selectedPreviousAnswer.capturedAt)}
                                                 </p>
                                             </div>
                                             <div className="history-detail-actions">
@@ -4248,7 +4348,7 @@ function App() {
                                             onClick={() => setSelectedSummaryId(item.id)}
                                         >
                                             <strong>Q{interviewSummaries.length - index}</strong>
-                                            <span>{new Date(item.capturedAt).toLocaleString()}</span>
+                                            <span>{formatReadableCapturedDate(item.capturedAt)}</span>
                                             <span>{item.question}</span>
                                         </button>
                                     ))}
@@ -4304,7 +4404,7 @@ function App() {
                                             <div className="history-detail-title-block">
                                                 <h3>{selectedSummary.question}</h3>
                                                 <p className="metric-label history-detail-meta">
-                                                    {new Date(selectedSummary.capturedAt).toLocaleString()}
+                                                    {formatReadableCapturedDate(selectedSummary.capturedAt)}
                                                 </p>
                                             </div>
                                             <div className="history-detail-actions">
@@ -4657,6 +4757,14 @@ function App() {
                             <p className="privacy-note">
                                 Do not share screenshots of this page while key is visible.
                             </p>
+                            <label className="debug-toggle">
+                                <input
+                                    type="checkbox"
+                                    checked={deepgramDebugEnabled}
+                                    onChange={(event) => setDeepgramDebugEnabled(event.target.checked)}
+                                />
+                                <span>Deepgram Debug</span>
+                            </label>
 
                             <div className="settings-section">
                                 <label className="label">Camera Debug Overlay</label>
@@ -4770,6 +4878,17 @@ function App() {
                                             </button>
                                         )}
                                     </div>
+                                    <label className="debug-toggle">
+                                        <input
+                                            type="checkbox"
+                                            checked={autoSaveMediaToFolder}
+                                            onChange={(event) =>
+                                                setAutoSaveMediaToFolder(event.target.checked)
+                                            }
+                                            disabled={isFolderFeatureDisabled}
+                                        />
+                                        <span>Auto-save Video/Audio Answer to Folder</span>
+                                    </label>
                                 </div>
                             )}
 
@@ -4851,7 +4970,7 @@ function App() {
                             {pendingDeleteAction.kind === 'parsed-question'
                                 ? 'This question will be removed from the Questions Import list.'
                                 : pendingDeleteAction.kind === 'previous-answer'
-                                    ? 'This will delete the selected answer and linked saved files from the selected folder. This cannot be undone.'
+                                    ? `This will remove the selected answer and move linked saved files into ${RECYCLE_BIN_FOLDER_NAME} under the selected folder.`
                                     : 'This will remove the selected answer from Session Summary only. Saved folder files will not be deleted.'}
                         </p>
                         <div className="actions">

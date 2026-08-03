@@ -19,6 +19,38 @@ Use this template for future releases:
 -
 ```
 
+## [1.7.18] - 2026-08-03
+
+### Added
+- Added a `Deepgram Debug` checkbox setting under the key privacy warning in Settings.
+
+### Changed
+- Transcription provider and TTS provider notification text is now hidden by default and only shown when `Deepgram Debug` is enabled.
+
+## [1.7.17] - 2026-08-03
+
+### Changed
+- Renamed the `Previous Answers` overview action from `Select Folder` to `Reselect Folder`.
+- Deleting an answer from `Previous Answers` now moves linked files into `_Recycle Bin` under the selected save folder instead of permanently deleting them.
+
+### Fixed
+- Updated delete confirmation and toast messaging to reflect recycle-bin move behavior.
+
+## [1.7.16] - 2026-08-03
+
+### Changed
+- `Next Question` now cycles through all questions in the imported question list, including questions that were answered previously.
+- `Interview question` now shows the matching question-list position (for example, `Interview question (#3)`) when the current question comes from the imported list.
+
+## [1.7.15] - 2026-08-03
+
+### Added
+- Added `Auto-save Video/Audio Answer to Folder` under `Recording Save Folder` settings.
+
+### Changed
+- Added a single `Download Recording` button on the `Add to Summary` action row (far left) when folder access is unavailable or media auto-save is disabled.
+- `Download Recording` now downloads the recording for the selected mode (video/audio), with a fallback to the other available recording when needed.
+
 ## [1.7.14] - 2026-08-03
 
 ### Changed
