@@ -649,17 +649,6 @@ function computeHandFaceTouch(faceLandmarks, handLandmarks) {
     return minDistance / faceWidth < HAND_FACE_TOUCH_RATIO
 }
 
-function downloadBlob(blob, fileName) {
-    const url = URL.createObjectURL(blob)
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = fileName
-    document.body.appendChild(anchor)
-    anchor.click()
-    anchor.remove()
-    URL.revokeObjectURL(url)
-}
-
 function sanitizeDisplayText(value, fallback = '') {
     const text = String(value ?? '')
         .split('')
@@ -901,8 +890,8 @@ function App() {
     const [questionInput, setQuestionInput] = useState('')
     const [transcript, setTranscript] = useState('')
     const [latestInterviewMetrics, setLatestInterviewMetrics] = useState(null)
-    const [recordedAudioBlob, setRecordedAudioBlob] = useState(null)
-    const [recordedVideoBlob, setRecordedVideoBlob] = useState(null)
+    const [, setRecordedAudioBlob] = useState(null)
+    const [, setRecordedVideoBlob] = useState(null)
     const [recordingsFolderName, setRecordingsFolderName] = useState('')
     const [interviewSummaries, setInterviewSummaries] = useState([])
     const [selectedSummaryId, setSelectedSummaryId] = useState('')
@@ -2225,6 +2214,92 @@ function App() {
         }
     }
 
+    function buildCurrentOutputForGeminiMarkdown() {
+        const answerTranscript = transcript.trim()
+        if (!answerTranscript || !latestInterviewMetrics || isRecording || isTranscribing) {
+            return null
+        }
+
+        const sections = [
+            '# Current Interview Output for Gemini',
+            '',
+            `Generated: ${new Date().toISOString()}`,
+            `Question: ${questionInput.trim() || '(no question)'}`,
+            '',
+            'Transcript:',
+            '```text',
+            answerTranscript,
+            '```',
+            '',
+            'Metrics:',
+        ]
+
+        const metricEntries = Object.entries(latestInterviewMetrics || {})
+        if (!metricEntries.length) {
+            sections.push('- n/a')
+        } else {
+            metricEntries.forEach(([key, value]) => {
+                sections.push(`- ${key}: ${String(value ?? 'n/a')}`)
+            })
+        }
+
+        return sections.join('\n')
+    }
+
+    async function copyCurrentOutputForGemini() {
+        const outputMarkdown = buildCurrentOutputForGeminiMarkdown()
+        if (!outputMarkdown) {
+            setToast('Record and transcribe an answer before copying output.')
+            return
+        }
+
+        try {
+            await navigator.clipboard.writeText(outputMarkdown)
+            setToast('Current output for Gemini copied to clipboard.')
+        } catch {
+            setToast('Could not copy current output.')
+        }
+    }
+
+    async function openGeminiSidePanel() {
+        const width = 400
+        const height = Math.max(700, Math.floor(window.screen.availHeight * 0.9))
+        const left = Math.max(0, window.screenX + window.outerWidth - width)
+        const top = Math.max(0, window.screenY + Math.floor((window.outerHeight - height) / 2))
+
+        const geminiWindow = window.open(
+            'https://gemini.google.com',
+            'geminiRightPanel',
+            `popup=yes,width=${width},height=${height},left=${left},top=${top}`,
+        )
+
+        if (!geminiWindow) {
+            setToast('Popup blocked. Allow popups to open Gemini side panel.')
+            return
+        }
+
+        // Some browsers return null when noopener/noreferrer are set in features.
+        // Nulling opener here preserves safety without breaking popup detection.
+        try {
+            geminiWindow.opener = null
+        } catch {
+            // Ignore cross-origin restrictions.
+        }
+
+        const outputMarkdown = buildCurrentOutputForGeminiMarkdown()
+        if (!outputMarkdown) {
+            setToast('Gemini opened. Record and transcribe to copy current output.')
+            return
+        }
+
+        try {
+            await navigator.clipboard.writeText(outputMarkdown)
+            setToast('Gemini opened. Current output copied to clipboard.')
+        } catch {
+            setToast('Gemini opened, but copy failed.')
+        }
+    }
+
     async function copySelectedAnswerTextFile() {
         if (!selectedPreviousAnswer) {
             setToast('Select an answer first.')
@@ -2388,32 +2463,6 @@ function App() {
         if (action.kind === 'summary-answer') {
             await performDeleteSelectedSummaryAnswer()
         }
-    }
-
-    function downloadVideoRecording() {
-        if (!recordedVideoBlob) return
-        const extension =
-            recordedVideoBlob.type.includes('mp4')
-                ? 'mp4'
-                : recordedVideoBlob.type.includes('webm')
-                    ? 'webm'
-                    : 'mp4'
-        downloadBlob(recordedVideoBlob, `session-video-${Date.now()}.${extension}`)
-    }
-
-    function downloadAudioRecording() {
-        if (!recordedAudioBlob) return
-        const extension =
-            recordedAudioBlob.type.includes('mpeg') || recordedAudioBlob.type.includes('mp3')
-                ? 'mp3'
-                : recordedAudioBlob.type.includes('ogg')
-                    ? 'ogg'
-                    : recordedAudioBlob.type.includes('mp4') || recordedAudioBlob.type.includes('m4a')
-                        ? 'm4a'
-                        : recordedAudioBlob.type.includes('webm')
-                            ? 'webm'
-                            : 'audio'
-        downloadBlob(recordedAudioBlob, `session-audio-${Date.now()}.${extension}`)
     }
 
     async function selectRecordingsFolder() {
@@ -3156,6 +3205,18 @@ function App() {
                                 settings
                             </span>
                         </button>
+                        <button
+                            type="button"
+                            className="btn ghost gemini-launch-btn"
+                            onClick={openGeminiSidePanel}
+                            aria-label="Open Gemini in side panel"
+                            title="Open Gemini in side panel"
+                        >
+                            <span className="material-symbols-outlined topbar-icon" aria-hidden="true">
+                                auto_awesome
+                            </span>
+                            <span className="gemini-launch-label">Open Gemini</span>
+                        </button>
                     </div>
                 </div>
             </header>
@@ -3511,6 +3572,42 @@ function App() {
                         <p className="output-text">{transcriptDisplayText}</p>
                     </div>
 
+                    <div className="transcript-metrics-compact" aria-live="polite">
+                        <p className="transcript-metrics-title">Interview Metrics</p>
+                        {!isRecording && latestInterviewMetrics ? (
+                            <div className="transcript-metrics-grid">
+                                <div className="transcript-metric-chip">
+                                    <span className="label">Length</span>
+                                    <span className="value">{latestInterviewMetrics.answerLengthSec}s</span>
+                                </div>
+                                <div className="transcript-metric-chip">
+                                    <span className="label">WPM</span>
+                                    <span className="value">{latestInterviewMetrics.wpm}</span>
+                                </div>
+                                <div className="transcript-metric-chip">
+                                    <span className="label">Hesitations</span>
+                                    <span className="value">{latestInterviewMetrics.hesitationsCount}</span>
+                                </div>
+                                <div className="transcript-metric-chip">
+                                    <span className="label">Gaze center</span>
+                                    <span className="value">{latestInterviewMetrics.gazeCenterPct}%</span>
+                                </div>
+                                <div className="transcript-metric-chip">
+                                    <span className="label">Gaze deviations</span>
+                                    <span className="value">{latestInterviewMetrics.gazeDeviationCount}</span>
+                                </div>
+                                <div className="transcript-metric-chip">
+                                    <span className="label">Shoulder shift</span>
+                                    <span className="value">{latestInterviewMetrics.shoulderShiftPeakPct}%</span>
+                                </div>
+                            </div>
+                        ) : (
+                            <p className="muted transcript-metrics-empty">
+                                Values appear here after you stop and transcribe a recording.
+                            </p>
+                        )}
+                    </div>
+
                     <div className="actions wrap export-actions">
                         <button
                             type="button"
@@ -3520,26 +3617,14 @@ function App() {
                         >
                             Add to Summary
                         </button>
-                        {(isFolderFeatureDisabled || !recordingsFolderName) && (
-                            <>
-                                <button
-                                    type="button"
-                                    className="btn ghost"
-                                    onClick={downloadVideoRecording}
-                                    disabled={!recordedVideoBlob}
-                                >
-                                    Download Video
-                                </button>
-                                <button
-                                    type="button"
-                                    className="btn ghost"
-                                    onClick={downloadAudioRecording}
-                                    disabled={!recordedAudioBlob}
-                                >
-                                    Download Audio
-                                </button>
-                            </>
-                        )}
+                        <button
+                            type="button"
+                            className="btn ghost"
+                            onClick={copyCurrentOutputForGemini}
+                            disabled={!transcript || !latestInterviewMetrics || isRecording || isTranscribing}
+                        >
+                            Copy Output for Gemini
+                        </button>
                     </div>
 
                     {isDesktopViewport && previousAnswersError && <p className="warning">{previousAnswersError}</p>}
