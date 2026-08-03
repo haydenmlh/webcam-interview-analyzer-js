@@ -532,6 +532,12 @@ h3 {
     margin-top: 0.8rem;
 }
 
+.auto-summary-toggle {
+    align-self: center;
+    white-space: nowrap;
+    font-size: 0.85rem;
+}
+
 .transcript-metrics-compact {
     margin-top: 0.65rem;
     border: 1px solid var(--line);
