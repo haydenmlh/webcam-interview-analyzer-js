@@ -9,11 +9,18 @@ import { FFmpeg } from '@ffmpeg/ffmpeg'
 import { fetchFile, toBlobURL } from '@ffmpeg/util'
 import lamejs from 'lamejs'
 import { APP_VERSION } from './version'
+import {
+    getSpeechFallbackConfig,
+    transcribeWithFallback,
+    validateSpeechFallbackConfig,
+} from './speech/providers'
 import './App.css'
 
 const STORAGE_KEY = 'mia.deepgram.apiKey'
 const STORAGE_VALIDATED_AT = 'mia.deepgram.lastValidatedAt'
 const STORAGE_THEME = 'mia.theme'
+const STORAGE_FALLBACK_WITHOUT_KEY = 'mia.speech.fallbackWithoutDeepgramKey'
+const STORAGE_AUTO_ADD_SUMMARY = 'mia.autoAddSummary'
 const HANDLE_DB_NAME = 'mia-handle-db'
 const HANDLE_STORE_NAME = 'handles'
 const RECORDINGS_FOLDER_KEY = 'recordings-folder'
@@ -32,8 +39,6 @@ const DEFAULT_POSE_MODEL_URL =
     'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task'
 const DEFAULT_DEEPGRAM_LISTEN_URL =
     'https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&filler_words=true'
-const DEFAULT_DEEPGRAM_SPEAK_URL =
-    'https://api.deepgram.com/v1/speak?model=aura-2-thalia-en'
 const DEFAULT_FFMPEG_CORE_BASE_URL =
     'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd'
 
@@ -399,12 +404,41 @@ async function convertVideoBlobToMp4(videoBlob, ffmpegRef, ffmpegLoadedRef) {
     }
 }
 
-function safeTranscriptFromDeepgram(payload) {
-    return (
-        payload?.results?.channels?.[0]?.alternatives?.[0]?.transcript?.trim() ||
-        payload?.transcript?.trim() ||
-        ''
-    )
+function speechProviderLabel(value) {
+    if (value === 'system-tts') return 'System TTS'
+    if (value === 'local-whisper') return 'Local Whisper'
+    if (value === 'huggingface') return 'Hugging Face'
+    if (value === 'deepgram') return 'Deepgram'
+    return 'Unknown provider'
+}
+
+function speechFallbackReasonLabel(value) {
+    if (value === 'key-validation') return 'Deepgram key validation issue'
+    if (value === 'auth-failure') return 'Deepgram authorization failure'
+    if (value === 'endpoint-failure') return 'Deepgram endpoint failure'
+    if (value === 'network-failure') return 'network failure'
+    if (value === 'provider-throttle-timeout') return 'provider timeout or rate limit'
+    if (value === 'provider-unavailable') return 'provider unavailable'
+    if (value === 'provider-error') return 'provider error'
+    return 'fallback trigger'
+}
+
+function describeSpeechMeta(prefix, meta) {
+    if (!meta) return ''
+
+    const provider = speechProviderLabel(meta.providerUsed)
+    if (!meta.fallbackApplied) return `${prefix}: ${provider}`
+
+    const reason = speechFallbackReasonLabel(meta.fallbackReason)
+    return `${prefix}: ${provider} fallback used (${reason})`
+}
+
+function formatSpeechError(error, fallbackMessage) {
+    const base = error?.message || fallbackMessage
+    if (typeof error?.cause === 'string' && error.cause.trim()) {
+        return `${base} (${error.cause.trim()})`
+    }
+    return base
 }
 
 function drawLandmarkSet(ctx, points, width, height, color, radius = 2.4) {
@@ -649,6 +683,17 @@ function computeHandFaceTouch(faceLandmarks, handLandmarks) {
     return minDistance / faceWidth < HAND_FACE_TOUCH_RATIO
 }
 
+function downloadBlob(blob, fileName) {
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = fileName
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(url)
+}
+
 function sanitizeDisplayText(value, fallback = '') {
     const text = String(value ?? '')
         .split('')
@@ -787,7 +832,6 @@ function App() {
     const chunksRef = useRef([])
     const videoRecorderRef = useRef(null)
     const videoChunksRef = useRef([])
-    const questionAudioRef = useRef(null)
     const sessionStartedAtRef = useRef(null)
     const debugEnabledRef = useRef(false)
     const recordingsFolderRef = useRef(null)
@@ -849,6 +893,13 @@ function App() {
     const [toast, setToast] = useState('')
     const [showKeyStatus, setShowKeyStatus] = useState(false)
     const [darkMode, setDarkMode] = useState(() => getSavedValue(STORAGE_THEME) === 'dark')
+    const [fallbackWithoutDeepgramKey, setFallbackWithoutDeepgramKey] = useState(
+        () => getSavedValue(STORAGE_FALLBACK_WITHOUT_KEY) !== 'false',
+    )
+    const [autoAddCompletedAnswersToSummary, setAutoAddCompletedAnswersToSummary] = useState(() => {
+        const saved = getSavedValue(STORAGE_AUTO_ADD_SUMMARY)
+        return saved ? saved === 'true' : true
+    })
 
     const [cameraStatus, setCameraStatus] = useState('idle')
     const [debugEnabled, setDebugEnabled] = useState(false)
@@ -887,11 +938,13 @@ function App() {
     const [isTranscribing, setIsTranscribing] = useState(false)
     const [isSpeakingQuestion, setIsSpeakingQuestion] = useState(false)
     const [readQuestionWithTts, setReadQuestionWithTts] = useState(true)
+    const [transcriptionProviderMeta, setTranscriptionProviderMeta] = useState(null)
+    const [questionTtsProviderMeta, setQuestionTtsProviderMeta] = useState(null)
     const [questionInput, setQuestionInput] = useState('')
     const [transcript, setTranscript] = useState('')
     const [latestInterviewMetrics, setLatestInterviewMetrics] = useState(null)
-    const [, setRecordedAudioBlob] = useState(null)
-    const [, setRecordedVideoBlob] = useState(null)
+    const [recordedAudioBlob, setRecordedAudioBlob] = useState(null)
+    const [recordedVideoBlob, setRecordedVideoBlob] = useState(null)
     const [recordingsFolderName, setRecordingsFolderName] = useState('')
     const [interviewSummaries, setInterviewSummaries] = useState([])
     const [selectedSummaryId, setSelectedSummaryId] = useState('')
@@ -910,6 +963,22 @@ function App() {
     const selectedHistoryMediaRef = useRef({ audioUrl: '', videoUrl: '' })
 
     const hasKey = savedKey.length > 0
+    const speechFallbackConfig = useMemo(
+        () => getSpeechFallbackConfig(import.meta.env),
+        [],
+    )
+    const speechFallbackValidation = useMemo(
+        () => validateSpeechFallbackConfig(speechFallbackConfig),
+        [speechFallbackConfig],
+    )
+    const canUseSttFallbackWithoutKey =
+        fallbackWithoutDeepgramKey && speechFallbackValidation.sttReady
+    const hasSttProvider = hasKey || fallbackWithoutDeepgramKey
+    const hasSystemTts =
+        typeof window !== 'undefined' &&
+        'speechSynthesis' in window &&
+        typeof SpeechSynthesisUtterance !== 'undefined'
+    const hasTtsProvider = hasSystemTts
     const maskedSummary = hasKey
         ? `Key saved (ends with ${savedKey.slice(-2).padStart(6, '*')})`
         : 'No key saved yet.'
@@ -939,6 +1008,13 @@ function App() {
     }, [toast])
 
     useEffect(() => {
+        setSavedValue(
+            STORAGE_AUTO_ADD_SUMMARY,
+            autoAddCompletedAnswersToSummary ? 'true' : 'false',
+        )
+    }, [autoAddCompletedAnswersToSummary])
+
+    useEffect(() => {
         if (!showKeyStatus) return undefined
         const timerId = window.setTimeout(() => setShowKeyStatus(false), 5000)
         return () => window.clearTimeout(timerId)
@@ -954,6 +1030,13 @@ function App() {
         document.documentElement.removeAttribute('data-theme')
         setSavedValue(STORAGE_THEME, 'light')
     }, [darkMode])
+
+    useEffect(() => {
+        setSavedValue(
+            STORAGE_FALLBACK_WITHOUT_KEY,
+            fallbackWithoutDeepgramKey ? 'true' : 'false',
+        )
+    }, [fallbackWithoutDeepgramKey])
 
     const revokeHistoryMediaUrls = useCallback((urls) => {
         if (urls.audioUrl) URL.revokeObjectURL(urls.audioUrl)
@@ -2090,6 +2173,8 @@ function App() {
         setKeyInput('')
         setConfirmRemoveOpen(false)
         setTranscript('')
+        setTranscriptionProviderMeta(null)
+        setQuestionTtsProviderMeta(null)
         setBanner('Transcription is disabled until a new key is added.')
         setToast('Deepgram key removed.')
     }
@@ -2246,21 +2331,6 @@ function App() {
         return sections.join('\n')
     }
 
-    async function copyCurrentOutputForGemini() {
-        const outputMarkdown = buildCurrentOutputForGeminiMarkdown()
-        if (!outputMarkdown) {
-            setToast('Record and transcribe an answer before copying output.')
-            return
-        }
-
-        try {
-            await navigator.clipboard.writeText(outputMarkdown)
-            setToast('Current output for Gemini copied to clipboard.')
-        } catch {
-            setToast('Could not copy current output.')
-        }
-    }
-
     async function openGeminiSidePanel() {
         const width = 400
         const height = Math.max(700, Math.floor(window.screen.availHeight * 0.9))
@@ -2298,6 +2368,32 @@ function App() {
         } catch {
             setToast('Gemini opened, but copy failed.')
         }
+    }
+
+    function downloadVideoRecording() {
+        if (!recordedVideoBlob) return
+        const extension =
+            recordedVideoBlob.type.includes('mp4')
+                ? 'mp4'
+                : recordedVideoBlob.type.includes('webm')
+                    ? 'webm'
+                    : 'mp4'
+        downloadBlob(recordedVideoBlob, `session-video-${Date.now()}.${extension}`)
+    }
+
+    function downloadAudioRecording() {
+        if (!recordedAudioBlob) return
+        const extension =
+            recordedAudioBlob.type.includes('mpeg') || recordedAudioBlob.type.includes('mp3')
+                ? 'mp3'
+                : recordedAudioBlob.type.includes('ogg')
+                    ? 'ogg'
+                    : recordedAudioBlob.type.includes('mp4') || recordedAudioBlob.type.includes('m4a')
+                        ? 'm4a'
+                        : recordedAudioBlob.type.includes('webm')
+                            ? 'webm'
+                            : 'audio'
+        downloadBlob(recordedAudioBlob, `session-audio-${Date.now()}.${extension}`)
     }
 
     async function copySelectedAnswerTextFile() {
@@ -2719,29 +2815,13 @@ function App() {
     async function transcribeAudioBlob(audioBlob) {
         const endpoint =
             import.meta.env.VITE_DEEPGRAM_LISTEN_URL || DEFAULT_DEEPGRAM_LISTEN_URL
-        const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: {
-                Authorization: `Token ${savedKey}`,
-                'Content-Type': audioBlob.type || 'audio/webm',
-            },
-            body: audioBlob,
+        const result = await transcribeWithFallback({
+            audioBlob,
+            deepgramKey: savedKey,
+            deepgramEndpoint: endpoint,
+            fallbackConfig: speechFallbackConfig,
         })
-
-        if (response.status === 401 || response.status === 403) {
-            setBanner('Saved key is invalid or revoked. Update it in Settings.')
-            throw new Error('Saved key is invalid or revoked.')
-        }
-        if (response.status === 429) {
-            throw new Error('Transcription provider rate limit reached. Please wait and retry.')
-        }
-        if (!response.ok) {
-            throw new Error('Transcription failed. Try again in a moment.')
-        }
-
-        const payload = await response.json()
-        const text = safeTranscriptFromDeepgram(payload)
-        return text
+        return result
     }
 
     async function speakQuestionIfEnabled(questionText = questionInput) {
@@ -2753,57 +2833,35 @@ function App() {
             return
         }
 
+        if (!hasSystemTts) {
+            setBanner('System text-to-speech is unavailable in this browser.')
+            return
+        }
+
         try {
             setIsSpeakingQuestion(true)
-            const endpoint =
-                import.meta.env.VITE_DEEPGRAM_SPEAK_URL || DEFAULT_DEEPGRAM_SPEAK_URL
-
-            const response = await fetch(endpoint, {
-                method: 'POST',
-                headers: {
-                    Authorization: `Token ${savedKey}`,
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ text }),
+            window.speechSynthesis.cancel()
+            setQuestionTtsProviderMeta({
+                providerUsed: 'system-tts',
+                fallbackApplied: !hasKey,
+                fallbackReason: !hasKey ? 'key-validation' : '',
             })
-
-            if (!response.ok) {
-                throw new Error('Question TTS failed. Continuing without TTS.')
-            }
-
-            const audioBlob = await response.blob()
-            const audioUrl = URL.createObjectURL(audioBlob)
-
-            if (questionAudioRef.current) {
-                questionAudioRef.current.pause()
-                URL.revokeObjectURL(questionAudioRef.current.src)
-                questionAudioRef.current = null
-            }
-
             await new Promise((resolve, reject) => {
-                const audio = new Audio(audioUrl)
-                questionAudioRef.current = audio
-                audio.onended = () => {
-                    URL.revokeObjectURL(audioUrl)
-                    if (questionAudioRef.current === audio) {
-                        questionAudioRef.current = null
-                    }
+                const utterance = new SpeechSynthesisUtterance(text)
+                utterance.rate = 1
+                utterance.pitch = 1
+                utterance.onend = () => {
                     resolve()
                 }
-                audio.onerror = () => {
-                    URL.revokeObjectURL(audioUrl)
-                    if (questionAudioRef.current === audio) {
-                        questionAudioRef.current = null
-                    }
-                    reject(new Error('Question TTS playback failed.'))
+                utterance.onerror = () => {
+                    reject(new Error('System question TTS playback failed.'))
                 }
-                audio
-                    .play()
-                    .then(() => undefined)
-                    .catch(() => reject(new Error('Question TTS playback failed.')))
+                window.speechSynthesis.speak(utterance)
             })
         } catch (error) {
-            setBanner(error.message || 'Question TTS failed. Continuing without TTS.')
+            const providerMeta = error?.speechMeta || null
+            setQuestionTtsProviderMeta(providerMeta)
+            setBanner(formatSpeechError(error, 'Question TTS failed. Continuing without TTS.'))
         } finally {
             setIsSpeakingQuestion(false)
         }
@@ -2812,9 +2870,9 @@ function App() {
     async function startRecording(mode = 'audio', importedQuestion = '') {
         if (isRecording || isTranscribing) return
 
-        if (!hasKey) {
+        if (!hasSttProvider) {
             openSettings()
-            setBanner('Add Deepgram key in Settings to enable transcription.')
+            setBanner('Add Deepgram key, or enable "Use fallback when Deepgram key is missing" in Settings.')
             return
         }
 
@@ -2826,7 +2884,14 @@ function App() {
         try {
             recordingModeRef.current = mode
             setBanner('')
+            if (!hasKey && canUseSttFallbackWithoutKey) {
+                setBanner('Deepgram key not found. Using configured fallback provider.')
+            } else if (!hasKey && fallbackWithoutDeepgramKey) {
+                setBanner('Deepgram key not found. Recording will continue; configure fallback for transcription.')
+            }
             setTranscript('Recording answer...')
+            setTranscriptionProviderMeta(null)
+            setQuestionTtsProviderMeta(null)
             setLatestInterviewMetrics(null)
             sessionStartedAtRef.current = new Date().toISOString()
             resetInterviewTracking()
@@ -2980,7 +3045,17 @@ function App() {
                 }
             }
 
-            const text = await transcribeAudioBlob(rawAudioBlob)
+            const transcriptionResult = await transcribeAudioBlob(rawAudioBlob)
+            const text = transcriptionResult.text
+            setTranscriptionProviderMeta(transcriptionResult.meta)
+
+            if (transcriptionResult.meta?.fallbackApplied) {
+                const reasonLabel = speechFallbackReasonLabel(
+                    transcriptionResult.meta.fallbackReason,
+                )
+                setBanner(`Transcription fallback used (${reasonLabel}).`)
+            }
+
             const normalizedTranscript = text.trim()
             if (!normalizedTranscript) {
                 setTranscript('')
@@ -3080,23 +3155,28 @@ function App() {
                 interviewMetrics,
             }
 
-            const summaryEntry = {
-                id: crypto.randomUUID(),
-                capturedAt: capturedAtIso,
-                question: trimmedQuestion || '(no question)',
-                transcript: normalizedTranscript,
-                metrics: interviewMetrics,
-            }
+            let autoSummaryEntryId = ''
+            if (autoAddCompletedAnswersToSummary) {
+                const summaryEntry = {
+                    id: crypto.randomUUID(),
+                    capturedAt: capturedAtIso,
+                    question: trimmedQuestion || '(no question)',
+                    transcript: normalizedTranscript,
+                    metrics: interviewMetrics,
+                }
 
-            const candidateFingerprint = getSummaryFingerprint(summaryEntry)
-            const existingEntry = interviewSummaries.find(
-                (item) => getSummaryFingerprint(item) === candidateFingerprint,
-            )
-            if (existingEntry) {
-                setSelectedSummaryId(existingEntry.id)
-            } else {
-                setInterviewSummaries((prev) => [summaryEntry, ...prev])
-                setSelectedSummaryId(summaryEntry.id)
+                const candidateFingerprint = getSummaryFingerprint(summaryEntry)
+                const existingEntry = interviewSummaries.find(
+                    (item) => getSummaryFingerprint(item) === candidateFingerprint,
+                )
+                if (existingEntry) {
+                    autoSummaryEntryId = existingEntry.id
+                    setSelectedSummaryId(existingEntry.id)
+                } else {
+                    autoSummaryEntryId = summaryEntry.id
+                    setInterviewSummaries((prev) => [summaryEntry, ...prev])
+                    setSelectedSummaryId(summaryEntry.id)
+                }
             }
 
             const savedReport = await saveSessionArtifactsToSelectedFolder({
@@ -3108,10 +3188,10 @@ function App() {
                 videoBlob: shouldSaveVideo ? finalVideoBlob : null,
             })
 
-            if (savedReport?.savedFiles) {
+            if (savedReport?.savedFiles && autoAddCompletedAnswersToSummary && autoSummaryEntryId) {
                 setInterviewSummaries((prev) =>
                     prev.map((item) =>
-                        item.id === summaryEntry.id
+                        item.id === autoSummaryEntryId
                             ? {
                                 ...item,
                                 folderPath: savedReport.savedFiles.folder || '',
@@ -3128,10 +3208,14 @@ function App() {
 
             setToast('Transcription completed.')
         } catch (error) {
+            if (error?.speechMeta) {
+                setTranscriptionProviderMeta(error.speechMeta)
+            }
             setTranscript('')
             setLatestInterviewMetrics(null)
-            setBanner(error.message || 'Transcription failed. Try again.')
-            setToast(error.message || 'Transcription failed. Try again.')
+            const errorMessage = formatSpeechError(error, 'Transcription failed. Try again.')
+            setBanner(errorMessage)
+            setToast(errorMessage)
         } finally {
             recorderRef.current = null
             videoRecorderRef.current = null
@@ -3160,6 +3244,14 @@ function App() {
             : describeTorsoRotation(shoulderRotationDeg, SHOULDER_ROTATION_ALERT_DEG)
     const transcriptDisplayText =
         transcript || 'No transcript yet. Start recording to capture your answer transcript.'
+    const transcriptionProviderStatus = describeSpeechMeta(
+        'Latest transcription provider',
+        transcriptionProviderMeta,
+    )
+    const questionTtsProviderStatus = describeSpeechMeta(
+        'Latest question TTS provider',
+        questionTtsProviderMeta,
+    )
     const cameraActionButton =
         cameraStatus === 'ready' ? (
             <button type="button" className="btn ghost" onClick={stopCamera}>
@@ -3563,7 +3655,18 @@ function App() {
                             Revalidation recommended. Your key was last checked over 30 days ago.
                         </p>
                     )}
+                    {!hasTtsProvider && readQuestionWithTts && (
+                        <p className="muted">
+                            Question TTS uses your system voice and is unavailable in this browser.
+                        </p>
+                    )}
                     {banner && <p className="banner">{banner}</p>}
+                    {transcriptionProviderStatus && (
+                        <p className="muted">{transcriptionProviderStatus}</p>
+                    )}
+                    {questionTtsProviderStatus && (
+                        <p className="muted">{questionTtsProviderStatus}</p>
+                    )}
 
                     <div
                         className="transcript-box session-output-box"
@@ -3617,14 +3720,35 @@ function App() {
                         >
                             Add to Summary
                         </button>
-                        <button
-                            type="button"
-                            className="btn ghost"
-                            onClick={copyCurrentOutputForGemini}
-                            disabled={!transcript || !latestInterviewMetrics || isRecording || isTranscribing}
-                        >
-                            Copy Output for Gemini
-                        </button>
+                        <label className="debug-toggle auto-summary-toggle">
+                            <input
+                                type="checkbox"
+                                checked={autoAddCompletedAnswersToSummary}
+                                onChange={(event) => setAutoAddCompletedAnswersToSummary(event.target.checked)}
+                                disabled={isRecording || isTranscribing}
+                            />
+                            <span>Auto add completed answers to summary</span>
+                        </label>
+                        {(isFolderFeatureDisabled || !recordingsFolderName) && (
+                            <>
+                                <button
+                                    type="button"
+                                    className="btn ghost"
+                                    onClick={downloadVideoRecording}
+                                    disabled={!recordedVideoBlob}
+                                >
+                                    Download Video
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn ghost"
+                                    onClick={downloadAudioRecording}
+                                    disabled={!recordedAudioBlob}
+                                >
+                                    Download Audio
+                                </button>
+                            </>
+                        )}
                     </div>
 
                     {isDesktopViewport && previousAnswersError && <p className="warning">{previousAnswersError}</p>}
@@ -4209,6 +4333,23 @@ function App() {
                                     {fieldError}
                                 </p>
                             )}
+
+                            <div className="settings-section">
+                                <label className="label">Missing-Key Fallback</label>
+                                <p className="muted">
+                                    If Deepgram key is missing, start recording with local Whisper fallback.
+                                </p>
+                                <label className="debug-toggle">
+                                    <input
+                                        type="checkbox"
+                                        checked={fallbackWithoutDeepgramKey}
+                                        onChange={(event) =>
+                                            setFallbackWithoutDeepgramKey(event.target.checked)
+                                        }
+                                    />
+                                    <span>Use fallback when Deepgram key is missing</span>
+                                </label>
+                            </div>
 
                             <p className="privacy-note">
                                 Anyone with access to this browser profile can use this key until you remove it.
