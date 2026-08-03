@@ -20,9 +20,6 @@ const STORAGE_KEY = 'mia.deepgram.apiKey'
 const STORAGE_VALIDATED_AT = 'mia.deepgram.lastValidatedAt'
 const STORAGE_THEME = 'mia.theme'
 const STORAGE_FALLBACK_WITHOUT_KEY = 'mia.speech.fallbackWithoutDeepgramKey'
-const STORAGE_HF_API_KEY = 'mia.huggingface.apiKey'
-const STORAGE_HF_TTS_MODEL = 'mia.huggingface.ttsModel'
-const STORAGE_HF_TTS_URL = 'mia.huggingface.ttsUrl'
 const HANDLE_DB_NAME = 'mia-handle-db'
 const HANDLE_STORE_NAME = 'handles'
 const RECORDINGS_FOLDER_KEY = 'recordings-folder'
@@ -43,7 +40,6 @@ const DEFAULT_DEEPGRAM_LISTEN_URL =
     'https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&filler_words=true'
 const DEFAULT_FFMPEG_CORE_BASE_URL =
     'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd'
-const HF_MODELS_BASE_URL = 'https://router.huggingface.co/hf-inference/models'
 
 const PROLONGED_CLOSURE_MS = 800
 const EYE_CLOSED_RATIO = 0.18
@@ -56,10 +52,6 @@ const GAZE_CENTER_DEVIATION_THRESHOLD_PCT = 25
 const GAZE_DIRECTION_EXIT_THRESHOLD_PCT = 24
 const GAZE_DIRECTION_RETURN_THRESHOLD_PCT = 20
 const GAZE_DIRECTION_DOMINANCE_PCT = 4
-
-function buildHfModelEndpoint(modelId) {
-    return `${HF_MODELS_BASE_URL}/${modelId}`
-}
 
 function validateKeyFormat(rawValue) {
     const value = rawValue.trim()
@@ -883,22 +875,7 @@ function App() {
     )
 
     const [keyInput, setKeyInput] = useState('')
-    const [hfApiKeyInput, setHfApiKeyInput] = useState('')
-    const [savedHfApiKey, setSavedHfApiKey] = useState(() => getSavedValue(STORAGE_HF_API_KEY))
-    const [hfTtsModelInput, setHfTtsModelInput] = useState(() =>
-        getSavedValue(STORAGE_HF_TTS_MODEL),
-    )
-    const [hfTtsUrlInput, setHfTtsUrlInput] = useState(() =>
-        getSavedValue(STORAGE_HF_TTS_URL),
-    )
-    const [savedHfTtsModel, setSavedHfTtsModel] = useState(() =>
-        getSavedValue(STORAGE_HF_TTS_MODEL),
-    )
-    const [savedHfTtsUrl, setSavedHfTtsUrl] = useState(() =>
-        getSavedValue(STORAGE_HF_TTS_URL),
-    )
     const [showKey, setShowKey] = useState(false)
-    const [showHfKey, setShowHfKey] = useState(false)
     const [fieldError, setFieldError] = useState('')
     const [banner, setBanner] = useState('')
     const [toast, setToast] = useState('')
@@ -970,27 +947,10 @@ function App() {
     const selectedHistoryMediaRef = useRef({ audioUrl: '', videoUrl: '' })
 
     const hasKey = savedKey.length > 0
-    const speechFallbackConfig = useMemo(() => {
-        const baseConfig = getSpeechFallbackConfig(import.meta.env)
-        const nextConfig = {
-            ...baseConfig,
-        }
-
-        if (savedHfApiKey.trim()) {
-            nextConfig.apiKey = savedHfApiKey.trim()
-        }
-
-        if (savedHfTtsModel.trim()) {
-            nextConfig.ttsModel = savedHfTtsModel.trim()
-            nextConfig.ttsEndpoint = buildHfModelEndpoint(nextConfig.ttsModel)
-        }
-
-        if (savedHfTtsUrl.trim()) {
-            nextConfig.ttsEndpoint = savedHfTtsUrl.trim()
-        }
-
-        return nextConfig
-    }, [savedHfApiKey, savedHfTtsModel, savedHfTtsUrl])
+    const speechFallbackConfig = useMemo(
+        () => getSpeechFallbackConfig(import.meta.env),
+        [],
+    )
     const speechFallbackValidation = useMemo(
         () => validateSpeechFallbackConfig(speechFallbackConfig),
         [speechFallbackConfig],
@@ -2109,9 +2069,6 @@ function App() {
     function openSettings() {
         setSettingsOpen(true)
         setKeyInput(savedKey)
-        setHfApiKeyInput(savedHfApiKey)
-        setHfTtsModelInput(savedHfTtsModel)
-        setHfTtsUrlInput(savedHfTtsUrl)
         setFieldError('')
     }
 
@@ -2119,7 +2076,6 @@ function App() {
         setSettingsOpen(false)
         setFieldError('')
         setShowKey(false)
-        setShowHfKey(false)
     }
 
     function openSelectRecordingsFolderModal() {
@@ -2183,36 +2139,6 @@ function App() {
         } else {
             setToast('Settings saved.')
         }
-    }
-
-    function saveHuggingFaceSettings() {
-        const trimmedKey = hfApiKeyInput.trim()
-        const trimmedTtsModel = hfTtsModelInput.trim()
-        const trimmedTtsUrl = hfTtsUrlInput.trim()
-
-        setSavedHfApiKey(trimmedKey)
-        setSavedHfTtsModel(trimmedTtsModel)
-        setSavedHfTtsUrl(trimmedTtsUrl)
-
-        if (trimmedKey) {
-            setSavedValue(STORAGE_HF_API_KEY, trimmedKey)
-        } else {
-            clearSavedValue(STORAGE_HF_API_KEY)
-        }
-
-        if (trimmedTtsModel) {
-            setSavedValue(STORAGE_HF_TTS_MODEL, trimmedTtsModel)
-        } else {
-            clearSavedValue(STORAGE_HF_TTS_MODEL)
-        }
-
-        if (trimmedTtsUrl) {
-            setSavedValue(STORAGE_HF_TTS_URL, trimmedTtsUrl)
-        } else {
-            clearSavedValue(STORAGE_HF_TTS_URL)
-        }
-
-        setToast('Hugging Face fallback settings saved.')
     }
 
     function removeKey() {
@@ -4349,72 +4275,9 @@ function App() {
                             )}
 
                             <div className="settings-section">
-                                <label htmlFor="hf-fallback-key" className="label">
-                                    Optional Hugging Face STT API Key
-                                </label>
-                                <p className="muted">
-                                    Not required for local fallback. If provided, STT fallback may use Hugging Face cloud instead of local Whisper.
-                                </p>
-                                <div className="key-input-row">
-                                    <input
-                                        id="hf-fallback-key"
-                                        type={showHfKey ? 'text' : 'password'}
-                                        value={hfApiKeyInput}
-                                        onChange={(event) => setHfApiKeyInput(event.target.value)}
-                                        className="field"
-                                        autoComplete="off"
-                                    />
-                                    <button
-                                        type="button"
-                                        className="btn key-save-btn"
-                                        onMouseDown={(event) => event.preventDefault()}
-                                        onClick={saveHuggingFaceSettings}
-                                    >
-                                        Save key
-                                    </button>
-                                </div>
-                                <div className="actions wrap">
-                                    <button
-                                        type="button"
-                                        className="btn ghost"
-                                        onClick={() => setShowHfKey((prev) => !prev)}
-                                    >
-                                        {showHfKey ? 'Hide fallback key' : 'Show fallback key'}
-                                    </button>
-                                </div>
-
-                                <label htmlFor="hf-fallback-tts-model" className="label">
-                                    Optional Cloud TTS Model ID
-                                </label>
-                                <input
-                                    id="hf-fallback-tts-model"
-                                    className="field"
-                                    value={hfTtsModelInput}
-                                    onChange={(event) => setHfTtsModelInput(event.target.value)}
-                                    autoComplete="off"
-                                    placeholder="hexgrad/Kokoro-82M or Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
-                                />
-
-                                <label htmlFor="hf-fallback-tts-url" className="label">
-                                    Optional Cloud TTS Endpoint URL
-                                </label>
-                                <input
-                                    id="hf-fallback-tts-url"
-                                    className="field"
-                                    value={hfTtsUrlInput}
-                                    onChange={(event) => setHfTtsUrlInput(event.target.value)}
-                                    autoComplete="off"
-                                    placeholder="https://router.huggingface.co/hf-inference/models/<model>"
-                                />
-                                <p className="help-text">
-                                    Interview question TTS now uses your OS/system voice by default.
-                                </p>
-                            </div>
-
-                            <div className="settings-section">
                                 <label className="label">Missing-Key Fallback</label>
                                 <p className="muted">
-                                    If Deepgram key is missing, start recording/TTS with Hugging Face fallback when configured.
+                                    If Deepgram key is missing, start recording with local Whisper fallback.
                                 </p>
                                 <label className="debug-toggle">
                                     <input
