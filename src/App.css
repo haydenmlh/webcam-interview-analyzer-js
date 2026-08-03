@@ -64,6 +64,22 @@ h3 {
     line-height: 1;
 }
 
+.gemini-launch-btn {
+    min-width: 2.35rem;
+    padding: 0.34rem 0.5rem;
+    font-size: 1rem;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.gemini-launch-label {
+    font-size: 0.86rem;
+    font-weight: 600;
+    line-height: 1;
+}
+
 .topbar-actions {
     display: inline-flex;
     align-items: center;
@@ -514,6 +530,55 @@ h3 {
 
 .export-actions {
     margin-top: 0.8rem;
+}
+
+.transcript-metrics-compact {
+    margin-top: 0.65rem;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 0.55rem;
+    background: color-mix(in srgb, var(--ghost-bg), var(--card-bg) 40%);
+}
+
+.transcript-metrics-title {
+    margin: 0;
+    font-size: 0.82rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    color: var(--ink-700);
+}
+
+.transcript-metrics-grid {
+    margin-top: 0.45rem;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.4rem;
+}
+
+.transcript-metric-chip {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 0.35rem 0.45rem;
+    background: var(--card-bg);
+    display: grid;
+    gap: 0.12rem;
+}
+
+.transcript-metric-chip .label {
+    font-size: 0.72rem;
+    color: var(--ink-700);
+    line-height: 1.2;
+}
+
+.transcript-metric-chip .value {
+    font-size: 0.86rem;
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+.transcript-metrics-empty {
+    margin-top: 0.4rem;
+    font-size: 0.82rem;
 }
 
 .session-history-summary {
@@ -1645,6 +1710,10 @@ h3 {
 
     .history-overview-list {
         max-height: 28vh;
+    }
+
+    .transcript-metrics-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 }
 

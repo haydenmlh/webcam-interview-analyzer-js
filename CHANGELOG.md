@@ -19,6 +19,30 @@ Use this template for future releases:
 -
 ```
 
+## [1.5.0] - 2026-08-03
+
+### Added
+- Topbar Open Gemini action that launches Gemini in a right-side popup panel.
+- Open Gemini button label and icon treatment in the topbar for clearer discoverability.
+
+### Changed
+- Gemini popup now uses a fixed debug width for consistent testing behavior.
+
+### Fixed
+- Corrected popup-blocked false-positive toast behavior in browsers where popup windows open successfully.
+
+## [1.4.4] - 2026-08-03
+
+### Added
+- Compact interview metrics panel under the transcript box for the current answered question.
+- Copy Output for Gemini action to copy current question output (transcript + metrics) to clipboard.
+
+### Changed
+- Transcript metrics values are now shown only after a recording is stopped and transcribed.
+
+### Fixed
+- Removed Download Video and Download Audio buttons from the session output area to streamline the export workflow.
+
 ## [1.4.3] - 2026-08-01
 
 ### Changed
