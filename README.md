@@ -2,7 +2,7 @@
 
 Mock Interviewer is a React + Vite web app for practicing interview answers with live camera posture cues, audio/video recording, and Deepgram-powered transcription.
 
-Current app version: 1.5.0
+Current app version: 1.7.3
 
 ## Highlights
 
@@ -12,8 +12,17 @@ Current app version: 1.5.0
 - Stop and Transcribe flow with transcript and interview metrics
 - Add to Summary action for current answer/transcript
 - Copy Summary for Gem export in Gemini-friendly markdown format
-- Copy Output for Gemini action for the current answered question (transcript + metrics)
 - Open Gemini topbar action that launches Gemini in a right-side popup panel for quick paste-and-iterate workflow
+- CV/JD modal for storing company name, CV, and job description with Gemini-ready copy action
+- URL-based multi-question import on page load
+- Interviewer mock image mode with optional self-view PiP
+- Camera controls in Settings: Enable Camera, Show Interviewer, Show Self View
+- Allow Camera Access button now hides after first successful permission grant
+- Camera/session panel spacing refined to better use available vertical space
+- Session action controls are placed above the interview question field for faster access
+- Select Save Folder prompt now includes a dismiss (X) control
+- Invert camera toggle in Settings with local persistence
+- Key-saved status shown as a bottom-right popup notification
 - Save session files to a selected folder when File System Access is supported
 - Previous Answers modal with recorded media and metrics history
 - Interview question text-to-speech option
@@ -54,6 +63,27 @@ npm run build
 - Interview question playback uses OS/system text-to-speech in the browser.
 - If no Deepgram key is present and missing-key fallback is enabled, transcription falls back to local Whisper (in-browser) and question playback uses OS/system TTS.
 - Folder-based save/history features rely on the browser File System Access API and permission grants.
+
+## URL question import
+
+You can preload multiple interview questions when opening the app.
+
+- Preferred format (newline separated):
+
+```text
+?questions=Tell%20me%20about%20yourself%0AWhat%20is%20your%20biggest%20strength%3F%0ADescribe%20a%20challenging%20project.
+```
+
+- Alternate format (repeated parameter):
+
+```text
+?q=Tell%20me%20about%20yourself&q=What%20is%20your%20biggest%20strength%3F&q=Describe%20a%20challenging%20project.
+```
+
+Behavior:
+- Imported questions are loaded into the Questions Import list on first render.
+- The first imported question becomes the active Interview question.
+- Duplicate questions are automatically de-duplicated.
 
 ## Changelog
 

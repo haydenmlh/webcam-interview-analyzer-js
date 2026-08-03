@@ -19,6 +19,102 @@ Use this template for future releases:
 -
 ```
 
+## [1.7.8] - 2026-08-03
+
+### Added
+- Added a `Clear Questions List` button to the Questions Import modal header, next to the close (`X`) button.
+
+### Changed
+- Clearing the questions list now resets the modal's parsed question input in one action.
+
+## [1.7.7] - 2026-08-03
+
+### Changed
+- Updated CV/JD modal to use the same sizing behavior as the Questions List modal.
+- Removed the CV/JD left panel and simplified the modal to a single-column content layout.
+
+## [1.7.6] - 2026-08-03
+
+### Changed
+- When camera permission is already granted, the app now starts the camera automatically (when `Enable Camera` is on) instead of showing `Allow Camera Access`.
+
+### Fixed
+- `Allow Camera Access` button is no longer shown when browser camera permission is already granted.
+
+## [1.7.5] - 2026-08-03
+
+### Changed
+- Moved `Invert camera` into the `Camera Display` settings section, directly under the display toggles.
+- Removed the separate `Camera Orientation` settings section.
+
+## [1.7.4] - 2026-08-03
+
+### Fixed
+- Re-enabling `Show Self View` now reliably restores the live camera preview without requiring a camera disable/enable cycle.
+- Camera preview stream is reattached to the self-view element after it remounts, and analysis loop resumes when preview is visible.
+
+## [1.7.3] - 2026-08-03
+
+### Added
+- Dismiss (X) control beside `Select Save Folder` to hide the save-folder prompt row.
+
+### Changed
+- Moved session action controls (Add to Summary, auto-add checkbox, download actions) above the Interview question title and below the save-folder row.
+
+## [1.7.2] - 2026-08-03
+
+### Changed
+- Moved the session actions row (Add to Summary, auto-add checkbox, and download actions) above the transcript box and below the question input area.
+- Refined camera and session panel spacing/alignment behavior for better use of available vertical space.
+
+### Fixed
+- Removed extra spacing artifacts around camera controls when the `Allow Camera Access` control visibility changes.
+
+## [1.7.1] - 2026-08-03
+
+### Changed
+- Session question/transcript/metrics panel now expands to fill available vertical space.
+- Removed extra top spacing above the camera frame for tighter panel alignment.
+
+### Fixed
+- Eliminated extra empty space under the Start Audio/Start Video actions after `Allow Camera Access` is hidden.
+
+## [1.7.0] - 2026-08-03
+
+### Added
+- Interviewer mock image view in the camera panel using `src/assets/interviewer.jpg`.
+- New Settings toggles for `Enable Camera`, `Show Interviewer`, and `Show Self View`, each with local persistence.
+
+### Changed
+- Camera panel now supports interviewer-first composition with optional self-view PiP near the lower-right corner.
+- `Allow Camera Access` now disappears after the first successful permission grant; ongoing camera control is handled in Settings.
+- Removed the explicit Camera View section title for a cleaner camera panel.
+
+## [1.6.1] - 2026-08-03
+
+### Added
+- CV/JD modal for managing company name, CV, and job description, including Gemini-ready copy output.
+- Invert camera toggle in Settings with local persistence.
+
+### Changed
+- Key-saved confirmation now appears as a bottom-right popup notification instead of inline beneath the interview question field.
+- Gemini launcher now uses a best-effort blank-window-then-navigate popup flow to improve behavior on stricter browsers (including macOS browsers).
+
+### Fixed
+- Recording action row alignment refined to reduce extra spacing beneath Start Audio/Start Video actions.
+
+## [1.6.0] - 2026-08-03
+
+### Added
+- Page-load URL parameter support for importing multiple interview questions.
+- Accepted URL formats:
+  - `?questions=` with newline-separated items
+  - repeated `?q=` parameters
+
+### Changed
+- Imported URL questions now prefill the Questions Import list automatically.
+- The first imported URL question is set as the active Interview question on initial load.
+
 ## [1.5.0] - 2026-08-03
 
 ### Added
