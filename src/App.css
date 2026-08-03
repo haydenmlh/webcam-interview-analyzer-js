@@ -497,6 +497,7 @@ h3 {
 
 .camera-empty p {
     margin: 0;
+    padding: 0.25rem 0.4rem;
     font-weight: 600;
 }
 
