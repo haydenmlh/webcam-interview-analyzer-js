@@ -9,11 +9,20 @@ import { FFmpeg } from '@ffmpeg/ffmpeg'
 import { fetchFile, toBlobURL } from '@ffmpeg/util'
 import lamejs from 'lamejs'
 import { APP_VERSION } from './version'
+import {
+    getSpeechFallbackConfig,
+    transcribeWithFallback,
+    validateSpeechFallbackConfig,
+} from './speech/providers'
 import './App.css'
 
 const STORAGE_KEY = 'mia.deepgram.apiKey'
 const STORAGE_VALIDATED_AT = 'mia.deepgram.lastValidatedAt'
 const STORAGE_THEME = 'mia.theme'
+const STORAGE_FALLBACK_WITHOUT_KEY = 'mia.speech.fallbackWithoutDeepgramKey'
+const STORAGE_HF_API_KEY = 'mia.huggingface.apiKey'
+const STORAGE_HF_TTS_MODEL = 'mia.huggingface.ttsModel'
+const STORAGE_HF_TTS_URL = 'mia.huggingface.ttsUrl'
 const HANDLE_DB_NAME = 'mia-handle-db'
 const HANDLE_STORE_NAME = 'handles'
 const RECORDINGS_FOLDER_KEY = 'recordings-folder'
@@ -32,10 +41,9 @@ const DEFAULT_POSE_MODEL_URL =
     'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task'
 const DEFAULT_DEEPGRAM_LISTEN_URL =
     'https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&filler_words=true'
-const DEFAULT_DEEPGRAM_SPEAK_URL =
-    'https://api.deepgram.com/v1/speak?model=aura-2-thalia-en'
 const DEFAULT_FFMPEG_CORE_BASE_URL =
     'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd'
+const HF_MODELS_BASE_URL = 'https://router.huggingface.co/hf-inference/models'
 
 const PROLONGED_CLOSURE_MS = 800
 const EYE_CLOSED_RATIO = 0.18
@@ -48,6 +56,10 @@ const GAZE_CENTER_DEVIATION_THRESHOLD_PCT = 25
 const GAZE_DIRECTION_EXIT_THRESHOLD_PCT = 24
 const GAZE_DIRECTION_RETURN_THRESHOLD_PCT = 20
 const GAZE_DIRECTION_DOMINANCE_PCT = 4
+
+function buildHfModelEndpoint(modelId) {
+    return `${HF_MODELS_BASE_URL}/${modelId}`
+}
 
 function validateKeyFormat(rawValue) {
     const value = rawValue.trim()
@@ -399,12 +411,41 @@ async function convertVideoBlobToMp4(videoBlob, ffmpegRef, ffmpegLoadedRef) {
     }
 }
 
-function safeTranscriptFromDeepgram(payload) {
-    return (
-        payload?.results?.channels?.[0]?.alternatives?.[0]?.transcript?.trim() ||
-        payload?.transcript?.trim() ||
-        ''
-    )
+function speechProviderLabel(value) {
+    if (value === 'system-tts') return 'System TTS'
+    if (value === 'local-whisper') return 'Local Whisper'
+    if (value === 'huggingface') return 'Hugging Face'
+    if (value === 'deepgram') return 'Deepgram'
+    return 'Unknown provider'
+}
+
+function speechFallbackReasonLabel(value) {
+    if (value === 'key-validation') return 'Deepgram key validation issue'
+    if (value === 'auth-failure') return 'Deepgram authorization failure'
+    if (value === 'endpoint-failure') return 'Deepgram endpoint failure'
+    if (value === 'network-failure') return 'network failure'
+    if (value === 'provider-throttle-timeout') return 'provider timeout or rate limit'
+    if (value === 'provider-unavailable') return 'provider unavailable'
+    if (value === 'provider-error') return 'provider error'
+    return 'fallback trigger'
+}
+
+function describeSpeechMeta(prefix, meta) {
+    if (!meta) return ''
+
+    const provider = speechProviderLabel(meta.providerUsed)
+    if (!meta.fallbackApplied) return `${prefix}: ${provider}`
+
+    const reason = speechFallbackReasonLabel(meta.fallbackReason)
+    return `${prefix}: ${provider} fallback used (${reason})`
+}
+
+function formatSpeechError(error, fallbackMessage) {
+    const base = error?.message || fallbackMessage
+    if (typeof error?.cause === 'string' && error.cause.trim()) {
+        return `${base} (${error.cause.trim()})`
+    }
+    return base
 }
 
 function drawLandmarkSet(ctx, points, width, height, color, radius = 2.4) {
@@ -787,7 +828,6 @@ function App() {
     const chunksRef = useRef([])
     const videoRecorderRef = useRef(null)
     const videoChunksRef = useRef([])
-    const questionAudioRef = useRef(null)
     const sessionStartedAtRef = useRef(null)
     const debugEnabledRef = useRef(false)
     const recordingsFolderRef = useRef(null)
@@ -843,12 +883,30 @@ function App() {
     )
 
     const [keyInput, setKeyInput] = useState('')
+    const [hfApiKeyInput, setHfApiKeyInput] = useState('')
+    const [savedHfApiKey, setSavedHfApiKey] = useState(() => getSavedValue(STORAGE_HF_API_KEY))
+    const [hfTtsModelInput, setHfTtsModelInput] = useState(() =>
+        getSavedValue(STORAGE_HF_TTS_MODEL),
+    )
+    const [hfTtsUrlInput, setHfTtsUrlInput] = useState(() =>
+        getSavedValue(STORAGE_HF_TTS_URL),
+    )
+    const [savedHfTtsModel, setSavedHfTtsModel] = useState(() =>
+        getSavedValue(STORAGE_HF_TTS_MODEL),
+    )
+    const [savedHfTtsUrl, setSavedHfTtsUrl] = useState(() =>
+        getSavedValue(STORAGE_HF_TTS_URL),
+    )
     const [showKey, setShowKey] = useState(false)
+    const [showHfKey, setShowHfKey] = useState(false)
     const [fieldError, setFieldError] = useState('')
     const [banner, setBanner] = useState('')
     const [toast, setToast] = useState('')
     const [showKeyStatus, setShowKeyStatus] = useState(false)
     const [darkMode, setDarkMode] = useState(() => getSavedValue(STORAGE_THEME) === 'dark')
+    const [fallbackWithoutDeepgramKey, setFallbackWithoutDeepgramKey] = useState(
+        () => getSavedValue(STORAGE_FALLBACK_WITHOUT_KEY) !== 'false',
+    )
 
     const [cameraStatus, setCameraStatus] = useState('idle')
     const [debugEnabled, setDebugEnabled] = useState(false)
@@ -887,6 +945,8 @@ function App() {
     const [isTranscribing, setIsTranscribing] = useState(false)
     const [isSpeakingQuestion, setIsSpeakingQuestion] = useState(false)
     const [readQuestionWithTts, setReadQuestionWithTts] = useState(true)
+    const [transcriptionProviderMeta, setTranscriptionProviderMeta] = useState(null)
+    const [questionTtsProviderMeta, setQuestionTtsProviderMeta] = useState(null)
     const [questionInput, setQuestionInput] = useState('')
     const [transcript, setTranscript] = useState('')
     const [latestInterviewMetrics, setLatestInterviewMetrics] = useState(null)
@@ -910,6 +970,39 @@ function App() {
     const selectedHistoryMediaRef = useRef({ audioUrl: '', videoUrl: '' })
 
     const hasKey = savedKey.length > 0
+    const speechFallbackConfig = useMemo(() => {
+        const baseConfig = getSpeechFallbackConfig(import.meta.env)
+        const nextConfig = {
+            ...baseConfig,
+        }
+
+        if (savedHfApiKey.trim()) {
+            nextConfig.apiKey = savedHfApiKey.trim()
+        }
+
+        if (savedHfTtsModel.trim()) {
+            nextConfig.ttsModel = savedHfTtsModel.trim()
+            nextConfig.ttsEndpoint = buildHfModelEndpoint(nextConfig.ttsModel)
+        }
+
+        if (savedHfTtsUrl.trim()) {
+            nextConfig.ttsEndpoint = savedHfTtsUrl.trim()
+        }
+
+        return nextConfig
+    }, [savedHfApiKey, savedHfTtsModel, savedHfTtsUrl])
+    const speechFallbackValidation = useMemo(
+        () => validateSpeechFallbackConfig(speechFallbackConfig),
+        [speechFallbackConfig],
+    )
+    const canUseSttFallbackWithoutKey =
+        fallbackWithoutDeepgramKey && speechFallbackValidation.sttReady
+    const hasSttProvider = hasKey || fallbackWithoutDeepgramKey
+    const hasSystemTts =
+        typeof window !== 'undefined' &&
+        'speechSynthesis' in window &&
+        typeof SpeechSynthesisUtterance !== 'undefined'
+    const hasTtsProvider = hasSystemTts
     const maskedSummary = hasKey
         ? `Key saved (ends with ${savedKey.slice(-2).padStart(6, '*')})`
         : 'No key saved yet.'
@@ -954,6 +1047,13 @@ function App() {
         document.documentElement.removeAttribute('data-theme')
         setSavedValue(STORAGE_THEME, 'light')
     }, [darkMode])
+
+    useEffect(() => {
+        setSavedValue(
+            STORAGE_FALLBACK_WITHOUT_KEY,
+            fallbackWithoutDeepgramKey ? 'true' : 'false',
+        )
+    }, [fallbackWithoutDeepgramKey])
 
     const revokeHistoryMediaUrls = useCallback((urls) => {
         if (urls.audioUrl) URL.revokeObjectURL(urls.audioUrl)
@@ -2009,6 +2109,9 @@ function App() {
     function openSettings() {
         setSettingsOpen(true)
         setKeyInput(savedKey)
+        setHfApiKeyInput(savedHfApiKey)
+        setHfTtsModelInput(savedHfTtsModel)
+        setHfTtsUrlInput(savedHfTtsUrl)
         setFieldError('')
     }
 
@@ -2016,6 +2119,7 @@ function App() {
         setSettingsOpen(false)
         setFieldError('')
         setShowKey(false)
+        setShowHfKey(false)
     }
 
     function openSelectRecordingsFolderModal() {
@@ -2081,6 +2185,36 @@ function App() {
         }
     }
 
+    function saveHuggingFaceSettings() {
+        const trimmedKey = hfApiKeyInput.trim()
+        const trimmedTtsModel = hfTtsModelInput.trim()
+        const trimmedTtsUrl = hfTtsUrlInput.trim()
+
+        setSavedHfApiKey(trimmedKey)
+        setSavedHfTtsModel(trimmedTtsModel)
+        setSavedHfTtsUrl(trimmedTtsUrl)
+
+        if (trimmedKey) {
+            setSavedValue(STORAGE_HF_API_KEY, trimmedKey)
+        } else {
+            clearSavedValue(STORAGE_HF_API_KEY)
+        }
+
+        if (trimmedTtsModel) {
+            setSavedValue(STORAGE_HF_TTS_MODEL, trimmedTtsModel)
+        } else {
+            clearSavedValue(STORAGE_HF_TTS_MODEL)
+        }
+
+        if (trimmedTtsUrl) {
+            setSavedValue(STORAGE_HF_TTS_URL, trimmedTtsUrl)
+        } else {
+            clearSavedValue(STORAGE_HF_TTS_URL)
+        }
+
+        setToast('Hugging Face fallback settings saved.')
+    }
+
     function removeKey() {
         clearSavedValue(STORAGE_KEY)
         clearSavedValue(STORAGE_VALIDATED_AT)
@@ -2090,6 +2224,8 @@ function App() {
         setKeyInput('')
         setConfirmRemoveOpen(false)
         setTranscript('')
+        setTranscriptionProviderMeta(null)
+        setQuestionTtsProviderMeta(null)
         setBanner('Transcription is disabled until a new key is added.')
         setToast('Deepgram key removed.')
     }
@@ -2719,29 +2855,13 @@ function App() {
     async function transcribeAudioBlob(audioBlob) {
         const endpoint =
             import.meta.env.VITE_DEEPGRAM_LISTEN_URL || DEFAULT_DEEPGRAM_LISTEN_URL
-        const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: {
-                Authorization: `Token ${savedKey}`,
-                'Content-Type': audioBlob.type || 'audio/webm',
-            },
-            body: audioBlob,
+        const result = await transcribeWithFallback({
+            audioBlob,
+            deepgramKey: savedKey,
+            deepgramEndpoint: endpoint,
+            fallbackConfig: speechFallbackConfig,
         })
-
-        if (response.status === 401 || response.status === 403) {
-            setBanner('Saved key is invalid or revoked. Update it in Settings.')
-            throw new Error('Saved key is invalid or revoked.')
-        }
-        if (response.status === 429) {
-            throw new Error('Transcription provider rate limit reached. Please wait and retry.')
-        }
-        if (!response.ok) {
-            throw new Error('Transcription failed. Try again in a moment.')
-        }
-
-        const payload = await response.json()
-        const text = safeTranscriptFromDeepgram(payload)
-        return text
+        return result
     }
 
     async function speakQuestionIfEnabled(questionText = questionInput) {
@@ -2753,57 +2873,35 @@ function App() {
             return
         }
 
+        if (!hasSystemTts) {
+            setBanner('System text-to-speech is unavailable in this browser.')
+            return
+        }
+
         try {
             setIsSpeakingQuestion(true)
-            const endpoint =
-                import.meta.env.VITE_DEEPGRAM_SPEAK_URL || DEFAULT_DEEPGRAM_SPEAK_URL
-
-            const response = await fetch(endpoint, {
-                method: 'POST',
-                headers: {
-                    Authorization: `Token ${savedKey}`,
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ text }),
+            window.speechSynthesis.cancel()
+            setQuestionTtsProviderMeta({
+                providerUsed: 'system-tts',
+                fallbackApplied: !hasKey,
+                fallbackReason: !hasKey ? 'key-validation' : '',
             })
-
-            if (!response.ok) {
-                throw new Error('Question TTS failed. Continuing without TTS.')
-            }
-
-            const audioBlob = await response.blob()
-            const audioUrl = URL.createObjectURL(audioBlob)
-
-            if (questionAudioRef.current) {
-                questionAudioRef.current.pause()
-                URL.revokeObjectURL(questionAudioRef.current.src)
-                questionAudioRef.current = null
-            }
-
             await new Promise((resolve, reject) => {
-                const audio = new Audio(audioUrl)
-                questionAudioRef.current = audio
-                audio.onended = () => {
-                    URL.revokeObjectURL(audioUrl)
-                    if (questionAudioRef.current === audio) {
-                        questionAudioRef.current = null
-                    }
+                const utterance = new SpeechSynthesisUtterance(text)
+                utterance.rate = 1
+                utterance.pitch = 1
+                utterance.onend = () => {
                     resolve()
                 }
-                audio.onerror = () => {
-                    URL.revokeObjectURL(audioUrl)
-                    if (questionAudioRef.current === audio) {
-                        questionAudioRef.current = null
-                    }
-                    reject(new Error('Question TTS playback failed.'))
+                utterance.onerror = () => {
+                    reject(new Error('System question TTS playback failed.'))
                 }
-                audio
-                    .play()
-                    .then(() => undefined)
-                    .catch(() => reject(new Error('Question TTS playback failed.')))
+                window.speechSynthesis.speak(utterance)
             })
         } catch (error) {
-            setBanner(error.message || 'Question TTS failed. Continuing without TTS.')
+            const providerMeta = error?.speechMeta || null
+            setQuestionTtsProviderMeta(providerMeta)
+            setBanner(formatSpeechError(error, 'Question TTS failed. Continuing without TTS.'))
         } finally {
             setIsSpeakingQuestion(false)
         }
@@ -2812,9 +2910,9 @@ function App() {
     async function startRecording(mode = 'audio', importedQuestion = '') {
         if (isRecording || isTranscribing) return
 
-        if (!hasKey) {
+        if (!hasSttProvider) {
             openSettings()
-            setBanner('Add Deepgram key in Settings to enable transcription.')
+            setBanner('Add Deepgram key, or enable "Use fallback when Deepgram key is missing" in Settings.')
             return
         }
 
@@ -2826,7 +2924,14 @@ function App() {
         try {
             recordingModeRef.current = mode
             setBanner('')
+            if (!hasKey && canUseSttFallbackWithoutKey) {
+                setBanner('Deepgram key not found. Using configured fallback provider.')
+            } else if (!hasKey && fallbackWithoutDeepgramKey) {
+                setBanner('Deepgram key not found. Recording will continue; configure fallback for transcription.')
+            }
             setTranscript('Recording answer...')
+            setTranscriptionProviderMeta(null)
+            setQuestionTtsProviderMeta(null)
             setLatestInterviewMetrics(null)
             sessionStartedAtRef.current = new Date().toISOString()
             resetInterviewTracking()
@@ -2980,7 +3085,17 @@ function App() {
                 }
             }
 
-            const text = await transcribeAudioBlob(rawAudioBlob)
+            const transcriptionResult = await transcribeAudioBlob(rawAudioBlob)
+            const text = transcriptionResult.text
+            setTranscriptionProviderMeta(transcriptionResult.meta)
+
+            if (transcriptionResult.meta?.fallbackApplied) {
+                const reasonLabel = speechFallbackReasonLabel(
+                    transcriptionResult.meta.fallbackReason,
+                )
+                setBanner(`Transcription fallback used (${reasonLabel}).`)
+            }
+
             const normalizedTranscript = text.trim()
             if (!normalizedTranscript) {
                 setTranscript('')
@@ -3128,10 +3243,14 @@ function App() {
 
             setToast('Transcription completed.')
         } catch (error) {
+            if (error?.speechMeta) {
+                setTranscriptionProviderMeta(error.speechMeta)
+            }
             setTranscript('')
             setLatestInterviewMetrics(null)
-            setBanner(error.message || 'Transcription failed. Try again.')
-            setToast(error.message || 'Transcription failed. Try again.')
+            const errorMessage = formatSpeechError(error, 'Transcription failed. Try again.')
+            setBanner(errorMessage)
+            setToast(errorMessage)
         } finally {
             recorderRef.current = null
             videoRecorderRef.current = null
@@ -3160,6 +3279,14 @@ function App() {
             : describeTorsoRotation(shoulderRotationDeg, SHOULDER_ROTATION_ALERT_DEG)
     const transcriptDisplayText =
         transcript || 'No transcript yet. Start recording to capture your answer transcript.'
+    const transcriptionProviderStatus = describeSpeechMeta(
+        'Latest transcription provider',
+        transcriptionProviderMeta,
+    )
+    const questionTtsProviderStatus = describeSpeechMeta(
+        'Latest question TTS provider',
+        questionTtsProviderMeta,
+    )
     const cameraActionButton =
         cameraStatus === 'ready' ? (
             <button type="button" className="btn ghost" onClick={stopCamera}>
@@ -3563,7 +3690,18 @@ function App() {
                             Revalidation recommended. Your key was last checked over 30 days ago.
                         </p>
                     )}
+                    {!hasTtsProvider && readQuestionWithTts && (
+                        <p className="muted">
+                            Question TTS uses your system voice and is unavailable in this browser.
+                        </p>
+                    )}
                     {banner && <p className="banner">{banner}</p>}
+                    {transcriptionProviderStatus && (
+                        <p className="muted">{transcriptionProviderStatus}</p>
+                    )}
+                    {questionTtsProviderStatus && (
+                        <p className="muted">{questionTtsProviderStatus}</p>
+                    )}
 
                     <div
                         className="transcript-box session-output-box"
@@ -4209,6 +4347,86 @@ function App() {
                                     {fieldError}
                                 </p>
                             )}
+
+                            <div className="settings-section">
+                                <label htmlFor="hf-fallback-key" className="label">
+                                    Optional Hugging Face STT API Key
+                                </label>
+                                <p className="muted">
+                                    Not required for local fallback. If provided, STT fallback may use Hugging Face cloud instead of local Whisper.
+                                </p>
+                                <div className="key-input-row">
+                                    <input
+                                        id="hf-fallback-key"
+                                        type={showHfKey ? 'text' : 'password'}
+                                        value={hfApiKeyInput}
+                                        onChange={(event) => setHfApiKeyInput(event.target.value)}
+                                        className="field"
+                                        autoComplete="off"
+                                    />
+                                    <button
+                                        type="button"
+                                        className="btn key-save-btn"
+                                        onMouseDown={(event) => event.preventDefault()}
+                                        onClick={saveHuggingFaceSettings}
+                                    >
+                                        Save key
+                                    </button>
+                                </div>
+                                <div className="actions wrap">
+                                    <button
+                                        type="button"
+                                        className="btn ghost"
+                                        onClick={() => setShowHfKey((prev) => !prev)}
+                                    >
+                                        {showHfKey ? 'Hide fallback key' : 'Show fallback key'}
+                                    </button>
+                                </div>
+
+                                <label htmlFor="hf-fallback-tts-model" className="label">
+                                    Optional Cloud TTS Model ID
+                                </label>
+                                <input
+                                    id="hf-fallback-tts-model"
+                                    className="field"
+                                    value={hfTtsModelInput}
+                                    onChange={(event) => setHfTtsModelInput(event.target.value)}
+                                    autoComplete="off"
+                                    placeholder="hexgrad/Kokoro-82M or Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+                                />
+
+                                <label htmlFor="hf-fallback-tts-url" className="label">
+                                    Optional Cloud TTS Endpoint URL
+                                </label>
+                                <input
+                                    id="hf-fallback-tts-url"
+                                    className="field"
+                                    value={hfTtsUrlInput}
+                                    onChange={(event) => setHfTtsUrlInput(event.target.value)}
+                                    autoComplete="off"
+                                    placeholder="https://router.huggingface.co/hf-inference/models/<model>"
+                                />
+                                <p className="help-text">
+                                    Interview question TTS now uses your OS/system voice by default.
+                                </p>
+                            </div>
+
+                            <div className="settings-section">
+                                <label className="label">Missing-Key Fallback</label>
+                                <p className="muted">
+                                    If Deepgram key is missing, start recording/TTS with Hugging Face fallback when configured.
+                                </p>
+                                <label className="debug-toggle">
+                                    <input
+                                        type="checkbox"
+                                        checked={fallbackWithoutDeepgramKey}
+                                        onChange={(event) =>
+                                            setFallbackWithoutDeepgramKey(event.target.checked)
+                                        }
+                                    />
+                                    <span>Use fallback when Deepgram key is missing</span>
+                                </label>
+                            </div>
 
                             <p className="privacy-note">
                                 Anyone with access to this browser profile can use this key until you remove it.

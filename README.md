@@ -44,6 +44,7 @@ npm run dev
 
 ```bash
 npm run lint
+npm run test
 npm run build
 ```
 
@@ -52,6 +53,12 @@ npm run build
 - VITE_DEEPGRAM_VALIDATE_URL (optional): endpoint to validate user-provided Deepgram keys before persisting
 - VITE_DEEPGRAM_LISTEN_URL (optional): override the Deepgram listen endpoint
 - VITE_DEEPGRAM_SPEAK_URL (optional): override the Deepgram text-to-speech endpoint
+- VITE_SPEECH_FALLBACK_ENABLED (optional): set to `true` to enable Hugging Face fallback for STT/TTS
+- VITE_HF_API_KEY (required when fallback enabled): Hugging Face API key used for fallback requests
+- VITE_HF_STT_MODEL (optional): fallback STT model ID, defaults to `openai/whisper-large-v3-turbo`
+- VITE_HF_TTS_MODEL (optional): fallback TTS model ID, defaults to `hexgrad/Kokoro-82M`
+- VITE_HF_STT_URL (optional): fallback STT endpoint, defaults to `https://router.huggingface.co/hf-inference/models/<VITE_HF_STT_MODEL>`
+- VITE_HF_TTS_URL (optional): fallback TTS endpoint, defaults to `https://router.huggingface.co/hf-inference/models/<VITE_HF_TTS_MODEL>`
 - VITE_MEDIAPIPE_WASM_URL (optional): override MediaPipe wasm bundle location
 - VITE_FACE_LANDMARKER_MODEL_URL (optional): override face model task URL
 - VITE_HAND_LANDMARKER_MODEL_URL (optional): override hand model task URL
@@ -60,9 +67,18 @@ npm run build
 
 If VITE_DEEPGRAM_VALIDATE_URL is not set, keys are saved after local format validation only.
 
+Note: `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` is not currently deployed by Hugging Face Inference Providers. To use it, point `VITE_HF_TTS_URL` to a custom/local endpoint that serves that model.
+
+In-app fallback settings:
+- Open Settings to save Hugging Face fallback key in browser storage.
+- You can override fallback TTS model ID at runtime (for example `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice`).
+- If provider router rejects the model as not deployed, set a custom fallback TTS endpoint URL in Settings.
+
 ## Notes
 
-- Deepgram transcription and text-to-speech requests are performed from the browser using the user-provided key.
+- Deepgram transcription requests are performed from the browser using the user-provided key.
+- Interview question playback uses OS/system text-to-speech in the browser.
+- If no Deepgram key is present and missing-key fallback is enabled, transcription falls back to local Whisper (in-browser) and question playback uses OS/system TTS.
 - Folder-based save/history features rely on the browser File System Access API and permission grants.
 
 ## Changelog
