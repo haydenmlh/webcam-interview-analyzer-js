@@ -44,12 +44,15 @@ npm run dev
 
 ```bash
 npm run lint
+npm run test
 npm run build
 ```
 
 ## Notes
 
-- Deepgram transcription and text-to-speech requests are performed from the browser using the user-provided key.
+- Deepgram transcription requests are performed from the browser using the user-provided key.
+- Interview question playback uses OS/system text-to-speech in the browser.
+- If no Deepgram key is present and missing-key fallback is enabled, transcription falls back to local Whisper (in-browser) and question playback uses OS/system TTS.
 - Folder-based save/history features rely on the browser File System Access API and permission grants.
 
 ## Changelog
