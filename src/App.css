@@ -435,6 +435,12 @@ h3 {
     opacity: 0;
 }
 
+.camera-frame.inverted .camera-video,
+.camera-frame.inverted .camera-overlay {
+    transform: scaleX(-1);
+    transform-origin: center;
+}
+
 .camera-empty {
     display: grid;
     place-items: center;
