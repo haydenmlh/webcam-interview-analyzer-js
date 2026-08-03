@@ -14,12 +14,16 @@ import {
     transcribeWithFallback,
     validateSpeechFallbackConfig,
 } from './speech/providers'
+import interviewerImage from './assets/interviewer.jpg'
 import './App.css'
 
 const STORAGE_KEY = 'mia.deepgram.apiKey'
 const STORAGE_VALIDATED_AT = 'mia.deepgram.lastValidatedAt'
 const STORAGE_THEME = 'mia.theme'
 const STORAGE_INVERT_CAMERA = 'mia.invertCamera'
+const STORAGE_SHOW_INTERVIEWER = 'mia.showInterviewer'
+const STORAGE_SHOW_SELF_VIEW = 'mia.showSelfView'
+const STORAGE_ENABLE_CAMERA = 'mia.enableCamera'
 const STORAGE_FALLBACK_WITHOUT_KEY = 'mia.speech.fallbackWithoutDeepgramKey'
 const STORAGE_AUTO_ADD_SUMMARY = 'mia.autoAddSummary'
 const STORAGE_CV_TEXT = 'mia.cvText'
@@ -732,6 +736,47 @@ function sanitizeQuestionForFileName(question) {
     return (safeText || 'question').slice(0, 30)
 }
 
+function parseQuestionsFromUrlSearch(search) {
+    if (!search) return []
+
+    const params = new URLSearchParams(search)
+    const candidates = []
+
+    // Preferred format: ?questions=Q1%0AQ2%0AQ3 (newline-separated)
+    const packedQuestions = sanitizeDisplayText(params.get('questions'), '')
+    if (packedQuestions) {
+        candidates.push(
+            ...packedQuestions
+                .split(/\r?\n|\|\|/)
+                .map((item) => sanitizeDisplayText(item, '').trim())
+                .filter(Boolean),
+        )
+    }
+
+    // Alternate format: ?q=Question%201&q=Question%202
+    const repeatedQuestions = params.getAll('q')
+    for (const question of repeatedQuestions) {
+        const normalized = sanitizeDisplayText(question, '').trim()
+        if (normalized) candidates.push(normalized)
+    }
+
+    const unique = []
+    const seen = new Set()
+    for (const question of candidates) {
+        const key = normalizeQuestionKey(question)
+        if (!key || seen.has(key)) continue
+        seen.add(key)
+        unique.push(question)
+    }
+
+    return unique
+}
+
+function getImportedQuestionsFromCurrentUrl() {
+    if (typeof window === 'undefined') return []
+    return parseQuestionsFromUrlSearch(window.location.search)
+}
+
 function normalizeQuestionKey(questionText) {
     return sanitizeDisplayText(questionText, '')
         .toLowerCase()
@@ -881,7 +926,6 @@ function App() {
     const touchTrackerRef = useRef({
         touching: false,
     })
-    const cameraPermissionCheckedRef = useRef(false)
 
     const [settingsOpen, setSettingsOpen] = useState(false)
     const [confirmRemoveOpen, setConfirmRemoveOpen] = useState(false)
@@ -908,9 +952,20 @@ function App() {
     })
 
     const [cameraStatus, setCameraStatus] = useState('idle')
+    const [hasCameraAccess, setHasCameraAccess] = useState(false)
+    const [cameraPermissionState, setCameraPermissionState] = useState('unknown')
+    const [enableCamera, setEnableCamera] = useState(
+        () => getSavedValue(STORAGE_ENABLE_CAMERA) !== 'false',
+    )
     const [debugEnabled, setDebugEnabled] = useState(false)
     const [invertCamera, setInvertCamera] = useState(
         () => getSavedValue(STORAGE_INVERT_CAMERA) === 'true',
+    )
+    const [showInterviewer, setShowInterviewer] = useState(
+        () => getSavedValue(STORAGE_SHOW_INTERVIEWER) !== 'false',
+    )
+    const [showSelfView, setShowSelfView] = useState(
+        () => getSavedValue(STORAGE_SHOW_SELF_VIEW) !== 'false',
     )
     const [centerCameraLayout] = useState(() =>
         typeof window !== 'undefined' ? window.innerWidth > 860 : true,
@@ -922,7 +977,9 @@ function App() {
     const [questionsDrawerOpen, setQuestionsDrawerOpen] = useState(false)
     const [summaryModalOpen, setSummaryModalOpen] = useState(false)
     const [cvJdModalOpen, setCvJdModalOpen] = useState(false)
-    const [questionsBulkInput, setQuestionsBulkInput] = useState('')
+    const [questionsBulkInput, setQuestionsBulkInput] = useState(() =>
+        getImportedQuestionsFromCurrentUrl().join('\n'),
+    )
     const [nextQuestionCursor, setNextQuestionCursor] = useState(0)
     const [answeredQuestionKeys, setAnsweredQuestionKeys] = useState([])
     const [cvText, setCvText] = useState(() => getSavedValue(STORAGE_CV_TEXT))
@@ -955,12 +1012,16 @@ function App() {
     const [readQuestionWithTts, setReadQuestionWithTts] = useState(true)
     const [transcriptionProviderMeta, setTranscriptionProviderMeta] = useState(null)
     const [questionTtsProviderMeta, setQuestionTtsProviderMeta] = useState(null)
-    const [questionInput, setQuestionInput] = useState('')
+    const [questionInput, setQuestionInput] = useState(() => {
+        const imported = getImportedQuestionsFromCurrentUrl()
+        return imported[0] || ''
+    })
     const [transcript, setTranscript] = useState('')
     const [latestInterviewMetrics, setLatestInterviewMetrics] = useState(null)
     const [recordedAudioBlob, setRecordedAudioBlob] = useState(null)
     const [recordedVideoBlob, setRecordedVideoBlob] = useState(null)
     const [recordingsFolderName, setRecordingsFolderName] = useState('')
+    const [showSelectFolderPrompt, setShowSelectFolderPrompt] = useState(true)
     const [interviewSummaries, setInterviewSummaries] = useState([])
     const [selectedSummaryId, setSelectedSummaryId] = useState('')
     const [previousAnswers, setPreviousAnswers] = useState([])
@@ -1061,6 +1122,18 @@ function App() {
     useEffect(() => {
         setSavedValue(STORAGE_INVERT_CAMERA, invertCamera ? 'true' : 'false')
     }, [invertCamera])
+
+    useEffect(() => {
+        setSavedValue(STORAGE_SHOW_INTERVIEWER, showInterviewer ? 'true' : 'false')
+    }, [showInterviewer])
+
+    useEffect(() => {
+        setSavedValue(STORAGE_SHOW_SELF_VIEW, showSelfView ? 'true' : 'false')
+    }, [showSelfView])
+
+    useEffect(() => {
+        setSavedValue(STORAGE_ENABLE_CAMERA, enableCamera ? 'true' : 'false')
+    }, [enableCamera])
 
     useEffect(() => {
         setSavedValue(
@@ -1528,6 +1601,13 @@ function App() {
         setPendingDeleteAction({ kind: 'parsed-question', index })
     }
 
+    function clearQuestionsList() {
+        if (!parsedDrawerQuestions.length) return
+        setQuestionsBulkInput('')
+        setNextQuestionCursor(0)
+        setToast('Questions list cleared.')
+    }
+
     function performRemoveParsedQuestionAt(index) {
         const parsed = questionsBulkInput
             .split(/\r?\n/)
@@ -1662,33 +1742,54 @@ function App() {
     }, [])
 
     useEffect(() => {
-        if (cameraPermissionCheckedRef.current) return
-        cameraPermissionCheckedRef.current = true
-
         let cancelled = false
+        let permissionStatus = null
 
-        async function maybeStartCameraFromGrantedPermission() {
+        async function watchCameraPermission() {
             try {
                 if (typeof navigator === 'undefined') return
                 if (!navigator.permissions?.query) return
 
-                const permission = await navigator.permissions.query({ name: 'camera' })
-                if (cancelled || permission.state !== 'granted') return
+                permissionStatus = await navigator.permissions.query({ name: 'camera' })
+                if (cancelled) return
 
-                await startCamera()
+                setCameraPermissionState(permissionStatus.state)
+                if (permissionStatus.state === 'granted') {
+                    setHasCameraAccess(true)
+                    setEnableCamera(true)
+                }
+
+                permissionStatus.onchange = () => {
+                    const nextState = permissionStatus.state
+                    setCameraPermissionState(nextState)
+                    if (nextState === 'granted') {
+                        setHasCameraAccess(true)
+                        setEnableCamera(true)
+                    }
+                }
             } catch {
-                // Some browsers do not expose camera permission state; skip auto-start.
+                // Some browsers do not expose camera permission state.
             }
         }
 
-        void maybeStartCameraFromGrantedPermission()
+        void watchCameraPermission()
 
         return () => {
             cancelled = true
+            if (permissionStatus) {
+                permissionStatus.onchange = null
+            }
         }
-        // Only check permission state once on initial mount.
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
+
+    useEffect(() => {
+        if (!enableCamera) return
+        if (cameraPermissionState !== 'granted') return
+        if (cameraStatus !== 'idle') return
+        void startCamera()
+        // startCamera is a hoisted function; dependencies above gate repeated calls safely.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [enableCamera, cameraPermissionState, cameraStatus])
 
     function stopAnalysisLoop() {
         if (animationFrameRef.current) {
@@ -1709,6 +1810,19 @@ function App() {
             for (const track of audioStreamRef.current.getTracks()) track.stop()
             audioStreamRef.current = null
         }
+    }
+
+    async function attachCameraStreamToPreview() {
+        const stream = cameraStreamRef.current
+        const video = videoRef.current
+        if (!stream || !video) return false
+
+        if (video.srcObject !== stream) {
+            video.srcObject = stream
+        }
+
+        await video.play()
+        return true
     }
 
     async function ensureLandmarkers() {
@@ -1837,7 +1951,7 @@ function App() {
         setToast('Statistics reset and torso baseline recalibrating...')
     }
 
-    function runAnalysisLoop() {
+    const runAnalysisLoop = useCallback(() => {
         const video = videoRef.current
         const faceLandmarker = faceLandmarkerRef.current
         const handLandmarker = handLandmarkerRef.current
@@ -2117,7 +2231,7 @@ function App() {
 
         stopAnalysisLoop()
         animationFrameRef.current = window.requestAnimationFrame(tick)
-    }
+    }, [])
 
     async function startCamera() {
         if (cameraStatus === 'loading') return
@@ -2141,15 +2255,16 @@ function App() {
             stopCameraStream()
             cameraStreamRef.current = stream
 
-            const video = videoRef.current
-            if (!video) return
-
-            video.srcObject = stream
-            await video.play()
+            const hasPreview = await attachCameraStreamToPreview()
 
             await ensureLandmarkers()
             resetBehaviorCounters()
-            runAnalysisLoop()
+            if (hasPreview) {
+                runAnalysisLoop()
+            } else {
+                stopAnalysisLoop()
+            }
+            setHasCameraAccess(true)
             setCameraStatus('ready')
         } catch {
             setCameraStatus('error')
@@ -2176,6 +2291,30 @@ function App() {
             ctx?.clearRect(0, 0, canvas.width, canvas.height)
         }
     }
+
+    useEffect(() => {
+        if (!showSelfView) return
+        if (!enableCamera) return
+        if (cameraStatus !== 'ready') return
+
+        let cancelled = false
+
+        async function reattachPreviewIfNeeded() {
+            try {
+                const attached = await attachCameraStreamToPreview()
+                if (cancelled || !attached) return
+                runAnalysisLoop()
+            } catch {
+                // If preview playback fails, keep current camera state and wait for user interaction.
+            }
+        }
+
+        void reattachPreviewIfNeeded()
+
+        return () => {
+            cancelled = true
+        }
+    }, [showSelfView, enableCamera, cameraStatus, runAnalysisLoop])
 
     function openSettings() {
         setSettingsOpen(true)
@@ -2425,8 +2564,10 @@ function App() {
         const left = Math.max(0, window.screenX + window.outerWidth - width)
         const top = Math.max(0, window.screenY + Math.floor((window.outerHeight - height) / 2))
 
+        // Best-effort cross-browser popup flow: open a blank named window first,
+        // then navigate it to Gemini. This improves popup behavior on macOS browsers.
         const geminiWindow = window.open(
-            'https://gemini.google.com',
+            '',
             'geminiRightPanel',
             `popup=yes,width=${width},height=${height},left=${left},top=${top}`,
         )
@@ -2442,6 +2583,14 @@ function App() {
             geminiWindow.opener = null
         } catch {
             // Ignore cross-origin restrictions.
+        }
+
+        try {
+            geminiWindow.location.href = 'https://gemini.google.com'
+            geminiWindow.focus()
+        } catch {
+            setToast('Gemini window opened, but navigation was blocked by the browser.')
+            return
         }
 
         const outputMarkdown = buildCurrentOutputForGeminiMarkdown()
@@ -3387,11 +3536,7 @@ function App() {
         questionTtsProviderMeta,
     )
     const cameraActionButton =
-        cameraStatus === 'ready' ? (
-            <button type="button" className="btn ghost" onClick={stopCamera}>
-                Disable Camera
-            </button>
-        ) : (
+        !hasCameraAccess && cameraPermissionState !== 'granted' ? (
             <button
                 type="button"
                 className="btn"
@@ -3400,7 +3545,7 @@ function App() {
             >
                 {cameraStatus === 'loading' ? 'Starting Camera...' : 'Allow Camera Access'}
             </button>
-        )
+        ) : null
 
     return (
         <div className="app-shell">
@@ -3465,9 +3610,17 @@ function App() {
                             }}
                             aria-expanded={questionsDrawerOpen}
                             aria-controls="questions-modal"
-                            title={questionsDrawerOpen ? 'Hide questions import modal' : 'Show questions import modal'}
+                            title={
+                                questionsDrawerOpen
+                                    ? parsedDrawerQuestions.length
+                                        ? 'Hide questions list modal'
+                                        : 'Hide questions import modal'
+                                    : parsedDrawerQuestions.length
+                                        ? 'Show questions list modal'
+                                        : 'Show questions import modal'
+                            }
                         >
-                            Questions Import
+                            {parsedDrawerQuestions.length ? 'Questions List' : 'Questions Import'}
                         </button>
                     )}
                     {isDesktopViewport && (
@@ -3532,36 +3685,57 @@ function App() {
                         </button>
                     )}
 
-                    <div className="camera-heading-row">
-                        <h2>{debugEnabled ? 'Camera View (JS MediaPipe)' : 'Camera View'}</h2>
-                        <div className="camera-heading-controls">
+                    {cameraActionButton && (
+                        <div className="actions wrap camera-access-actions">
                             {cameraActionButton}
                         </div>
-                    </div>
+                    )}
 
-                    <div className={`camera-frame${isPortraitVideo ? ' portrait' : ''}${invertCamera ? ' inverted' : ''}`}>
-                        <video
-                            ref={videoRef}
-                            className="camera-video"
-                            muted
-                            playsInline
-                        />
-                        <canvas
-                            ref={overlayRef}
-                            className={`camera-overlay${debugEnabled ? '' : ' hidden'}`}
-                        />
-                        {cameraStatus !== 'ready' && (
-                            <div className="camera-empty">
-                                <p>
-                                    {cameraStatus === 'loading'
-                                        ? 'Starting camera...'
-                                        : 'Camera preview will appear here.'}
-                                </p>
+                    <div className={`camera-frame${!showInterviewer && isPortraitVideo ? ' portrait' : ''}${invertCamera ? ' inverted' : ''}`}>
+                        {showInterviewer && (
+                            <img
+                                src={interviewerImage}
+                                className="interviewer-image"
+                                alt="Mock interviewer"
+                            />
+                        )}
+
+                        {showSelfView ? (
+                            <div className={`self-view-frame${showInterviewer ? ' pip' : ' full'}${isPortraitVideo ? ' portrait' : ''}`}>
+                                <video
+                                    ref={videoRef}
+                                    className="camera-video"
+                                    muted
+                                    playsInline
+                                />
+                                <canvas
+                                    ref={overlayRef}
+                                    className={`camera-overlay${debugEnabled ? '' : ' hidden'}`}
+                                />
+                                {cameraStatus !== 'ready' && (
+                                    <div className="camera-empty">
+                                        <p>
+                                            {cameraStatus === 'loading'
+                                                ? 'Starting camera...'
+                                                : 'Camera preview will appear here.'}
+                                        </p>
+                                    </div>
+                                )}
                             </div>
+                        ) : (
+                            !showInterviewer && cameraStatus !== 'ready' && (
+                                <div className="camera-empty">
+                                    <p>
+                                        {cameraStatus === 'loading'
+                                            ? 'Starting camera...'
+                                            : 'Camera preview will appear here.'}
+                                    </p>
+                                </div>
+                            )
                         )}
                     </div>
 
-                    {!debugEnabled && cameraStatus === 'ready' && facesDetected === 0 ? (
+                    {!debugEnabled && showSelfView && cameraStatus === 'ready' && facesDetected === 0 ? (
                         <p className="face-detected-text">No face detected</p>
                     ) : null}
 
@@ -3716,8 +3890,8 @@ function App() {
                 </section>
 
                 <section className={`panel session${centerCameraLayout ? ' centered-session-panel' : ''}`}>
-                    {!isFolderFeatureDisabled && !recordingsFolderName && (
-                        <div className="actions wrap">
+                    {!isFolderFeatureDisabled && !recordingsFolderName && showSelectFolderPrompt && (
+                        <div className="actions wrap select-folder-actions">
                             <button
                                 type="button"
                                 className="btn ghost"
@@ -3725,8 +3899,58 @@ function App() {
                             >
                                 Select Save Folder
                             </button>
+                            <button
+                                type="button"
+                                className="btn ghost dismiss-select-folder-btn"
+                                onClick={() => setShowSelectFolderPrompt(false)}
+                                aria-label="Dismiss select save folder"
+                                title="Dismiss"
+                            >
+                                X
+                            </button>
                         </div>
                     )}
+
+                    <div className="actions wrap export-actions">
+                        <button
+                            type="button"
+                            className="btn"
+                            onClick={addCurrentAnswerToSummary}
+                            disabled={!transcript || !latestInterviewMetrics || isRecording || isTranscribing}
+                        >
+                            Add to Summary
+                        </button>
+                        <label className="debug-toggle auto-summary-toggle">
+                            <input
+                                type="checkbox"
+                                checked={autoAddCompletedAnswersToSummary}
+                                onChange={(event) => setAutoAddCompletedAnswersToSummary(event.target.checked)}
+                                disabled={isRecording || isTranscribing}
+                            />
+                            <span>Auto-add completed answers to summary</span>
+                        </label>
+                        {(isFolderFeatureDisabled || !recordingsFolderName) && (
+                            <div className="export-download-actions">
+                                <button
+                                    type="button"
+                                    className="btn ghost"
+                                    onClick={downloadVideoRecording}
+                                    disabled={!recordedVideoBlob}
+                                >
+                                    Download Video
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn ghost"
+                                    onClick={downloadAudioRecording}
+                                    disabled={!recordedAudioBlob}
+                                >
+                                    Download Audio
+                                </button>
+                            </div>
+                        )}
+                    </div>
+
                     <div className="label question-row">
                         <p className="question-main-label">
                             Interview question
@@ -3804,7 +4028,6 @@ function App() {
                         rows={2}
                         placeholder="Type your question here, or import from the questions tab"
                     />
-                    {hasKey && showKeyStatus && <p className="key-status">{maskedSummary}</p>}
                     {needsRevalidation && (
                         <p className="warning">
                             Revalidation recommended. Your key was last checked over 30 days ago.
@@ -3863,46 +4086,6 @@ function App() {
                             <p className="muted transcript-metrics-empty">
                                 Values appear here after you stop and transcribe a recording.
                             </p>
-                        )}
-                    </div>
-
-                    <div className="actions wrap export-actions">
-                        <button
-                            type="button"
-                            className="btn"
-                            onClick={addCurrentAnswerToSummary}
-                            disabled={!transcript || !latestInterviewMetrics || isRecording || isTranscribing}
-                        >
-                            Add to Summary
-                        </button>
-                        <label className="debug-toggle auto-summary-toggle">
-                            <input
-                                type="checkbox"
-                                checked={autoAddCompletedAnswersToSummary}
-                                onChange={(event) => setAutoAddCompletedAnswersToSummary(event.target.checked)}
-                                disabled={isRecording || isTranscribing}
-                            />
-                            <span>Auto-add completed answers to summary</span>
-                        </label>
-                        {(isFolderFeatureDisabled || !recordingsFolderName) && (
-                            <div className="export-download-actions">
-                                <button
-                                    type="button"
-                                    className="btn ghost"
-                                    onClick={downloadVideoRecording}
-                                    disabled={!recordedVideoBlob}
-                                >
-                                    Download Video
-                                </button>
-                                <button
-                                    type="button"
-                                    className="btn ghost"
-                                    onClick={downloadAudioRecording}
-                                    disabled={!recordedAudioBlob}
-                                >
-                                    Download Audio
-                                </button>
-                            </div>
                         )}
                     </div>
 
@@ -4312,7 +4495,7 @@ function App() {
                 >
                     <div
                         id="cvjd-modal"
-                        className="modal summary-modal cvjd-modal"
+                        className="modal question-modal cvjd-modal"
                         role="dialog"
                         aria-modal="true"
                         aria-labelledby="cvjd-title"
@@ -4342,70 +4525,48 @@ function App() {
                             </div>
                         </div>
 
-                        <div className="history-modal-grid summary-modal-grid">
-                            <aside className="history-overview summary-overview cvjd-overview">
-                                <h3>Gemini Context</h3>
+                        <div className="question-modal-body cvjd-modal-body">
+                            <div className="question-drawer-inner question-modal-inner cvjd-modal-inner">
                                 <p className="muted">
                                     Save your candidate profile and target role details here for quick Gemini prompts.
                                 </p>
-                                <div className="history-metrics-grid">
-                                    <div className="history-metric-row">
-                                        <span className="metric-label">Company</span>
-                                        <span>{companyNameInput.trim() ? 'Set' : 'Missing'}</span>
-                                    </div>
-                                    <div className="history-metric-row">
-                                        <span className="metric-label">CV</span>
-                                        <span>{cvText.trim() ? 'Set' : 'Missing'}</span>
-                                    </div>
-                                    <div className="history-metric-row">
-                                        <span className="metric-label">JD</span>
-                                        <span>{jdText.trim() ? 'Set' : 'Missing'}</span>
-                                    </div>
-                                </div>
-                            </aside>
+                                <label htmlFor="cvjd-company" className="label cvjd-label">
+                                    Company Name
+                                </label>
+                                <input
+                                    id="cvjd-company"
+                                    type="text"
+                                    className="field cvjd-field"
+                                    value={companyNameInput}
+                                    onChange={(event) => setCompanyNameInput(event.target.value)}
+                                    placeholder="Example: Contoso"
+                                    autoComplete="off"
+                                />
 
-                            <section className="history-detail cvjd-detail">
-                                <div className="history-detail-layout">
-                                    <div className="history-detail-scroll cvjd-detail-scroll">
-                                        <label htmlFor="cvjd-company" className="label cvjd-label">
-                                            Company Name
-                                        </label>
-                                        <input
-                                            id="cvjd-company"
-                                            type="text"
-                                            className="field cvjd-field"
-                                            value={companyNameInput}
-                                            onChange={(event) => setCompanyNameInput(event.target.value)}
-                                            placeholder="Example: Contoso"
-                                            autoComplete="off"
-                                        />
+                                <label htmlFor="cvjd-cv" className="label cvjd-label">
+                                    CV
+                                </label>
+                                <textarea
+                                    id="cvjd-cv"
+                                    className="field cvjd-textarea"
+                                    value={cvText}
+                                    onChange={(event) => setCvText(event.target.value)}
+                                    rows={12}
+                                    placeholder="Paste your CV here"
+                                />
 
-                                        <label htmlFor="cvjd-cv" className="label cvjd-label">
-                                            CV
-                                        </label>
-                                        <textarea
-                                            id="cvjd-cv"
-                                            className="field cvjd-textarea"
-                                            value={cvText}
-                                            onChange={(event) => setCvText(event.target.value)}
-                                            rows={12}
-                                            placeholder="Paste your CV here"
-                                        />
-
-                                        <label htmlFor="cvjd-jd" className="label cvjd-label">
-                                            Job Description (JD)
-                                        </label>
-                                        <textarea
-                                            id="cvjd-jd"
-                                            className="field cvjd-textarea"
-                                            value={jdText}
-                                            onChange={(event) => setJdText(event.target.value)}
-                                            rows={12}
-                                            placeholder="Paste the job description here"
-                                        />
-                                    </div>
-                                </div>
-                            </section>
+                                <label htmlFor="cvjd-jd" className="label cvjd-label">
+                                    Job Description (JD)
+                                </label>
+                                <textarea
+                                    id="cvjd-jd"
+                                    className="field cvjd-textarea"
+                                    value={jdText}
+                                    onChange={(event) => setJdText(event.target.value)}
+                                    rows={12}
+                                    placeholder="Paste the job description here"
+                                />
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -4431,15 +4592,25 @@ function App() {
                     >
                         <div className="history-modal-header">
                             <h2 id="questions-modal-title">Questions Import</h2>
-                            <button
-                                type="button"
-                                className="btn ghost history-close-btn"
-                                onClick={() => setQuestionsDrawerOpen(false)}
-                                aria-label="Close"
-                                title="Close"
-                            >
-                                X
-                            </button>
+                            <div className="summary-header-actions">
+                                <button
+                                    type="button"
+                                    className="btn ghost"
+                                    onClick={clearQuestionsList}
+                                    disabled={!parsedDrawerQuestions.length}
+                                >
+                                    Clear Questions List
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn ghost history-close-btn"
+                                    onClick={() => setQuestionsDrawerOpen(false)}
+                                    aria-label="Close"
+                                    title="Close"
+                                >
+                                    X
+                                </button>
+                            </div>
                         </div>
 
                         <div className="question-modal-body">
@@ -4632,10 +4803,44 @@ function App() {
                             </div>
 
                             <div className="settings-section">
-                                <label className="label">Camera Orientation</label>
-                                <p className="muted">
-                                    Mirror the camera preview horizontally.
-                                </p>
+                                <label className="label">Camera Display</label>
+                                <label className="debug-toggle">
+                                    <input
+                                        type="checkbox"
+                                        checked={showInterviewer}
+                                        onChange={(event) => setShowInterviewer(event.target.checked)}
+                                    />
+                                    <span>Show Interviewer</span>
+                                </label>
+                                <label className="debug-toggle">
+                                    <input
+                                        type="checkbox"
+                                        checked={showSelfView}
+                                        onChange={(event) => setShowSelfView(event.target.checked)}
+                                    />
+                                    <span>Show Self View</span>
+                                </label>
+                                <label className="debug-toggle">
+                                    <input
+                                        type="checkbox"
+                                        checked={enableCamera}
+                                        onChange={(event) => {
+                                            const enabled = event.target.checked
+                                            setEnableCamera(enabled)
+                                            if (!hasCameraAccess) {
+                                                setToast('Allow Camera Access first.')
+                                                return
+                                            }
+
+                                            if (enabled) {
+                                                void startCamera()
+                                            } else {
+                                                stopCamera()
+                                            }
+                                        }}
+                                    />
+                                    <span>Enable Camera</span>
+                                </label>
                                 <label className="debug-toggle">
                                     <input
                                         type="checkbox"
@@ -4783,6 +4988,7 @@ function App() {
             <div className="sr-only" aria-live="polite">
                 {toast}
             </div>
+            {hasKey && showKeyStatus && <div className="key-status-toast">{maskedSummary}</div>}
             {toast && <div className="toast">{toast}</div>}
         </div>
     )
