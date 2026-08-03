@@ -47,19 +47,6 @@ npm run lint
 npm run build
 ```
 
-## Environment variables
-
-- VITE_DEEPGRAM_VALIDATE_URL (optional): endpoint to validate user-provided Deepgram keys before persisting
-- VITE_DEEPGRAM_LISTEN_URL (optional): override the Deepgram listen endpoint
-- VITE_DEEPGRAM_SPEAK_URL (optional): override the Deepgram text-to-speech endpoint
-- VITE_MEDIAPIPE_WASM_URL (optional): override MediaPipe wasm bundle location
-- VITE_FACE_LANDMARKER_MODEL_URL (optional): override face model task URL
-- VITE_HAND_LANDMARKER_MODEL_URL (optional): override hand model task URL
-- VITE_POSE_LANDMARKER_MODEL_URL (optional): override pose model task URL
-- VITE_FFMPEG_CORE_BASE_URL (optional): override FFmpeg core asset base URL
-
-If VITE_DEEPGRAM_VALIDATE_URL is not set, keys are saved after local format validation only.
-
 ## Notes
 
 - Deepgram transcription and text-to-speech requests are performed from the browser using the user-provided key.

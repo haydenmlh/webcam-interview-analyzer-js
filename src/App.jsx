@@ -14,6 +14,7 @@ import './App.css'
 const STORAGE_KEY = 'mia.deepgram.apiKey'
 const STORAGE_VALIDATED_AT = 'mia.deepgram.lastValidatedAt'
 const STORAGE_THEME = 'mia.theme'
+const STORAGE_AUTO_ADD_SUMMARY = 'mia.autoAddSummary'
 const HANDLE_DB_NAME = 'mia-handle-db'
 const HANDLE_STORE_NAME = 'handles'
 const RECORDINGS_FOLDER_KEY = 'recordings-folder'
@@ -649,6 +650,17 @@ function computeHandFaceTouch(faceLandmarks, handLandmarks) {
     return minDistance / faceWidth < HAND_FACE_TOUCH_RATIO
 }
 
+function downloadBlob(blob, fileName) {
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = fileName
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(url)
+}
+
 function sanitizeDisplayText(value, fallback = '') {
     const text = String(value ?? '')
         .split('')
@@ -849,6 +861,10 @@ function App() {
     const [toast, setToast] = useState('')
     const [showKeyStatus, setShowKeyStatus] = useState(false)
     const [darkMode, setDarkMode] = useState(() => getSavedValue(STORAGE_THEME) === 'dark')
+    const [autoAddCompletedAnswersToSummary, setAutoAddCompletedAnswersToSummary] = useState(() => {
+        const saved = getSavedValue(STORAGE_AUTO_ADD_SUMMARY)
+        return saved ? saved === 'true' : true
+    })
 
     const [cameraStatus, setCameraStatus] = useState('idle')
     const [debugEnabled, setDebugEnabled] = useState(false)
@@ -890,8 +906,8 @@ function App() {
     const [questionInput, setQuestionInput] = useState('')
     const [transcript, setTranscript] = useState('')
     const [latestInterviewMetrics, setLatestInterviewMetrics] = useState(null)
-    const [, setRecordedAudioBlob] = useState(null)
-    const [, setRecordedVideoBlob] = useState(null)
+    const [recordedAudioBlob, setRecordedAudioBlob] = useState(null)
+    const [recordedVideoBlob, setRecordedVideoBlob] = useState(null)
     const [recordingsFolderName, setRecordingsFolderName] = useState('')
     const [interviewSummaries, setInterviewSummaries] = useState([])
     const [selectedSummaryId, setSelectedSummaryId] = useState('')
@@ -937,6 +953,13 @@ function App() {
         const timerId = window.setTimeout(() => setToast(''), 3500)
         return () => window.clearTimeout(timerId)
     }, [toast])
+
+    useEffect(() => {
+        setSavedValue(
+            STORAGE_AUTO_ADD_SUMMARY,
+            autoAddCompletedAnswersToSummary ? 'true' : 'false',
+        )
+    }, [autoAddCompletedAnswersToSummary])
 
     useEffect(() => {
         if (!showKeyStatus) return undefined
@@ -2246,21 +2269,6 @@ function App() {
         return sections.join('\n')
     }
 
-    async function copyCurrentOutputForGemini() {
-        const outputMarkdown = buildCurrentOutputForGeminiMarkdown()
-        if (!outputMarkdown) {
-            setToast('Record and transcribe an answer before copying output.')
-            return
-        }
-
-        try {
-            await navigator.clipboard.writeText(outputMarkdown)
-            setToast('Current output for Gemini copied to clipboard.')
-        } catch {
-            setToast('Could not copy current output.')
-        }
-    }
-
     async function openGeminiSidePanel() {
         const width = 400
         const height = Math.max(700, Math.floor(window.screen.availHeight * 0.9))
@@ -2298,6 +2306,32 @@ function App() {
         } catch {
             setToast('Gemini opened, but copy failed.')
         }
+    }
+
+    function downloadVideoRecording() {
+        if (!recordedVideoBlob) return
+        const extension =
+            recordedVideoBlob.type.includes('mp4')
+                ? 'mp4'
+                : recordedVideoBlob.type.includes('webm')
+                    ? 'webm'
+                    : 'mp4'
+        downloadBlob(recordedVideoBlob, `session-video-${Date.now()}.${extension}`)
+    }
+
+    function downloadAudioRecording() {
+        if (!recordedAudioBlob) return
+        const extension =
+            recordedAudioBlob.type.includes('mpeg') || recordedAudioBlob.type.includes('mp3')
+                ? 'mp3'
+                : recordedAudioBlob.type.includes('ogg')
+                    ? 'ogg'
+                    : recordedAudioBlob.type.includes('mp4') || recordedAudioBlob.type.includes('m4a')
+                        ? 'm4a'
+                        : recordedAudioBlob.type.includes('webm')
+                            ? 'webm'
+                            : 'audio'
+        downloadBlob(recordedAudioBlob, `session-audio-${Date.now()}.${extension}`)
     }
 
     async function copySelectedAnswerTextFile() {
@@ -3080,23 +3114,28 @@ function App() {
                 interviewMetrics,
             }
 
-            const summaryEntry = {
-                id: crypto.randomUUID(),
-                capturedAt: capturedAtIso,
-                question: trimmedQuestion || '(no question)',
-                transcript: normalizedTranscript,
-                metrics: interviewMetrics,
-            }
+            let autoSummaryEntryId = ''
+            if (autoAddCompletedAnswersToSummary) {
+                const summaryEntry = {
+                    id: crypto.randomUUID(),
+                    capturedAt: capturedAtIso,
+                    question: trimmedQuestion || '(no question)',
+                    transcript: normalizedTranscript,
+                    metrics: interviewMetrics,
+                }
 
-            const candidateFingerprint = getSummaryFingerprint(summaryEntry)
-            const existingEntry = interviewSummaries.find(
-                (item) => getSummaryFingerprint(item) === candidateFingerprint,
-            )
-            if (existingEntry) {
-                setSelectedSummaryId(existingEntry.id)
-            } else {
-                setInterviewSummaries((prev) => [summaryEntry, ...prev])
-                setSelectedSummaryId(summaryEntry.id)
+                const candidateFingerprint = getSummaryFingerprint(summaryEntry)
+                const existingEntry = interviewSummaries.find(
+                    (item) => getSummaryFingerprint(item) === candidateFingerprint,
+                )
+                if (existingEntry) {
+                    autoSummaryEntryId = existingEntry.id
+                    setSelectedSummaryId(existingEntry.id)
+                } else {
+                    autoSummaryEntryId = summaryEntry.id
+                    setInterviewSummaries((prev) => [summaryEntry, ...prev])
+                    setSelectedSummaryId(summaryEntry.id)
+                }
             }
 
             const savedReport = await saveSessionArtifactsToSelectedFolder({
@@ -3108,10 +3147,10 @@ function App() {
                 videoBlob: shouldSaveVideo ? finalVideoBlob : null,
             })
 
-            if (savedReport?.savedFiles) {
+            if (savedReport?.savedFiles && autoAddCompletedAnswersToSummary && autoSummaryEntryId) {
                 setInterviewSummaries((prev) =>
                     prev.map((item) =>
-                        item.id === summaryEntry.id
+                        item.id === autoSummaryEntryId
                             ? {
                                 ...item,
                                 folderPath: savedReport.savedFiles.folder || '',
@@ -3617,14 +3656,35 @@ function App() {
                         >
                             Add to Summary
                         </button>
-                        <button
-                            type="button"
-                            className="btn ghost"
-                            onClick={copyCurrentOutputForGemini}
-                            disabled={!transcript || !latestInterviewMetrics || isRecording || isTranscribing}
-                        >
-                            Copy Output for Gemini
-                        </button>
+                        <label className="debug-toggle auto-summary-toggle">
+                            <input
+                                type="checkbox"
+                                checked={autoAddCompletedAnswersToSummary}
+                                onChange={(event) => setAutoAddCompletedAnswersToSummary(event.target.checked)}
+                                disabled={isRecording || isTranscribing}
+                            />
+                            <span>Auto add completed answers to summary</span>
+                        </label>
+                        {(isFolderFeatureDisabled || !recordingsFolderName) && (
+                            <>
+                                <button
+                                    type="button"
+                                    className="btn ghost"
+                                    onClick={downloadVideoRecording}
+                                    disabled={!recordedVideoBlob}
+                                >
+                                    Download Video
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn ghost"
+                                    onClick={downloadAudioRecording}
+                                    disabled={!recordedAudioBlob}
+                                >
+                                    Download Audio
+                                </button>
+                            </>
+                        )}
                     </div>
 
                     {isDesktopViewport && previousAnswersError && <p className="warning">{previousAnswersError}</p>}
