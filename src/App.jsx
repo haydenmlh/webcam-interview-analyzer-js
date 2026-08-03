@@ -39,6 +39,8 @@ const DEFAULT_POSE_MODEL_URL =
     'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task'
 const DEFAULT_DEEPGRAM_LISTEN_URL =
     'https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&filler_words=true'
+const DEFAULT_DEEPGRAM_SPEAK_URL =
+    'https://api.deepgram.com/v1/speak?model=aura-2-thalia-en'
 const DEFAULT_FFMPEG_CORE_BASE_URL =
     'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd'
 
@@ -978,7 +980,7 @@ function App() {
         typeof window !== 'undefined' &&
         'speechSynthesis' in window &&
         typeof SpeechSynthesisUtterance !== 'undefined'
-    const hasTtsProvider = hasSystemTts
+    const hasTtsProvider = hasKey || hasSystemTts
     const maskedSummary = hasKey
         ? `Key saved (ends with ${savedKey.slice(-2).padStart(6, '*')})`
         : 'No key saved yet.'
@@ -2833,31 +2835,77 @@ function App() {
             return
         }
 
-        if (!hasSystemTts) {
-            setBanner('System text-to-speech is unavailable in this browser.')
-            return
-        }
-
         try {
             setIsSpeakingQuestion(true)
-            window.speechSynthesis.cancel()
-            setQuestionTtsProviderMeta({
-                providerUsed: 'system-tts',
-                fallbackApplied: !hasKey,
-                fallbackReason: !hasKey ? 'key-validation' : '',
-            })
-            await new Promise((resolve, reject) => {
-                const utterance = new SpeechSynthesisUtterance(text)
-                utterance.rate = 1
-                utterance.pitch = 1
-                utterance.onend = () => {
-                    resolve()
+            if (hasKey) {
+                const endpoint =
+                    import.meta.env.VITE_DEEPGRAM_SPEAK_URL || DEFAULT_DEEPGRAM_SPEAK_URL
+
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                        Authorization: `Token ${savedKey}`,
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ text }),
+                })
+
+                if (response.status === 401 || response.status === 403) {
+                    throw new Error('Saved key is invalid or revoked.')
                 }
-                utterance.onerror = () => {
-                    reject(new Error('System question TTS playback failed.'))
+                if (!response.ok) {
+                    throw new Error('Question TTS failed on Deepgram.')
                 }
-                window.speechSynthesis.speak(utterance)
-            })
+
+                const audioBlob = await response.blob()
+                const audioUrl = URL.createObjectURL(audioBlob)
+
+                setQuestionTtsProviderMeta({
+                    providerUsed: 'deepgram',
+                    fallbackApplied: false,
+                    fallbackReason: '',
+                })
+
+                await new Promise((resolve, reject) => {
+                    const audio = new Audio(audioUrl)
+                    audio.onended = () => {
+                        URL.revokeObjectURL(audioUrl)
+                        resolve()
+                    }
+                    audio.onerror = () => {
+                        URL.revokeObjectURL(audioUrl)
+                        reject(new Error('Question TTS playback failed.'))
+                    }
+                    audio
+                        .play()
+                        .then(() => undefined)
+                        .catch(() => reject(new Error('Question TTS playback failed.')))
+                })
+            } else {
+                if (!hasSystemTts) {
+                    setBanner('System text-to-speech is unavailable in this browser.')
+                    return
+                }
+
+                window.speechSynthesis.cancel()
+                setQuestionTtsProviderMeta({
+                    providerUsed: 'system-tts',
+                    fallbackApplied: true,
+                    fallbackReason: 'key-validation',
+                })
+                await new Promise((resolve, reject) => {
+                    const utterance = new SpeechSynthesisUtterance(text)
+                    utterance.rate = 1
+                    utterance.pitch = 1
+                    utterance.onend = () => {
+                        resolve()
+                    }
+                    utterance.onerror = () => {
+                        reject(new Error('System question TTS playback failed.'))
+                    }
+                    window.speechSynthesis.speak(utterance)
+                })
+            }
         } catch (error) {
             const providerMeta = error?.speechMeta || null
             setQuestionTtsProviderMeta(providerMeta)
