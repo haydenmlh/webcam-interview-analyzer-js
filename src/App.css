@@ -205,7 +205,6 @@ h3 {
 .actions {
     display: flex;
     gap: 0.6rem;
-    margin-top: 1rem;
 }
 
 .actions.wrap {
@@ -227,20 +226,6 @@ h3 {
     margin-top: 0;
     margin-bottom: 0.55rem;
     justify-content: flex-end;
-}
-
-.select-folder-actions {
-    align-items: center;
-}
-
-.select-folder-actions > .btn {
-    flex: 0 0 auto;
-}
-
-.dismiss-select-folder-btn {
-    min-width: 2.35rem;
-    padding: 0.34rem 0.5rem;
-    line-height: 1;
 }
 
 .btn {
@@ -597,16 +582,15 @@ h3 {
 }
 
 .export-actions {
-    margin-top: 0.8rem;
+    margin-bottom: 0.8rem;
 }
 
 .export-download-actions {
-    margin-left: auto;
     display: inline-flex;
     align-items: center;
     gap: 0.6rem;
     flex-wrap: wrap;
-    justify-content: flex-end;
+    justify-content: flex-start;
 }
 
 .export-download-actions .btn {
@@ -614,6 +598,7 @@ h3 {
 }
 
 .auto-summary-toggle {
+    margin-left: auto;
     align-self: center;
     white-space: nowrap;
     font-size: 0.85rem;
@@ -840,9 +825,16 @@ h3 {
 
 .history-overview-head {
     display: flex;
-    justify-content: space-between;
+    justify-content: flex-start;
     align-items: center;
     gap: 0.55rem;
+}
+
+.history-overview-actions {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
 }
 
 .history-overview-list {
@@ -1141,6 +1133,7 @@ h3 {
 }
 
 .question-row {
+    margin-top: 0;
     display: flex;
     align-items: center;
     gap: 0.8rem;
@@ -1472,10 +1465,11 @@ h3 {
 }
 
 .cvjd-modal-inner {
-    grid-template-rows: none;
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto auto minmax(0, 1fr) auto minmax(0, 1fr);
     gap: 0.3rem;
-    align-content: start;
+    align-content: stretch;
     padding: 0.1rem 0.2rem 0.45rem;
 }
 
@@ -1490,6 +1484,8 @@ h3 {
 }
 
 .cvjd-textarea {
+    min-height: 0;
+    height: 100%;
     resize: vertical;
 }
 

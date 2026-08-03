@@ -13,10 +13,7 @@
     },
     "dependencies": {
         "@huggingface/transformers": "^3.6.3",
-        "@ffmpeg/ffmpeg": "^0.12.15",
-        "@ffmpeg/util": "^0.12.2",
         "@mediapipe/tasks-vision": "^1.0.0",
-        "lamejs": "^1.2.1",
         "react": "^19.2.8",
         "react-dom": "^19.2.8"
     },
