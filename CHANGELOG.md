@@ -19,6 +19,23 @@ Use this template for future releases:
 -
 ```
 
+## [1.7.14] - 2026-08-03
+
+### Changed
+- `Delete Answer from Summary` now removes entries from Session Summary only and no longer deletes files from the selected folder.
+- Folder-file deletion is now only performed from the `Previous Answers` modal delete flow.
+
+### Fixed
+- Updated delete confirmation messaging to clearly distinguish session-only summary deletion from folder-file deletion.
+
+## [1.7.13] - 2026-08-03
+
+### Changed
+- Updated camera placeholder copy to: `Camera preview will appear here after Camera is enabled`.
+
+### Fixed
+- Increased padding on the camera placeholder message for slightly improved readability.
+
 ## [1.7.12] - 2026-08-03
 
 ### Fixed

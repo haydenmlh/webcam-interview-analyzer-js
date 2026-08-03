@@ -1259,6 +1259,23 @@ function App() {
         )
     }, [interviewSummaries, selectedPreviousAnswerSummaryFingerprint])
 
+    const currentAnswerSummaryFingerprint = useMemo(() => {
+        const answerTranscript = transcript?.trim()
+        if (!answerTranscript || !latestInterviewMetrics) return ''
+        return getSummaryFingerprint({
+            question: questionInput.trim() || '(no question)',
+            transcript: answerTranscript,
+            metrics: latestInterviewMetrics,
+        })
+    }, [latestInterviewMetrics, questionInput, transcript])
+
+    const isCurrentAnswerAlreadyInSummary = useMemo(() => {
+        if (!currentAnswerSummaryFingerprint) return false
+        return interviewSummaries.some(
+            (item) => getSummaryFingerprint(item) === currentAnswerSummaryFingerprint,
+        )
+    }, [currentAnswerSummaryFingerprint, interviewSummaries])
+
     const isVideoStartDisabled = isTranscribing || cameraStatus !== 'ready'
     const videoStartDisabledReason =
         cameraStatus !== 'ready' ? 'Camera access is not allowed yet' : ''
@@ -2643,24 +2660,12 @@ function App() {
             return
         }
 
-        const deleteResult = await deleteAnswerFilesFromSelectedFolder(selectedSummary)
-        if (!deleteResult.ok) {
-            setToast(deleteResult.message || 'Could not delete this summary answer.')
-            return
-        }
-
         const nextSummaries = interviewSummaries.filter(
             (item) => item.id !== selectedSummary.id,
         )
         setInterviewSummaries(nextSummaries)
         setSelectedSummaryId(nextSummaries[0]?.id || OVERALL_SUMMARY_VIEW_ID)
-
-        await loadPreviousAnswers()
-        setToast(
-            deleteResult.skipped
-                ? 'Summary answer removed. No linked files were found to delete.'
-                : 'Summary answer and related files deleted.',
-        )
+        setToast('Summary answer removed from this session.')
     }
 
     async function confirmPendingDeleteAction() {
@@ -3591,7 +3596,7 @@ function App() {
                                         <p>
                                             {cameraStatus === 'loading'
                                                 ? 'Starting camera...'
-                                                : 'Camera preview will appear here.'}
+                                                : 'Camera preview will appear here after Camera is enabled'}
                                         </p>
                                     </div>
                                 )}
@@ -3602,7 +3607,7 @@ function App() {
                                     <p>
                                         {cameraStatus === 'loading'
                                             ? 'Starting camera...'
-                                            : 'Camera preview will appear here.'}
+                                            : 'Camera preview will appear here after Camera is enabled'}
                                     </p>
                                 </div>
                             )
@@ -3799,9 +3804,20 @@ function App() {
                             type="button"
                             className="btn"
                             onClick={addCurrentAnswerToSummary}
-                            disabled={!transcript || !latestInterviewMetrics || isRecording || isTranscribing}
+                            disabled={
+                                !transcript ||
+                                !latestInterviewMetrics ||
+                                isRecording ||
+                                isTranscribing ||
+                                isCurrentAnswerAlreadyInSummary
+                            }
+                            title={
+                                isCurrentAnswerAlreadyInSummary
+                                    ? 'This answer is already in summary.'
+                                    : 'Add this answer to summary'
+                            }
                         >
-                            Add to Summary
+                            {isCurrentAnswerAlreadyInSummary ? 'Already in Summary' : 'Add to Summary'}
                         </button>
                     </div>
 
@@ -4834,7 +4850,9 @@ function App() {
                         <p className="muted">
                             {pendingDeleteAction.kind === 'parsed-question'
                                 ? 'This question will be removed from the Questions Import list.'
-                                : 'This will delete the selected answer and linked saved files. This cannot be undone.'}
+                                : pendingDeleteAction.kind === 'previous-answer'
+                                    ? 'This will delete the selected answer and linked saved files from the selected folder. This cannot be undone.'
+                                    : 'This will remove the selected answer from Session Summary only. Saved folder files will not be deleted.'}
                         </p>
                         <div className="actions">
                             <button
