@@ -5,9 +5,6 @@ import {
     HandLandmarker,
     PoseLandmarker,
 } from '@mediapipe/tasks-vision'
-import { FFmpeg } from '@ffmpeg/ffmpeg'
-import { fetchFile, toBlobURL } from '@ffmpeg/util'
-import lamejs from 'lamejs'
 import { APP_VERSION } from './version'
 import {
     getSpeechFallbackConfig,
@@ -49,8 +46,6 @@ const DEFAULT_DEEPGRAM_LISTEN_URL =
     'https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&filler_words=true'
 const DEFAULT_DEEPGRAM_SPEAK_URL =
     'https://api.deepgram.com/v1/speak?model=aura-2-thalia-en'
-const DEFAULT_FFMPEG_CORE_BASE_URL =
-    'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd'
 
 const PROLONGED_CLOSURE_MS = 800
 const EYE_CLOSED_RATIO = 0.18
@@ -306,112 +301,6 @@ function buildOutputText({ capturedAt, question, answer, metrics }) {
         `- Shoulder Rotation Direction: ${metrics.shoulderRotationDirection}`,
         `- Shoulder Rotation Status: ${metrics.shoulderRotationStatus}`,
     ].join('\n')
-}
-
-function floatTo16BitPCM(input) {
-    const output = new Int16Array(input.length)
-    for (let i = 0; i < input.length; i += 1) {
-        const sample = Math.max(-1, Math.min(1, input[i]))
-        output[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff
-    }
-    return output
-}
-
-function encodeAudioBufferToMp3(audioBuffer, kbps = 128) {
-    const channels = Math.min(audioBuffer.numberOfChannels, 2)
-    const sampleRate = audioBuffer.sampleRate
-    const encoder = new lamejs.Mp3Encoder(channels, sampleRate, kbps)
-    const blockSize = 1152
-
-    const left = floatTo16BitPCM(audioBuffer.getChannelData(0))
-    const right =
-        channels > 1
-            ? floatTo16BitPCM(audioBuffer.getChannelData(1))
-            : null
-
-    const output = []
-    for (let i = 0; i < left.length; i += blockSize) {
-        const leftChunk = left.subarray(i, i + blockSize)
-        const encoded =
-            channels > 1 && right
-                ? encoder.encodeBuffer(leftChunk, right.subarray(i, i + blockSize))
-                : encoder.encodeBuffer(leftChunk)
-        if (encoded.length > 0) output.push(new Int8Array(encoded))
-    }
-
-    const tail = encoder.flush()
-    if (tail.length > 0) output.push(new Int8Array(tail))
-
-    return new Blob(output, { type: 'audio/mpeg' })
-}
-
-async function convertAudioBlobToMp3(audioBlob) {
-    const AudioCtx = window.AudioContext || window.webkitAudioContext
-    if (!AudioCtx) throw new Error('AudioContext is unavailable in this browser.')
-
-    const audioCtx = new AudioCtx()
-    try {
-        const arrayBuffer = await audioBlob.arrayBuffer()
-        const decoded = await audioCtx.decodeAudioData(arrayBuffer.slice(0))
-        return encodeAudioBufferToMp3(decoded)
-    } finally {
-        await audioCtx.close()
-    }
-}
-
-async function ensureFfmpegLoaded(ffmpegRef, ffmpegLoadedRef) {
-    if (ffmpegLoadedRef.current && ffmpegRef.current) return ffmpegRef.current
-
-    const ffmpeg = ffmpegRef.current || new FFmpeg()
-    ffmpegRef.current = ffmpeg
-
-    const baseUrl =
-        import.meta.env.VITE_FFMPEG_CORE_BASE_URL || DEFAULT_FFMPEG_CORE_BASE_URL
-
-    await ffmpeg.load({
-        coreURL: await toBlobURL(`${baseUrl}/ffmpeg-core.js`, 'text/javascript'),
-        wasmURL: await toBlobURL(`${baseUrl}/ffmpeg-core.wasm`, 'application/wasm'),
-    })
-
-    ffmpegLoadedRef.current = true
-    return ffmpeg
-}
-
-async function convertVideoBlobToMp4(videoBlob, ffmpegRef, ffmpegLoadedRef) {
-    if (videoBlob.type.includes('mp4')) return videoBlob
-
-    const ffmpeg = await ensureFfmpegLoaded(ffmpegRef, ffmpegLoadedRef)
-    const inputName = `input-${Date.now()}.webm`
-    const outputName = `output-${Date.now()}.mp4`
-
-    await ffmpeg.writeFile(inputName, await fetchFile(videoBlob))
-
-    try {
-        // Re-encode into MP4 so audio + video are muxed in a broadly compatible container.
-        await ffmpeg.exec([
-            '-i',
-            inputName,
-            '-c:v',
-            'mpeg4',
-            '-c:a',
-            'aac',
-            outputName,
-        ])
-
-        const data = await ffmpeg.readFile(outputName)
-        return new Blob([data.buffer], { type: 'video/mp4' })
-    } finally {
-        try {
-            await ffmpeg.deleteFile(inputName)
-        } catch {
-            // Ignore cleanup errors.
-        }
-        try {
-            await ffmpeg.deleteFile(outputName)
-        } catch {
-            // Ignore cleanup errors.
-        }
-    }
 }
 
 function speechProviderLabel(value) {
@@ -886,8 +775,6 @@ function App() {
     const sessionStartedAtRef = useRef(null)
     const debugEnabledRef = useRef(false)
     const recordingsFolderRef = useRef(null)
-    const ffmpegRef = useRef(null)
-    const ffmpegLoadedRef = useRef(false)
     const portraitVideoRef = useRef(false)
     const recordingActiveRef = useRef(false)
     const recordingModeRef = useRef('audio')
@@ -1021,7 +908,6 @@ function App() {
     const [recordedAudioBlob, setRecordedAudioBlob] = useState(null)
     const [recordedVideoBlob, setRecordedVideoBlob] = useState(null)
     const [recordingsFolderName, setRecordingsFolderName] = useState('')
-    const [showSelectFolderPrompt, setShowSelectFolderPrompt] = useState(true)
     const [interviewSummaries, setInterviewSummaries] = useState([])
     const [selectedSummaryId, setSelectedSummaryId] = useState('')
     const [previousAnswers, setPreviousAnswers] = useState([])
@@ -1378,15 +1264,17 @@ function App() {
         cameraStatus !== 'ready' ? 'Camera access is not allowed yet' : ''
     const isImportQuestionDisabled = isRecording || isTranscribing || isSpeakingQuestion
 
+    const shouldPromptFolderFromPreviousAnswers =
+        !isFolderFeatureDisabled && !recordingsFolderName
     const isPreviousAnswersViewDisabled =
-        isFolderFeatureDisabled || !recordingsFolderName || isLoadingPreviousAnswers
+        isFolderFeatureDisabled || isLoadingPreviousAnswers
     const previousAnswersViewDisabledReason =
         isIphoneClient
             ? 'Previous answers are unavailable because folder access is not allowed on iPhone browsers.'
             : !fileSystemAccessSupported
                 ? 'Previous answers are unavailable because folder access is not allowed in this browser.'
                 : !recordingsFolderName
-                    ? 'Select a save folder in Settings to enable previous answers.'
+                    ? 'No save folder selected. Click Previous Answers to choose a save folder first.'
                     : ''
 
     function suppressDisabledTooltipPointerDefault(event, isDisabled) {
@@ -1733,8 +1621,6 @@ function App() {
             stopAudioStream()
             videoRecorderRef.current = null
             videoChunksRef.current = []
-            ffmpegRef.current = null
-            ffmpegLoadedRef.current = false
             faceLandmarkerRef.current?.close()
             handLandmarkerRef.current?.close()
             poseLandmarkerRef.current?.close()
@@ -3297,12 +3183,7 @@ function App() {
                 type: recorder.mimeType || 'audio/webm',
             })
 
-            let storageAudioBlob = rawAudioBlob
-            try {
-                storageAudioBlob = await convertAudioBlobToMp3(rawAudioBlob)
-            } catch {
-                setBanner('MP3 conversion failed in this browser; using original audio format.')
-            }
+            const storageAudioBlob = rawAudioBlob
             setRecordedAudioBlob(storageAudioBlob)
 
             let finalVideoBlob = null
@@ -3313,19 +3194,8 @@ function App() {
                     type: videoRecorder?.mimeType || 'video/webm',
                 })
 
-                try {
-                    const mp4Blob = await convertVideoBlobToMp4(
-                        rawVideoBlob,
-                        ffmpegRef,
-                        ffmpegLoadedRef,
-                    )
-                    finalVideoBlob = mp4Blob
-                    setRecordedVideoBlob(mp4Blob)
-                } catch {
-                    finalVideoBlob = rawVideoBlob
-                    setRecordedVideoBlob(rawVideoBlob)
-                    setBanner('MP4 conversion failed; video is available in original format.')
-                }
+                finalVideoBlob = rawVideoBlob
+                setRecordedVideoBlob(rawVideoBlob)
             }
 
             const transcriptionResult = await transcribeAudioBlob(rawAudioBlob)
@@ -3645,7 +3515,7 @@ function App() {
                     )}
                     {isDesktopViewport && (
                         <span
-                            className={`disabled-tooltip-wrap previous-peek-tab-wrap${isPreviousAnswersViewDisabled && previousAnswersViewDisabledReason ? ' has-tooltip' : ''}`}
+                            className={`disabled-tooltip-wrap previous-peek-tab-wrap${previousAnswersViewDisabledReason ? ' has-tooltip' : ''}`}
                             data-disabled-reason={previousAnswersViewDisabledReason}
                             onPointerDown={(event) =>
                                 suppressDisabledTooltipPointerDefault(event, isPreviousAnswersViewDisabled)
@@ -3655,6 +3525,10 @@ function App() {
                                 type="button"
                                 className="previous-peek-tab"
                                 onClick={() => {
+                                    if (shouldPromptFolderFromPreviousAnswers) {
+                                        openSelectRecordingsFolderModal()
+                                        return
+                                    }
                                     setQuestionsDrawerOpen(false)
                                     closeCvJdModal()
                                     closeSummaryModal()
@@ -3890,45 +3764,8 @@ function App() {
                 </section>
 
                 <section className={`panel session${centerCameraLayout ? ' centered-session-panel' : ''}`}>
-                    {!isFolderFeatureDisabled && !recordingsFolderName && showSelectFolderPrompt && (
-                        <div className="actions wrap select-folder-actions">
-                            <button
-                                type="button"
-                                className="btn ghost"
-                                onClick={openSelectRecordingsFolderModal}
-                            >
-                                Select Save Folder
-                            </button>
-                            <button
-                                type="button"
-                                className="btn ghost dismiss-select-folder-btn"
-                                onClick={() => setShowSelectFolderPrompt(false)}
-                                aria-label="Dismiss select save folder"
-                                title="Dismiss"
-                            >
-                                X
-                            </button>
-                        </div>
-                    )}
 
                     <div className="actions wrap export-actions">
-                        <button
-                            type="button"
-                            className="btn"
-                            onClick={addCurrentAnswerToSummary}
-                            disabled={!transcript || !latestInterviewMetrics || isRecording || isTranscribing}
-                        >
-                            Add to Summary
-                        </button>
-                        <label className="debug-toggle auto-summary-toggle">
-                            <input
-                                type="checkbox"
-                                checked={autoAddCompletedAnswersToSummary}
-                                onChange={(event) => setAutoAddCompletedAnswersToSummary(event.target.checked)}
-                                disabled={isRecording || isTranscribing}
-                            />
-                            <span>Auto-add completed answers to summary</span>
-                        </label>
                         {(isFolderFeatureDisabled || !recordingsFolderName) && (
                             <div className="export-download-actions">
                                 <button
@@ -3949,6 +3786,23 @@ function App() {
                                 </button>
                             </div>
                         )}
+                        <label className="debug-toggle auto-summary-toggle">
+                            <input
+                                type="checkbox"
+                                checked={autoAddCompletedAnswersToSummary}
+                                onChange={(event) => setAutoAddCompletedAnswersToSummary(event.target.checked)}
+                                disabled={isRecording || isTranscribing}
+                            />
+                            <span>Auto-Add</span>
+                        </label>
+                        <button
+                            type="button"
+                            className="btn"
+                            onClick={addCurrentAnswerToSummary}
+                            disabled={!transcript || !latestInterviewMetrics || isRecording || isTranscribing}
+                        >
+                            Add to Summary
+                        </button>
                     </div>
 
                     <div className="label question-row">
@@ -3962,7 +3816,7 @@ function App() {
                                 >
                                     <button
                                         type="button"
-                                        className={`btn ghost question-next-btn${showNoNextQuestionTooltip ? ' btn-disabled-look' : ''}`}
+                                        className={`btn question-next-btn${showNoNextQuestionTooltip ? ' btn-disabled-look' : ''}`}
                                         onClick={handleNextQuestionAction}
                                         disabled={isImportQuestionDisabled}
                                         title={nextQuestionTitle}
@@ -3992,7 +3846,7 @@ function App() {
                                     >
                                         <button
                                             type="button"
-                                            className={`btn ghost question-next-btn${showNoNextQuestionTooltip ? ' btn-disabled-look' : ''}`}
+                                            className={`btn question-next-btn${showNoNextQuestionTooltip ? ' btn-disabled-look' : ''}`}
                                             onClick={handleNextQuestionAction}
                                             disabled={isImportQuestionDisabled}
                                             title={nextQuestionTitle}
@@ -4007,15 +3861,6 @@ function App() {
                                     </div>
                                 </div>
                             )}
-                            <label className="debug-toggle question-tts-toggle">
-                                <input
-                                    type="checkbox"
-                                    checked={readQuestionWithTts}
-                                    onChange={(event) => setReadQuestionWithTts(event.target.checked)}
-                                    disabled={isRecording || isTranscribing || isSpeakingQuestion}
-                                />
-                                <span>Read (TTS) Question</span>
-                            </label>
                         </div>
                     </div>
                     <textarea
@@ -4131,14 +3976,24 @@ function App() {
                             <aside className="history-overview">
                                 <div className="history-overview-head">
                                     <h3>Overview</h3>
-                                    <button
-                                        type="button"
-                                        className="btn ghost"
-                                        onClick={loadPreviousAnswers}
-                                        disabled={isLoadingPreviousAnswers}
-                                    >
-                                        {isLoadingPreviousAnswers ? 'Loading...' : 'Refresh'}
-                                    </button>
+                                    <div className="history-overview-actions">
+                                        <button
+                                            type="button"
+                                            className="btn ghost"
+                                            onClick={openSelectRecordingsFolderModal}
+                                            disabled={isFolderFeatureDisabled}
+                                        >
+                                            Select Folder
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="btn ghost"
+                                            onClick={loadPreviousAnswers}
+                                            disabled={isLoadingPreviousAnswers}
+                                        >
+                                            {isLoadingPreviousAnswers ? 'Loading...' : 'Refresh'}
+                                        </button>
+                                    </div>
                                 </div>
 
                                 <p className="muted">{previousAnswers.length} question(s)</p>
@@ -4526,7 +4381,7 @@ function App() {
                         </div>
 
                         <div className="question-modal-body cvjd-modal-body">
-                            <div className="question-drawer-inner question-modal-inner cvjd-modal-inner">
+                            <div className="question-modal-inner cvjd-modal-inner">
                                 <p className="muted">
                                     Save your candidate profile and target role details here for quick Gemini prompts.
                                 </p>
@@ -4848,6 +4703,22 @@ function App() {
                                         onChange={(event) => setInvertCamera(event.target.checked)}
                                     />
                                     <span>Invert camera</span>
+                                </label>
+                            </div>
+
+                            <div className="settings-section">
+                                <label className="label">Question Playback</label>
+                                <p className="muted">
+                                    Read each interview question aloud before recording starts.
+                                </p>
+                                <label className="debug-toggle">
+                                    <input
+                                        type="checkbox"
+                                        checked={readQuestionWithTts}
+                                        onChange={(event) => setReadQuestionWithTts(event.target.checked)}
+                                        disabled={isRecording || isTranscribing || isSpeakingQuestion}
+                                    />
+                                    <span>Read (TTS) Question</span>
                                 </label>
                             </div>
 

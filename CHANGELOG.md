@@ -19,6 +19,32 @@ Use this template for future releases:
 -
 ```
 
+## [1.7.12] - 2026-08-03
+
+### Fixed
+- Updated the `Input CV/JD` modal layout so `CV` and `Job Description` textareas expand to fill available vertical space.
+- Removed excess blank space at the bottom of the `Input CV/JD` modal on taller screens.
+
+## [1.7.11] - 2026-08-03
+
+### Fixed
+- Removed an unintended drawer-grid layout class from the CV/JD modal content container that was stretching the `CV` label row on taller screens.
+- Eliminated the large blank vertical gap between the `CV` label and the CV input area in the `Input CV/JD` modal.
+
+## [1.7.10] - 2026-08-03
+
+### Changed
+- Updated `Next Question` button styling to use the same primary color scheme as `Add to Summary`.
+
+## [1.7.9] - 2026-08-03
+
+### Changed
+- Removed MP3/MP4 conversion dependencies and conversion paths from the recording flow.
+- Recordings are now kept in their original browser-captured formats for better cross-browser reliability.
+
+### Fixed
+- Eliminated recurring conversion failures that occurred during MP3/MP4 post-processing.
+
 ## [1.7.8] - 2026-08-03
 
 ### Added
