@@ -19,6 +19,7 @@ import './App.css'
 const STORAGE_KEY = 'mia.deepgram.apiKey'
 const STORAGE_VALIDATED_AT = 'mia.deepgram.lastValidatedAt'
 const STORAGE_THEME = 'mia.theme'
+const STORAGE_INVERT_CAMERA = 'mia.invertCamera'
 const STORAGE_FALLBACK_WITHOUT_KEY = 'mia.speech.fallbackWithoutDeepgramKey'
 const STORAGE_AUTO_ADD_SUMMARY = 'mia.autoAddSummary'
 const STORAGE_CV_TEXT = 'mia.cvText'
@@ -908,6 +909,9 @@ function App() {
 
     const [cameraStatus, setCameraStatus] = useState('idle')
     const [debugEnabled, setDebugEnabled] = useState(false)
+    const [invertCamera, setInvertCamera] = useState(
+        () => getSavedValue(STORAGE_INVERT_CAMERA) === 'true',
+    )
     const [centerCameraLayout] = useState(() =>
         typeof window !== 'undefined' ? window.innerWidth > 860 : true,
     )
@@ -1053,6 +1057,10 @@ function App() {
         document.documentElement.removeAttribute('data-theme')
         setSavedValue(STORAGE_THEME, 'light')
     }, [darkMode])
+
+    useEffect(() => {
+        setSavedValue(STORAGE_INVERT_CAMERA, invertCamera ? 'true' : 'false')
+    }, [invertCamera])
 
     useEffect(() => {
         setSavedValue(
@@ -3531,7 +3539,7 @@ function App() {
                         </div>
                     </div>
 
-                    <div className={`camera-frame${isPortraitVideo ? ' portrait' : ''}`}>
+                    <div className={`camera-frame${isPortraitVideo ? ' portrait' : ''}${invertCamera ? ' inverted' : ''}`}>
                         <video
                             ref={videoRef}
                             className="camera-video"
@@ -4620,6 +4628,21 @@ function App() {
                                         onChange={(event) => setDebugEnabled(event.target.checked)}
                                     />
                                     <span>Debug</span>
+                                </label>
+                            </div>
+
+                            <div className="settings-section">
+                                <label className="label">Camera Orientation</label>
+                                <p className="muted">
+                                    Mirror the camera preview horizontally.
+                                </p>
+                                <label className="debug-toggle">
+                                    <input
+                                        type="checkbox"
+                                        checked={invertCamera}
+                                        onChange={(event) => setInvertCamera(event.target.checked)}
+                                    />
+                                    <span>Invert camera</span>
                                 </label>
                             </div>
 
