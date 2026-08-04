@@ -19,6 +19,14 @@ Use this template for future releases:
 -
 ```
 
+## [1.7.24] - 2026-08-04
+
+### Changed
+- `Auto-Add` is now enforced as always enabled and cannot be turned off in Settings.
+
+### Fixed
+- Auto-Add summary behavior now ignores stale local storage values that previously disabled it, ensuring summary auto-add remains active by default.
+
 ## [1.7.23] - 2026-08-04
 
 ### Added
