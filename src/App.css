@@ -6,20 +6,7 @@ body {
     min-height: 100vh;
     color: var(--ink-900);
     display: grid;
-    grid-template-rows: auto 1fr auto;
-}
-
-.app-footer {
-    border-top: 1px solid var(--line);
-    padding: 0.6rem 1.4rem;
-    background: var(--card-bg);
-}
-
-.app-footer p {
-    margin: 0;
-    text-align: center;
-    color: var(--ink-700);
-    font-size: 0.85rem;
+    grid-template-rows: auto 1fr;
 }
 
 .settings-changelog-link {
@@ -68,6 +55,18 @@ h1 {
     line-height: 1.1;
 }
 
+.topbar-title-row {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.4rem;
+}
+
+.topbar-version-label {
+    color: color-mix(in srgb, var(--ink-700), #8a8a8a 35%);
+    font-size: 0.6rem;
+    line-height: 1;
+}
+
 h2 {
     margin: 0 0 0.5rem;
     font-family: var(--font-display);
@@ -80,23 +79,6 @@ h3 {
     font-size: 1rem;
 }
 
-.settings-cog {
-    min-width: 2.05rem;
-    padding: 0.16rem 0.36rem;
-    font-size: 0.9rem;
-    line-height: 1;
-}
-
-.gemini-launch-btn {
-    min-width: 2.05rem;
-    padding: 0.16rem 0.36rem;
-    font-size: 0.9rem;
-    line-height: 1;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-}
-
 .gemini-launch-label {
     font-size: 0.78rem;
     font-weight: 600;
@@ -106,14 +88,7 @@ h3 {
 .topbar-actions {
     display: inline-flex;
     align-items: center;
-    gap: 0.32rem;
-}
-
-.theme-toggle {
-    min-width: 2.05rem;
-    padding: 0.16rem 0.36rem;
-    font-size: 0.85rem;
-    line-height: 1.1;
+    gap: 0.42rem;
 }
 
 .topbar-icon {
@@ -283,6 +258,31 @@ h3 {
     justify-content: center;
 }
 
+.camera-recording-key-status {
+    grid-column: 1;
+    justify-self: start;
+    border: 0;
+    background: transparent;
+    color: #dc2626;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    font-size: 0.86rem;
+    line-height: 1.2;
+    cursor: pointer;
+    padding: 0;
+}
+
+.camera-recording-key-status:hover,
+.camera-recording-key-status:focus-visible {
+    color: #ef4444;
+}
+
+.camera-recording-key-status:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+
 .camera-recording-next-wrap {
     grid-column: 3;
     justify-self: end;
@@ -325,6 +325,35 @@ h3 {
     cursor: not-allowed;
     transform: none;
     box-shadow: none;
+}
+
+.topbar-actions .btn {
+    min-height: 1.5rem;
+    min-width: 2.05rem;
+    padding: 0.4rem 0.36rem;
+    line-height: 1;
+}
+
+.btn.settings-cog {
+    font-size: 0.9rem;
+}
+
+.btn.theme-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.btn.theme-toggle .topbar-icon {
+    transform: translateY(1px);
+}
+
+.btn.gemini-launch-btn {
+    font-size: 0.9rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.25rem;
 }
 
 .btn.btn-disabled-look {
@@ -545,6 +574,7 @@ h3 {
 .interviewer-image {
     position: absolute;
     inset: 0;
+    z-index: 1;
     width: 100%;
     height: 100%;
     object-fit: cover;
@@ -552,8 +582,14 @@ h3 {
     user-select: none;
 }
 
+.meeting-overlay-image {
+    z-index: 3;
+    pointer-events: none;
+}
+
 .self-view-frame {
     position: absolute;
+    z-index: 2;
     min-width: 0;
     min-height: 0;
     overflow: hidden;
@@ -623,6 +659,151 @@ h3 {
     margin: 0;
     padding: 0.25rem 0.4rem;
     font-weight: 600;
+}
+
+.camera-toggle-overlay-wrap {
+    position: absolute;
+    left: 0.75rem;
+    bottom: 2px;
+    z-index: 9;
+    min-width: 0;
+    display: grid;
+    justify-items: center;
+    gap: 0.22rem;
+}
+
+.camera-toggle-overlay-btn {
+    border: 0;
+    border-radius: 10px;
+    background: #000000;
+    color: #ffffff;
+    padding: 0.34rem calc(1.4rem + 5px) 0.08rem;
+    display: grid;
+    justify-items: center;
+    gap: 0.16rem;
+    cursor: pointer;
+}
+
+.camera-toggle-overlay-btn:hover {
+    background: #1a1a1a;
+}
+
+.camera-toggle-overlay-wrap:has(.camera-toggle-overlay-caret:hover) .camera-toggle-overlay-btn,
+.camera-toggle-overlay-wrap:has(.camera-toggle-overlay-caret:focus-visible) .camera-toggle-overlay-btn {
+    background: #1a1a1a;
+}
+
+.camera-toggle-overlay-btn:active {
+    background: #2e2e2e;
+}
+
+.camera-toggle-overlay-btn:focus-visible {
+    outline: 3px solid var(--focus);
+    outline-offset: 2px;
+}
+
+.camera-toggle-overlay-btn .material-symbols-outlined {
+    font-size: 1.3rem;
+    line-height: 1;
+    color: #dedede;
+}
+
+.camera-toggle-overlay-btn.is-disabled .material-symbols-outlined {
+    color: #dc2626;
+}
+
+.camera-toggle-overlay-label {
+    color: #ffffff;
+    font-size: 0.5rem;
+    line-height: 1;
+    transform: translateY(1px);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+
+.camera-toggle-overlay-caret {
+    position: absolute;
+    top: 2px;
+    right: 0;
+    border: 0;
+    border-radius: 6px;
+    background: #000000;
+    color: #ffffff;
+    padding: 0.08rem 0.16rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+
+.camera-toggle-overlay-btn:hover+.camera-toggle-overlay-caret {
+    background: #313131;
+}
+
+.camera-toggle-overlay-caret:hover,
+.camera-toggle-overlay-caret:focus-visible {
+    background: #484848;
+}
+
+.camera-toggle-overlay-caret:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 1px;
+}
+
+.camera-toggle-overlay-caret .material-symbols-outlined {
+    font-size: 0.78rem;
+    line-height: 1;
+    color: #dedede;
+}
+
+.camera-overlay-settings-menu {
+    position: absolute;
+    left: calc(100% - 1.1rem);
+    bottom: calc(100% + 0.35rem);
+    min-width: 10.4rem;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 8px;
+    background: #232323;
+    box-shadow: 0 12px 24px rgba(0, 0, 0, 0.35);
+    overflow: hidden;
+}
+
+.camera-overlay-settings-item {
+    width: 100%;
+    border: 0;
+    background: transparent;
+    color: #dedede;
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.7rem;
+    text-align: left;
+    font-size: 0.68rem;
+    line-height: 1.2;
+    padding: 0.32rem 0.55rem;
+    cursor: pointer;
+}
+
+.camera-overlay-settings-item .material-symbols-outlined {
+    font-size: 1.05rem;
+    line-height: 1;
+    color: #dedede;
+    margin-left: auto;
+}
+
+.camera-overlay-settings-item:hover .material-symbols-outlined,
+.camera-overlay-settings-item:focus-visible .material-symbols-outlined {
+    color: #ffffff;
+}
+
+.camera-overlay-settings-item:hover {
+    background: #3e3e3e;
+    color: #ffffff;
+}
+
+.camera-overlay-settings-item:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
+    color: #ffffff;
 }
 
 .camera-question-overlay {
@@ -1286,6 +1467,18 @@ h3 {
 
 .settings-modal-header h2 {
     margin: 0;
+}
+
+.settings-title-row {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.45rem;
+}
+
+.settings-version-label {
+    color: var(--ink-700);
+    font-size: 0.84rem;
+    line-height: 1;
 }
 
 .settings-header-actions {
