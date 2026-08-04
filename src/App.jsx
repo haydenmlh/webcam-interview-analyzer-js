@@ -28,6 +28,8 @@ const STORAGE_DEEPGRAM_DEBUG = 'mia.deepgram.debug'
 const STORAGE_CV_TEXT = 'mia.cvText'
 const STORAGE_JD_TEXT = 'mia.jdText'
 const STORAGE_COMPANY_NAME = 'mia.companyName'
+const STORAGE_SESSION_SUMMARIES = 'mia.sessionSummaries'
+const STORAGE_SELECTED_SUMMARY_ID = 'mia.selectedSummaryId'
 const HANDLE_DB_NAME = 'mia-handle-db'
 const HANDLE_STORE_NAME = 'handles'
 const RECORDINGS_FOLDER_KEY = 'recordings-folder'
@@ -956,8 +958,19 @@ function App() {
     const [recordedAudioBlob, setRecordedAudioBlob] = useState(null)
     const [recordedVideoBlob, setRecordedVideoBlob] = useState(null)
     const [recordingsFolderName, setRecordingsFolderName] = useState('')
-    const [interviewSummaries, setInterviewSummaries] = useState([])
-    const [selectedSummaryId, setSelectedSummaryId] = useState('')
+    const [interviewSummaries, setInterviewSummaries] = useState(() => {
+        const saved = getSavedValue(STORAGE_SESSION_SUMMARIES)
+        if (!saved) return []
+        try {
+            const parsed = JSON.parse(saved)
+            return Array.isArray(parsed) ? parsed : []
+        } catch {
+            return []
+        }
+    })
+    const [selectedSummaryId, setSelectedSummaryId] = useState(
+        () => getSavedValue(STORAGE_SELECTED_SUMMARY_ID),
+    )
     const [previousAnswers, setPreviousAnswers] = useState([])
     const [isLoadingPreviousAnswers, setIsLoadingPreviousAnswers] = useState(false)
     const [previousAnswersError, setPreviousAnswersError] = useState('')
@@ -1049,6 +1062,24 @@ function App() {
     useEffect(() => {
         setSavedValue(STORAGE_COMPANY_NAME, companyNameInput)
     }, [companyNameInput])
+
+    useEffect(() => {
+        if (!interviewSummaries.length) {
+            clearSavedValue(STORAGE_SESSION_SUMMARIES)
+            return
+        }
+
+        setSavedValue(STORAGE_SESSION_SUMMARIES, JSON.stringify(interviewSummaries))
+    }, [interviewSummaries])
+
+    useEffect(() => {
+        if (!selectedSummaryId) {
+            clearSavedValue(STORAGE_SELECTED_SUMMARY_ID)
+            return
+        }
+
+        setSavedValue(STORAGE_SELECTED_SUMMARY_ID, selectedSummaryId)
+    }, [selectedSummaryId])
 
     useEffect(() => {
         if (!showKeyStatus) return undefined

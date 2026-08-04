@@ -19,6 +19,11 @@ Use this template for future releases:
 -
 ```
 
+## [1.7.21] - 2026-08-04
+
+### Added
+- Session summary now persists across page refreshes, including saved summary entries and selected summary view state.
+
 ## [1.7.20] - 2026-08-04
 
 ### Fixed
