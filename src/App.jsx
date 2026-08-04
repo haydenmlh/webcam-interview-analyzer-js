@@ -11,7 +11,7 @@ import {
     transcribeWithFallback,
     validateSpeechFallbackConfig,
 } from './speech/providers'
-import interviewerImage from './assets/interviewer.jpg'
+import defaultInterviewerImage from './assets/interviewers/interviewer.jpg'
 import './App.css'
 
 const STORAGE_KEY = 'mia.deepgram.apiKey'
@@ -19,6 +19,8 @@ const STORAGE_VALIDATED_AT = 'mia.deepgram.lastValidatedAt'
 const STORAGE_THEME = 'mia.theme'
 const STORAGE_INVERT_CAMERA = 'mia.invertCamera'
 const STORAGE_SHOW_INTERVIEWER = 'mia.showInterviewer'
+const STORAGE_INTERVIEWER_IMAGE_ID = 'mia.interviewer.imageId'
+const STORAGE_INTERVIEWER_CUSTOM_IMAGE = 'mia.interviewer.customImageDataUrl'
 const STORAGE_SHOW_SELF_VIEW = 'mia.showSelfView'
 const STORAGE_ENABLE_CAMERA = 'mia.enableCamera'
 const STORAGE_FALLBACK_WITHOUT_KEY = 'mia.speech.fallbackWithoutDeepgramKey'
@@ -51,6 +53,49 @@ const DEFAULT_DEEPGRAM_LISTEN_URL =
     'https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&filler_words=true'
 const DEFAULT_DEEPGRAM_SPEAK_URL =
     'https://api.deepgram.com/v1/speak?model=aura-2-thalia-en'
+
+const LEGACY_DEFAULT_INTERVIEWER_IMAGE_ID = 'default'
+const CUSTOM_INTERVIEWER_IMAGE_ID = 'custom-upload'
+const interviewerImageModules = import.meta.glob(
+    './assets/interviewers/*.{png,jpg,jpeg,webp,avif,gif}',
+    { eager: true, import: 'default' },
+)
+
+function toInterviewerImageId(filePath) {
+    return filePath
+        .split('/')
+        .pop()
+        ?.replace(/\.[^.]+$/, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '') || 'interviewer'
+}
+
+function toInterviewerImageLabel(filePath) {
+    const fileName = filePath.split('/').pop()?.replace(/\.[^.]+$/, '') || 'interviewer'
+    const words = fileName
+        .replace(/[_-]+/g, ' ')
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+
+    if (!words.length) return 'Interviewer'
+    return words.join(' ')
+}
+
+const BUILT_IN_INTERVIEWER_IMAGES = Object.entries(interviewerImageModules)
+    .map(([filePath, src]) => ({
+        id: toInterviewerImageId(filePath),
+        label: toInterviewerImageLabel(filePath),
+        src,
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label))
+
+const DEFAULT_INTERVIEWER_IMAGE_ID =
+    BUILT_IN_INTERVIEWER_IMAGES.find((option) => option.id === 'interviewer')?.id ||
+    BUILT_IN_INTERVIEWER_IMAGES[0]?.id ||
+    LEGACY_DEFAULT_INTERVIEWER_IMAGE_ID
 
 const PROLONGED_CLOSURE_MS = 800
 const EYE_CLOSED_RATIO = 0.18
@@ -598,6 +643,15 @@ function downloadBlob(blob, fileName) {
     URL.revokeObjectURL(url)
 }
 
+function fileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(String(reader.result || ''))
+        reader.onerror = () => reject(reader.error || new Error('Failed to read file.'))
+        reader.readAsDataURL(file)
+    })
+}
+
 function sanitizeDisplayText(value, fallback = '') {
     const text = String(value ?? '')
         .split('')
@@ -934,6 +988,29 @@ function App() {
     const [showInterviewer, setShowInterviewer] = useState(
         () => getSavedValue(STORAGE_SHOW_INTERVIEWER) !== 'false',
     )
+    const [customInterviewerImageDataUrl, setCustomInterviewerImageDataUrl] = useState(
+        () => getSavedValue(STORAGE_INTERVIEWER_CUSTOM_IMAGE),
+    )
+    const [interviewerImageId, setInterviewerImageId] = useState(() => {
+        const saved = getSavedValue(STORAGE_INTERVIEWER_IMAGE_ID)
+        if (saved === LEGACY_DEFAULT_INTERVIEWER_IMAGE_ID) {
+            return DEFAULT_INTERVIEWER_IMAGE_ID
+        }
+        if (
+            saved &&
+            saved !== CUSTOM_INTERVIEWER_IMAGE_ID &&
+            !BUILT_IN_INTERVIEWER_IMAGES.some((option) => option.id === saved)
+        ) {
+            return DEFAULT_INTERVIEWER_IMAGE_ID
+        }
+        if (
+            saved === CUSTOM_INTERVIEWER_IMAGE_ID &&
+            !getSavedValue(STORAGE_INTERVIEWER_CUSTOM_IMAGE)
+        ) {
+            return DEFAULT_INTERVIEWER_IMAGE_ID
+        }
+        return saved || DEFAULT_INTERVIEWER_IMAGE_ID
+    })
     const [showSelfView, setShowSelfView] = useState(
         () => getSavedValue(STORAGE_SHOW_SELF_VIEW) !== 'false',
     )
@@ -1029,6 +1106,7 @@ function App() {
     const historyVideoRef = useRef(null)
     const historyAudioRef = useRef(null)
     const selectedHistoryMediaRef = useRef({ audioUrl: '', videoUrl: '' })
+    const interviewerUploadInputRef = useRef(null)
 
     const hasKey = savedKey.length > 0
     const speechFallbackConfig = useMemo(
@@ -1050,6 +1128,17 @@ function App() {
     const maskedSummary = hasKey
         ? `Key saved (ends with ${savedKey.slice(-2).padStart(6, '*')})`
         : 'No key saved yet.'
+    const hasCustomInterviewerImage = Boolean(customInterviewerImageDataUrl)
+    const activeInterviewerImageSrc = useMemo(() => {
+        if (interviewerImageId === CUSTOM_INTERVIEWER_IMAGE_ID && customInterviewerImageDataUrl) {
+            return customInterviewerImageDataUrl
+        }
+
+        const matchedBuiltIn = BUILT_IN_INTERVIEWER_IMAGES.find(
+            (option) => option.id === interviewerImageId,
+        )
+        return matchedBuiltIn?.src || defaultInterviewerImage
+    }, [customInterviewerImageDataUrl, interviewerImageId])
 
     const needsRevalidation = useMemo(() => {
         if (!lastValidatedAt) return false
@@ -1150,6 +1239,18 @@ function App() {
     useEffect(() => {
         setSavedValue(STORAGE_SHOW_INTERVIEWER, showInterviewer ? 'true' : 'false')
     }, [showInterviewer])
+
+    useEffect(() => {
+        setSavedValue(STORAGE_INTERVIEWER_IMAGE_ID, interviewerImageId)
+    }, [interviewerImageId])
+
+    useEffect(() => {
+        if (customInterviewerImageDataUrl) {
+            setSavedValue(STORAGE_INTERVIEWER_CUSTOM_IMAGE, customInterviewerImageDataUrl)
+            return
+        }
+        clearSavedValue(STORAGE_INTERVIEWER_CUSTOM_IMAGE)
+    }, [customInterviewerImageDataUrl])
 
     useEffect(() => {
         setSavedValue(STORAGE_SHOW_SELF_VIEW, showSelfView ? 'true' : 'false')
@@ -1482,6 +1583,37 @@ function App() {
     function suppressDisabledTooltipPointerDefault(event, isDisabled) {
         if (!isDisabled) return
         event.preventDefault()
+    }
+
+    async function handleInterviewerImageUpload(event) {
+        const file = event.target.files?.[0]
+        event.target.value = ''
+        if (!file) return
+
+        if (!file.type.startsWith('image/')) {
+            setToast('Select a valid image file for the interviewer.')
+            return
+        }
+
+        try {
+            const dataUrl = await fileToDataUrl(file)
+            if (!dataUrl) {
+                setToast('Could not read this image file.')
+                return
+            }
+
+            setCustomInterviewerImageDataUrl(dataUrl)
+            setInterviewerImageId(CUSTOM_INTERVIEWER_IMAGE_ID)
+            setToast('Custom interviewer image uploaded.')
+        } catch {
+            setToast('Could not read this image file.')
+        }
+    }
+
+    function clearCustomInterviewerImage() {
+        setCustomInterviewerImageDataUrl('')
+        setInterviewerImageId(DEFAULT_INTERVIEWER_IMAGE_ID)
+        setToast('Custom interviewer image removed.')
     }
 
     useEffect(() => {
@@ -3925,7 +4057,7 @@ function App() {
                     <div className={`camera-frame${!showInterviewer && isPortraitVideo ? ' portrait' : ''}${invertCamera ? ' inverted' : ''}`}>
                         {showInterviewer && (
                             <img
-                                src={interviewerImage}
+                                src={activeInterviewerImageSrc}
                                 className="interviewer-image"
                                 alt="Mock interviewer"
                                 draggable={false}
@@ -5149,6 +5281,54 @@ function App() {
                                     />
                                     <span>Invert camera</span>
                                 </label>
+                                <div className="interviewer-image-settings">
+                                    <label htmlFor="interviewer-image-select" className="label">
+                                        Interviewer Image
+                                    </label>
+                                    <select
+                                        id="interviewer-image-select"
+                                        className="field"
+                                        value={interviewerImageId}
+                                        onChange={(event) => setInterviewerImageId(event.target.value)}
+                                    >
+                                        {BUILT_IN_INTERVIEWER_IMAGES.map((option) => (
+                                            <option key={option.id} value={option.id}>
+                                                {option.label}
+                                            </option>
+                                        ))}
+                                        {hasCustomInterviewerImage && (
+                                            <option value={CUSTOM_INTERVIEWER_IMAGE_ID}>Custom Upload</option>
+                                        )}
+                                    </select>
+                                    <div className="actions wrap interviewer-image-actions">
+                                        <button
+                                            type="button"
+                                            className="btn ghost"
+                                            onClick={() => interviewerUploadInputRef.current?.click()}
+                                        >
+                                            Upload Interviewer Image
+                                        </button>
+                                        {hasCustomInterviewerImage && (
+                                            <button
+                                                type="button"
+                                                className="btn ghost"
+                                                onClick={clearCustomInterviewerImage}
+                                            >
+                                                Remove Custom Image
+                                            </button>
+                                        )}
+                                    </div>
+                                    <input
+                                        ref={interviewerUploadInputRef}
+                                        type="file"
+                                        accept="image/*"
+                                        className="sr-only"
+                                        onChange={handleInterviewerImageUpload}
+                                    />
+                                    <p className="muted interviewer-image-help">
+                                        Upload a custom interviewer image from your device.
+                                    </p>
+                                </div>
                             </div>
 
                             <div className="settings-section">

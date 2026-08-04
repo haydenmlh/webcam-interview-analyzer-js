@@ -1875,6 +1875,18 @@ h3 {
     margin-top: 0.95rem;
 }
 
+.interviewer-image-settings {
+    margin-top: 0.5rem;
+}
+
+.interviewer-image-actions {
+    margin-top: 0.5rem;
+}
+
+.interviewer-image-help {
+    margin-top: 0.45rem;
+}
+
 .help-text,
 .privacy-note {
     color: var(--ink-700);
