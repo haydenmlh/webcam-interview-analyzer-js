@@ -1,5 +1,5 @@
 ---
-description: "Bump patch version and add changelog summary for current changes"
+description: "Bump patch version and add changelog summary for current changes. Update readme version reference."
 name: "patch"
 argument-hint: "Optional note about what changed"
 agent: "agent"

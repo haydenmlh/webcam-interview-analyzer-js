@@ -19,6 +19,17 @@ Use this template for future releases:
 -
 ```
 
+## [1.7.25] - 2026-08-04
+
+### Added
+- Added manual build and deployment instructions in `README.md` for non-GitHub-Actions workflows.
+
+### Changed
+- Removed the notification popup for the easter egg.
+
+### Fixed
+- `Next Question` now advances on the first click instead of occasionally re-selecting the current first question.
+
 ## [1.7.24] - 2026-08-04
 
 ### Changed

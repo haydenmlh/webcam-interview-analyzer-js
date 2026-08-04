@@ -2035,7 +2035,18 @@ function App() {
             return
         }
 
-        const nextIndex = nextQuestionCursor % parsedDrawerQuestions.length
+        const currentIndexFromInput = parsedDrawerQuestionKeys.findIndex(
+            (questionKey) => questionKey === normalizeQuestionKey(questionInput),
+        )
+        const currentIndex =
+            activeQuestionListIndex != null
+                ? activeQuestionListIndex
+                : currentIndexFromInput
+
+        const nextIndex =
+            currentIndex >= 0
+                ? (currentIndex + 1) % parsedDrawerQuestions.length
+                : nextQuestionCursor % parsedDrawerQuestions.length
         const nextQuestion = parsedDrawerQuestions[nextIndex]
         if (!nextQuestion) return
 
@@ -2044,9 +2055,9 @@ function App() {
             questionIndex: nextIndex,
         })
 
-        setNextQuestionCursor((prev) =>
+        setNextQuestionCursor(() =>
             parsedDrawerQuestions.length
-                ? (prev + 1) % parsedDrawerQuestions.length
+                ? (nextIndex + 1) % parsedDrawerQuestions.length
                 : 0,
         )
     }
