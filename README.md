@@ -13,6 +13,8 @@ Current app version: 1.7.3
 - Add to Summary action for current answer/transcript
 - Copy Summary for Gem export in Gemini-friendly markdown format
 - Open Gemini topbar action that launches Gemini in a right-side popup panel for quick paste-and-iterate workflow
+- Desktop right-rail interview chat with provider switcher (OpenRouter or NVIDIA NIM)
+- Collapsible desktop chat rail (minimize to title-only)
 - CV/JD modal for storing company name, CV, and job description with Gemini-ready copy action
 - URL-based multi-question import on page load
 - Interviewer mock image mode with optional self-view PiP
@@ -60,9 +62,23 @@ npm run build
 ## Notes
 
 - Deepgram transcription requests are performed from the browser using the user-provided key.
+- LLM chat requests are performed from the browser using user-provided OpenRouter or NVIDIA NIM API keys.
+- LLM keys are memory-only unless "Persist LLM API keys in this browser" is enabled in Settings.
 - Interview question playback uses OS/system text-to-speech in the browser.
 - If no Deepgram key is present and missing-key fallback is enabled, transcription falls back to local Whisper (in-browser) and question playback uses OS/system TTS.
 - Folder-based save/history features rely on the browser File System Access API and permission grants.
+
+## LLM chat setup
+
+1. Open Settings.
+2. Under "LLM Chat Providers", enter at least one provider API key.
+3. Configure model and base URL for the provider you want to use.
+4. Save LLM settings.
+5. Use the desktop Interview Chat rail and choose OpenRouter or NVIDIA NIM from the provider dropdown.
+
+Behavior:
+- If provider settings are missing or invalid, chat returns an actionable error in the chat stream.
+- Chat context includes current question, transcript, interview metrics summary, and optional CV/JD/company fields.
 
 ## URL question import
 

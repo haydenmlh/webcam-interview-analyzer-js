@@ -13,6 +13,10 @@ import {
 } from './speech/providers'
 import defaultInterviewerImage from './assets/interviewers/interviewer.jpg'
 import changelogMarkdown from '../CHANGELOG.md?raw'
+import {
+    getLlmProviderConfig,
+    sendInterviewChatMessage,
+} from './llm/providers'
 import './App.css'
 
 const STORAGE_KEY = 'mia.deepgram.apiKey'
@@ -33,6 +37,13 @@ const STORAGE_JD_TEXT = 'mia.jdText'
 const STORAGE_COMPANY_NAME = 'mia.companyName'
 const STORAGE_SESSION_SUMMARIES = 'mia.sessionSummaries'
 const STORAGE_SELECTED_SUMMARY_ID = 'mia.selectedSummaryId'
+const STORAGE_LLM_KEYS_PERSIST = 'mia.llm.persistKeys'
+const STORAGE_OPENROUTER_API_KEY = 'mia.llm.openrouter.apiKey'
+const STORAGE_OPENROUTER_MODEL = 'mia.llm.openrouter.model'
+const STORAGE_OPENROUTER_BASE_URL = 'mia.llm.openrouter.baseUrl'
+const STORAGE_NIM_API_KEY = 'mia.llm.nim.apiKey'
+const STORAGE_NIM_MODEL = 'mia.llm.nim.model'
+const STORAGE_NIM_BASE_URL = 'mia.llm.nim.baseUrl'
 const HANDLE_DB_NAME = 'mia-handle-db'
 const HANDLE_STORE_NAME = 'handles'
 const RECORDINGS_FOLDER_KEY = 'recordings-folder'
@@ -41,6 +52,11 @@ const RECYCLE_BIN_FOLDER_NAME = '_Recycle Bin'
 const VALIDATION_RECOMMEND_DAYS = 30
 const INITIAL_NOW_MS = Date.now()
 const OVERALL_SUMMARY_VIEW_ID = '__overall__'
+const CHAT_PROVIDERS = [
+    { id: 'openrouter', label: 'OpenRouter' },
+    { id: 'nim', label: 'NVIDIA NIM' },
+]
+const LLM_PROVIDER_ENV_CONFIG = getLlmProviderConfig(import.meta.env)
 
 const DEFAULT_WASM_URL =
     'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
@@ -239,6 +255,10 @@ function getSavedValue(keyName) {
     } catch {
         return ''
     }
+}
+
+function getSavedBoolean(keyName) {
+    return getSavedValue(keyName) === 'true'
 }
 
 function setSavedValue(keyName, value) {
@@ -1159,6 +1179,50 @@ function App() {
         audioUrl: '',
         videoUrl: '',
     })
+    const [chatProviderId, setChatProviderId] = useState(CHAT_PROVIDERS[0].id)
+    const [isChatRailMinimized, setIsChatRailMinimized] = useState(false)
+    const [chatInput, setChatInput] = useState('')
+    const [chatMessages, setChatMessages] = useState([
+        {
+            id: 'chat-welcome',
+            role: 'assistant',
+            text: 'Welcome. Ask for feedback on your current answer. Configure your chat provider API key in Settings to enable live responses.',
+        },
+    ])
+    const [isSendingChat, setIsSendingChat] = useState(false)
+    const [persistLlmKeys, setPersistLlmKeys] = useState(() =>
+        getSavedBoolean(STORAGE_LLM_KEYS_PERSIST),
+    )
+    const [openrouterApiKey, setOpenrouterApiKey] = useState(() =>
+        getSavedBoolean(STORAGE_LLM_KEYS_PERSIST)
+            ? getSavedValue(STORAGE_OPENROUTER_API_KEY)
+            : '',
+    )
+    const [openrouterModel, setOpenrouterModel] = useState(() =>
+        getSavedValue(STORAGE_OPENROUTER_MODEL) || LLM_PROVIDER_ENV_CONFIG.openrouter.model,
+    )
+    const [openrouterBaseUrl, setOpenrouterBaseUrl] = useState(() =>
+        getSavedValue(STORAGE_OPENROUTER_BASE_URL) ||
+        LLM_PROVIDER_ENV_CONFIG.openrouter.baseUrl,
+    )
+    const [nimApiKey, setNimApiKey] = useState(() =>
+        getSavedBoolean(STORAGE_LLM_KEYS_PERSIST)
+            ? getSavedValue(STORAGE_NIM_API_KEY)
+            : '',
+    )
+    const [nimModel, setNimModel] = useState(() =>
+        getSavedValue(STORAGE_NIM_MODEL) || LLM_PROVIDER_ENV_CONFIG.nim.model,
+    )
+    const [nimBaseUrl, setNimBaseUrl] = useState(() =>
+        getSavedValue(STORAGE_NIM_BASE_URL) || LLM_PROVIDER_ENV_CONFIG.nim.baseUrl,
+    )
+    const [openrouterApiKeyInput, setOpenrouterApiKeyInput] = useState(openrouterApiKey)
+    const [openrouterModelInput, setOpenrouterModelInput] = useState(openrouterModel)
+    const [openrouterBaseUrlInput, setOpenrouterBaseUrlInput] = useState(openrouterBaseUrl)
+    const [nimApiKeyInput, setNimApiKeyInput] = useState(nimApiKey)
+    const [nimModelInput, setNimModelInput] = useState(nimModel)
+    const [nimBaseUrlInput, setNimBaseUrlInput] = useState(nimBaseUrl)
+    const [llmSettingsError, setLlmSettingsError] = useState('')
     const [historyPlaybackRate, setHistoryPlaybackRate] = useState(1)
     const [selectedPreviousAnswerFileSizes, setSelectedPreviousAnswerFileSizes] = useState({
         report: '',
@@ -2703,12 +2767,72 @@ function App() {
         setSettingsOpen(true)
         setKeyInput(savedKey)
         setFieldError('')
+        setOpenrouterApiKeyInput(openrouterApiKey)
+        setOpenrouterModelInput(openrouterModel)
+        setOpenrouterBaseUrlInput(openrouterBaseUrl)
+        setNimApiKeyInput(nimApiKey)
+        setNimModelInput(nimModel)
+        setNimBaseUrlInput(nimBaseUrl)
+        setLlmSettingsError('')
     }
 
     function closeSettings() {
         setSettingsOpen(false)
         setFieldError('')
         setShowKey(false)
+        setLlmSettingsError('')
+    }
+
+    function isValidUrl(value) {
+        try {
+            const parsed = new URL(value)
+            return /^https?:$/.test(parsed.protocol)
+        } catch {
+            return false
+        }
+    }
+
+    function saveLlmSettings() {
+        const trimmedOpenrouterBase = openrouterBaseUrlInput.trim()
+        const trimmedNimBase = nimBaseUrlInput.trim()
+        const trimmedOpenrouterModel = openrouterModelInput.trim()
+        const trimmedNimModel = nimModelInput.trim()
+        const trimmedOpenrouterKey = openrouterApiKeyInput.trim()
+        const trimmedNimKey = nimApiKeyInput.trim()
+
+        if (!trimmedOpenrouterBase || !isValidUrl(trimmedOpenrouterBase)) {
+            setLlmSettingsError('OpenRouter base URL must be a valid http(s) URL.')
+            return
+        }
+
+        if (!trimmedNimBase || !isValidUrl(trimmedNimBase)) {
+            setLlmSettingsError('NVIDIA NIM base URL must be a valid http(s) URL.')
+            return
+        }
+
+        setOpenrouterApiKey(trimmedOpenrouterKey)
+        setOpenrouterModel(trimmedOpenrouterModel)
+        setOpenrouterBaseUrl(trimmedOpenrouterBase)
+        setNimApiKey(trimmedNimKey)
+        setNimModel(trimmedNimModel)
+        setNimBaseUrl(trimmedNimBase)
+        setLlmSettingsError('')
+
+        setSavedValue(STORAGE_LLM_KEYS_PERSIST, persistLlmKeys ? 'true' : 'false')
+        setSavedValue(STORAGE_OPENROUTER_MODEL, trimmedOpenrouterModel)
+        setSavedValue(STORAGE_OPENROUTER_BASE_URL, trimmedOpenrouterBase)
+        setSavedValue(STORAGE_NIM_MODEL, trimmedNimModel)
+        setSavedValue(STORAGE_NIM_BASE_URL, trimmedNimBase)
+
+        if (persistLlmKeys) {
+            setSavedValue(STORAGE_OPENROUTER_API_KEY, trimmedOpenrouterKey)
+            setSavedValue(STORAGE_NIM_API_KEY, trimmedNimKey)
+        } else {
+            clearSavedValue(STORAGE_OPENROUTER_API_KEY)
+            clearSavedValue(STORAGE_NIM_API_KEY)
+        }
+
+        setToast('LLM settings saved.')
     }
 
     function openSelectRecordingsFolderModal() {
@@ -2939,6 +3063,89 @@ function App() {
         }
 
         return sections.join('\n')
+    }
+
+    function buildChatContextSummary() {
+        const question = questionInput.trim() || '(no question)'
+        const answer = transcript.trim() || '(no transcript yet)'
+        const metricSummary = latestInterviewMetrics
+            ? `WPM ${latestInterviewMetrics.wpm}, hesitations ${latestInterviewMetrics.hesitationsCount}, gaze center ${latestInterviewMetrics.gazeCenterPct}%`
+            : 'No interview metrics yet'
+
+        return { question, answer, metricSummary }
+    }
+
+    function appendChatMessage(role, text) {
+        setChatMessages((prev) => [
+            ...prev,
+            {
+                id: crypto.randomUUID(),
+                role,
+                text,
+            },
+        ])
+    }
+
+    function handleSendChatMessage() {
+        const message = chatInput.trim()
+        if (!message || isSendingChat) return
+
+        appendChatMessage('user', message)
+        setChatInput('')
+        setIsSendingChat(true)
+
+        const { question, answer, metricSummary } = buildChatContextSummary()
+
+        const providerConfig =
+            chatProviderId === 'nim'
+                ? {
+                    apiKey: nimApiKey,
+                    model: nimModel,
+                    baseUrl: nimBaseUrl,
+                }
+                : {
+                    apiKey: openrouterApiKey,
+                    model: openrouterModel,
+                    baseUrl: openrouterBaseUrl,
+                }
+
+        void sendInterviewChatMessage({
+            providerId: chatProviderId,
+            apiKey: providerConfig.apiKey,
+            model: providerConfig.model,
+            baseUrl: providerConfig.baseUrl,
+            userMessage: message,
+            context: {
+                question,
+                answer,
+                metricSummary,
+                companyName: companyNameInput.trim(),
+                cv: cvText.trim(),
+                jobDescription: jdText.trim(),
+            },
+        })
+            .then((result) => {
+                appendChatMessage('assistant', result.text)
+            })
+            .catch((error) => {
+                const fallbackMessage =
+                    error?.message || 'Chat request failed. Check Settings and try again.'
+                appendChatMessage('assistant', fallbackMessage)
+                setToast(fallbackMessage)
+            })
+            .finally(() => {
+                setIsSendingChat(false)
+            })
+    }
+
+    function handleClearChat() {
+        setChatMessages([
+            {
+                id: 'chat-welcome',
+                role: 'assistant',
+                text: 'Chat cleared. Ask a new question to continue.',
+            },
+        ])
     }
 
     async function openGeminiSidePanel() {
@@ -4122,9 +4329,10 @@ function App() {
                 </div>
             </header>
 
-            <main
-                className={`layout${centerCameraLayout ? ' center-camera-layout' : ''}${isDesktopViewport ? ' session-floating-layout' : ''}`}
-            >
+            <div className={`desktop-chat-layout${isDesktopViewport ? ' is-desktop' : ''}`}>
+                <main
+                    className={`layout${centerCameraLayout ? ' center-camera-layout' : ''}${isDesktopViewport ? ' layout-with-chat-rail' : ''}`}
+                >
                 <section
                     className={`panel camera-panel${centerCameraLayout ? ' centered-camera-panel' : ''}`}
                 >
@@ -4665,7 +4873,97 @@ function App() {
                         )}
                     </section>
                 )}
-            </main>
+                </main>
+                {isDesktopViewport && (
+                    <aside
+                        className={`panel desktop-chat-rail${isChatRailMinimized ? ' is-minimized' : ''}`}
+                        aria-label="Feedback chatbot panel"
+                    >
+                        <div className="desktop-chat-rail-head">
+                            <h2>Feedback Chatbot</h2>
+                            <div className="desktop-chat-rail-actions">
+                                <button
+                                    type="button"
+                                    className="btn ghost desktop-chat-minimize-btn"
+                                    onClick={() => setIsChatRailMinimized((prev) => !prev)}
+                                    aria-expanded={!isChatRailMinimized}
+                                    aria-label={isChatRailMinimized ? 'Expand chat panel' : 'Minimize chat panel'}
+                                    title={isChatRailMinimized ? 'Expand chat panel' : 'Minimize chat panel'}
+                                >
+                                    <span className="material-symbols-outlined topbar-icon" aria-hidden="true">
+                                        {isChatRailMinimized ? 'left_panel_open' : 'left_panel_close'}
+                                    </span>
+                                </button>
+                                {!isChatRailMinimized && (
+                                    <>
+                                        <button
+                                            type="button"
+                                            className="btn ghost"
+                                            onClick={handleClearChat}
+                                            title="Clear chat history"
+                                        >
+                                            Clear
+                                        </button>
+                                    </>
+                                )}
+                            </div>
+                        </div>
+                        {!isChatRailMinimized && (
+                            <>
+                                <label className="desktop-chat-provider-row">
+                                    <span>Provider</span>
+                                    <select
+                                        className="field chat-provider-select"
+                                        value={chatProviderId}
+                                        onChange={(event) => setChatProviderId(event.target.value)}
+                                    >
+                                        {CHAT_PROVIDERS.map((provider) => (
+                                            <option key={provider.id} value={provider.id}>
+                                                {provider.label}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </label>
+                                <div className="desktop-chat-rail-body">
+                                    <div className="chat-message-list" aria-live="polite">
+                                        {chatMessages.map((message) => (
+                                            <article
+                                                key={message.id}
+                                                className={`chat-message chat-message-${message.role}`}
+                                            >
+                                                <p className="chat-message-role">
+                                                    {message.role === 'assistant' ? 'Assistant' : 'You'}
+                                                </p>
+                                                <p className="output-text chat-message-text">{message.text}</p>
+                                            </article>
+                                        ))}
+                                    </div>
+                                </div>
+                                <div className="desktop-chat-input-wrap">
+                                    <textarea
+                                        className="field chat-input"
+                                        value={chatInput}
+                                        onChange={(event) => setChatInput(event.target.value)}
+                                        rows={3}
+                                        disabled={isSendingChat}
+                                        placeholder="Ask for interview feedback, coaching tips, or follow-up questions"
+                                    />
+                                    <div className="desktop-chat-input-actions">
+                                        <button
+                                            type="button"
+                                            className="btn"
+                                            onClick={handleSendChatMessage}
+                                            disabled={isSendingChat}
+                                        >
+                                            {isSendingChat ? 'Sending...' : 'Send'}
+                                        </button>
+                                    </div>
+                                </div>
+                            </>
+                        )}
+                    </aside>
+                )}
+            </div>
 
             <footer className="app-footer">
                 <p>Version {APP_VERSION}</p>
@@ -5499,6 +5797,88 @@ function App() {
                                 />
                                 <span>Deepgram Debug</span>
                             </label>
+
+                            <div className="settings-section">
+                                <label className="label">LLM Chat Providers</label>
+                                <p className="muted">
+                                    Configure OpenRouter or NVIDIA NIM for the desktop chat rail.
+                                </p>
+                                <label className="debug-toggle">
+                                    <input
+                                        type="checkbox"
+                                        checked={persistLlmKeys}
+                                        onChange={(event) => setPersistLlmKeys(event.target.checked)}
+                                    />
+                                    <span>Persist LLM API keys in this browser</span>
+                                </label>
+
+                                <label className="label">OpenRouter API Key</label>
+                                <input
+                                    className="field"
+                                    type="password"
+                                    value={openrouterApiKeyInput}
+                                    onChange={(event) => setOpenrouterApiKeyInput(event.target.value)}
+                                    autoComplete="off"
+                                />
+
+                                <label className="label">OpenRouter Model</label>
+                                <input
+                                    className="field"
+                                    type="text"
+                                    value={openrouterModelInput}
+                                    onChange={(event) => setOpenrouterModelInput(event.target.value)}
+                                    placeholder="e.g. openai/gpt-oss-20b:free"
+                                />
+
+                                <label className="label">OpenRouter Base URL</label>
+                                <input
+                                    className="field"
+                                    type="text"
+                                    value={openrouterBaseUrlInput}
+                                    onChange={(event) => setOpenrouterBaseUrlInput(event.target.value)}
+                                />
+
+                                <label className="label">NVIDIA NIM API Key</label>
+                                <input
+                                    className="field"
+                                    type="password"
+                                    value={nimApiKeyInput}
+                                    onChange={(event) => setNimApiKeyInput(event.target.value)}
+                                    autoComplete="off"
+                                />
+
+                                <label className="label">NVIDIA NIM Model</label>
+                                <input
+                                    className="field"
+                                    type="text"
+                                    value={nimModelInput}
+                                    onChange={(event) => setNimModelInput(event.target.value)}
+                                />
+
+                                <label className="label">NVIDIA NIM Base URL</label>
+                                <input
+                                    className="field"
+                                    type="text"
+                                    value={nimBaseUrlInput}
+                                    onChange={(event) => setNimBaseUrlInput(event.target.value)}
+                                />
+
+                                <div className="actions wrap">
+                                    <button
+                                        type="button"
+                                        className="btn"
+                                        onClick={saveLlmSettings}
+                                    >
+                                        Save LLM settings
+                                    </button>
+                                </div>
+
+                                {llmSettingsError && (
+                                    <p className="error-text" aria-live="polite">
+                                        {llmSettingsError}
+                                    </p>
+                                )}
+                            </div>
 
                             <div className="settings-section">
                                 <label className="label">Camera Debug Overlay</label>
