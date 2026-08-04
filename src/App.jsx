@@ -73,6 +73,7 @@ const DEFAULT_DEEPGRAM_SPEAK_URL =
 
 const LEGACY_DEFAULT_INTERVIEWER_IMAGE_ID = 'default'
 const CUSTOM_INTERVIEWER_IMAGE_ID = 'custom-upload'
+const EASTER_EGG_INTERVIEWER_IMAGE_ID = 'interviewer2'
 const interviewerImageModules = import.meta.glob(
     './assets/interviewers/*.{png,jpg,jpeg,webp,avif,gif}',
     { eager: true, import: 'default' },
@@ -109,8 +110,13 @@ const BUILT_IN_INTERVIEWER_IMAGES = Object.entries(interviewerImageModules)
     }))
     .sort((a, b) => a.label.localeCompare(b.label))
 
+const DEFAULT_VISIBLE_INTERVIEWER_IMAGES = BUILT_IN_INTERVIEWER_IMAGES.filter(
+    (option) => option.id !== EASTER_EGG_INTERVIEWER_IMAGE_ID,
+)
+
 const DEFAULT_INTERVIEWER_IMAGE_ID =
-    BUILT_IN_INTERVIEWER_IMAGES.find((option) => option.id === 'interviewer')?.id ||
+    DEFAULT_VISIBLE_INTERVIEWER_IMAGES.find((option) => option.id === 'interviewer')?.id ||
+    DEFAULT_VISIBLE_INTERVIEWER_IMAGES[0]?.id ||
     BUILT_IN_INTERVIEWER_IMAGES[0]?.id ||
     LEGACY_DEFAULT_INTERVIEWER_IMAGE_ID
 
@@ -1042,10 +1048,14 @@ function App() {
     const [toast, setToast] = useState('')
     const [showKeyStatus, setShowKeyStatus] = useState(false)
     const [darkMode, setDarkMode] = useState(() => getSavedValue(STORAGE_THEME) === 'dark')
+    const [themeTogglePressCount, setThemeTogglePressCount] = useState(0)
     const [fallbackWithoutDeepgramKey, setFallbackWithoutDeepgramKey] = useState(
         () => getSavedValue(STORAGE_FALLBACK_WITHOUT_KEY) !== 'false',
     )
-    const [autoAddCompletedAnswersToSummary] = useState(true)
+    const [autoAddCompletedAnswersToSummary, setAutoAddCompletedAnswersToSummary] = useState(() => {
+        const saved = getSavedValue(STORAGE_AUTO_ADD_SUMMARY)
+        return saved ? saved === 'true' : true
+    })
     const [autoSaveMediaToFolder, setAutoSaveMediaToFolder] = useState(() => {
         const saved = getSavedValue(STORAGE_AUTO_SAVE_MEDIA_TO_FOLDER)
         return saved ? saved === 'true' : true
@@ -1079,7 +1089,7 @@ function App() {
         if (
             saved &&
             saved !== CUSTOM_INTERVIEWER_IMAGE_ID &&
-            !BUILT_IN_INTERVIEWER_IMAGES.some((option) => option.id === saved)
+            !DEFAULT_VISIBLE_INTERVIEWER_IMAGES.some((option) => option.id === saved)
         ) {
             return DEFAULT_INTERVIEWER_IMAGE_ID
         }
@@ -1260,6 +1270,13 @@ function App() {
         ? `Key saved (ends with ${savedKey.slice(-2).padStart(6, '*')})`
         : 'No key saved yet.'
     const hasCustomInterviewerImage = Boolean(customInterviewerImageDataUrl)
+    const isInterviewerEasterEggUnlocked = themeTogglePressCount >= 50
+    const selectableBuiltInInterviewerImages = useMemo(() => {
+        if (isInterviewerEasterEggUnlocked) {
+            return BUILT_IN_INTERVIEWER_IMAGES
+        }
+        return DEFAULT_VISIBLE_INTERVIEWER_IMAGES
+    }, [isInterviewerEasterEggUnlocked])
     const activeInterviewerImageSrc = useMemo(() => {
         if (interviewerImageId === CUSTOM_INTERVIEWER_IMAGE_ID && customInterviewerImageDataUrl) {
             return customInterviewerImageDataUrl
@@ -4284,6 +4301,17 @@ function App() {
             </button>
         ) : null
 
+    function handleThemeModeToggle() {
+        setDarkMode((prev) => !prev)
+        setThemeTogglePressCount((prev) => {
+            const next = prev + 1
+            if (next === 50) {
+                setInterviewerImageId(EASTER_EGG_INTERVIEWER_IMAGE_ID)
+            }
+            return next
+        })
+    }
+
     return (
         <div className="app-shell">
             <header className="topbar">
@@ -4293,7 +4321,7 @@ function App() {
                         <button
                             type="button"
                             className="btn ghost theme-toggle"
-                            onClick={() => setDarkMode((prev) => !prev)}
+                            onClick={handleThemeModeToggle}
                             aria-label={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
                             aria-pressed={darkMode}
                             title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
@@ -4707,8 +4735,8 @@ function App() {
                                         <input
                                             type="checkbox"
                                             checked={autoAddCompletedAnswersToSummary}
-                                            readOnly
-                                            disabled
+                                            onChange={(event) => setAutoAddCompletedAnswersToSummary(event.target.checked)}
+                                            disabled={isRecording || isTranscribing}
                                         />
                                         <span>Auto-Add</span>
                                     </label>
@@ -5181,8 +5209,8 @@ function App() {
                                                         {selectedPreviousAnswerFileSizes.text ? ` (${selectedPreviousAnswerFileSizes.text})` : ''}
                                                     </p>
                                                     {selectedPreviousAnswer.audioFileName &&
-                                                        selectedPreviousAnswer.videoFileName &&
-                                                        selectedPreviousAnswer.audioFileName === selectedPreviousAnswer.videoFileName ? (
+                                                    selectedPreviousAnswer.videoFileName &&
+                                                    selectedPreviousAnswer.audioFileName === selectedPreviousAnswer.videoFileName ? (
                                                         <p className="metric-label history-detail-meta">
                                                             Media file: {selectedPreviousAnswer.audioFileName}
                                                             {(selectedPreviousAnswerFileSizes.audio || selectedPreviousAnswerFileSizes.video)
@@ -5952,7 +5980,7 @@ function App() {
                                         value={interviewerImageId}
                                         onChange={(event) => setInterviewerImageId(event.target.value)}
                                     >
-                                        {BUILT_IN_INTERVIEWER_IMAGES.map((option) => (
+                                        {selectableBuiltInInterviewerImages.map((option) => (
                                             <option key={option.id} value={option.id}>
                                                 {option.label}
                                             </option>
