@@ -2,8 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
     FaceLandmarker,
     FilesetResolver,
-    HandLandmarker,
-    PoseLandmarker,
 } from '@mediapipe/tasks-vision'
 import { APP_VERSION } from './version'
 import {
@@ -12,6 +10,7 @@ import {
     validateSpeechFallbackConfig,
 } from './speech/providers'
 import defaultInterviewerImage from './assets/interviewers/interviewer.jpg'
+import meetingOverlayImage from './assets/meeting-overlay.png'
 import changelogMarkdown from '../CHANGELOG.md?raw'
 import './App.css'
 
@@ -20,6 +19,7 @@ const STORAGE_VALIDATED_AT = 'mia.deepgram.lastValidatedAt'
 const STORAGE_THEME = 'mia.theme'
 const STORAGE_INVERT_CAMERA = 'mia.invertCamera'
 const STORAGE_SHOW_INTERVIEWER = 'mia.showInterviewer'
+const STORAGE_SHOW_PIP = 'mia.showPiP'
 const STORAGE_INTERVIEWER_IMAGE_ID = 'mia.interviewer.imageId'
 const STORAGE_INTERVIEWER_CUSTOM_IMAGE = 'mia.interviewer.customImageDataUrl'
 const STORAGE_SHOW_SELF_VIEW = 'mia.showSelfView'
@@ -46,10 +46,6 @@ const DEFAULT_WASM_URL =
     'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
 const DEFAULT_FACE_MODEL_URL =
     'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task'
-const DEFAULT_HAND_MODEL_URL =
-    'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task'
-const DEFAULT_POSE_MODEL_URL =
-    'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task'
 const DEFAULT_DEEPGRAM_LISTEN_URL =
     'https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&filler_words=true'
 const DEFAULT_DEEPGRAM_SPEAK_URL =
@@ -107,14 +103,31 @@ const DEFAULT_INTERVIEWER_IMAGE_ID =
 const PROLONGED_CLOSURE_MS = 800
 const EYE_CLOSED_RATIO = 0.18
 const EYE_REOPEN_RATIO = 0.205
-const HAND_FACE_TOUCH_RATIO = 0.12
-const SHOULDER_SHIFT_ALERT_PCT = 30
-const SHOULDER_TILT_ALERT_DEG = 12
-const SHOULDER_ROTATION_ALERT_DEG = 18
 const GAZE_CENTER_DEVIATION_THRESHOLD_PCT = 25
 const GAZE_DIRECTION_EXIT_THRESHOLD_PCT = 24
 const GAZE_DIRECTION_RETURN_THRESHOLD_PCT = 20
 const GAZE_DIRECTION_DOMINANCE_PCT = 4
+const ANALYSIS_DETECT_INTERVAL_MS = 80
+const CAMERA_DISPLAY_MODE_SELF_ONLY = 'self-only'
+const CAMERA_DISPLAY_MODE_INTERVIEWER_PLUS_SELF_PIP = 'interviewer-plus-self-pip'
+const CAMERA_DISPLAY_MODE_INTERVIEWER_ONLY = 'interviewer-only'
+const EMPTY_GAZE_DIRECTION_COUNTS = {
+    left: 0,
+    right: 0,
+    up: 0,
+    down: 0,
+}
+
+function createDefaultCameraUiMetrics() {
+    return {
+        facesDetected: 0,
+        eyeContactScore: null,
+        gazeDeviationPct: null,
+        gazeDeviationCount: 0,
+        gazeDirectionCounts: { ...EMPTY_GAZE_DIRECTION_COUNTS },
+        prolongedClosureCount: 0,
+    }
+}
 
 function parseRecentChangelogReleases(markdown, limit = 10) {
     const lines = markdown.split(/\r?\n/)
@@ -361,21 +374,6 @@ function toRoundedInt(value) {
     return Number.isFinite(value) ? Math.round(value) : 0
 }
 
-function formatSignedDegrees(value) {
-    if (!Number.isFinite(value)) return 'n/a'
-    return `${value > 0 ? '+' : ''}${toFixed1(value)}°`
-}
-
-function describeTorsoRotation(value, alertThresholdDeg) {
-    if (!Number.isFinite(value)) return 'n/a'
-
-    const abs = Math.abs(value)
-    if (abs < 1) return 'centered (0°)'
-
-    const direction = value > 0 ? 'right (+)' : 'left (-)'
-    return abs >= alertThresholdDeg ? `${direction}, high rotation` : direction
-}
-
 function countWords(text) {
     const words = text.trim().match(/\b[\p{L}\p{N}'][\p{L}\p{N}'-]*/gu)
     return words ? words.length : 0
@@ -410,15 +408,6 @@ function buildOutputText({ capturedAt, question, answer, metrics }) {
         `- Prolonged Eye-Closure Duration: ${toFixed1(metrics.prolongedClosureSec)}s (${toFixed1(metrics.prolongedClosurePct)}%)`,
         `- Prolonged Eye-Closure Events: ${metrics.prolongedClosureEvents}`,
         `- Prolonged Eye-Closure Timestamps: ${formatTimestampList(metrics.prolongedClosureTimestampsSec)}`,
-        `- Hand-to-Face Touch Frequency: ${toFixed1(metrics.handFaceTouchPerMin)}/min`,
-        `- Hand-to-Face Touch Duration: ${toFixed1(metrics.handFaceTouchDurationSec)}s`,
-        `- Hand-to-Face Regions: ${metrics.handFaceTouchRegions}`,
-        `- Shoulder Side Shift Peak: ${toFixed1(metrics.shoulderShiftPeakPct)}%`,
-        `- Shoulder Tilt Peak: ${toFixed1(metrics.shoulderTiltPeakDeg)}°`,
-        `- Shoulder Rotation Peak: ${toFixed1(metrics.shoulderRotationPeakDeg)}°`,
-        `- Shoulder Rotation Last Signed: ${formatSignedDegrees(metrics.shoulderRotationSignedDeg)}`,
-        `- Shoulder Rotation Direction: ${metrics.shoulderRotationDirection}`,
-        `- Shoulder Rotation Status: ${metrics.shoulderRotationStatus}`,
     ].join('\n')
 }
 
@@ -518,12 +507,6 @@ function distance2d(a, b) {
 
 function clamp01(value) {
     return Math.max(0, Math.min(1, value))
-}
-
-function normalizedAngleDiffDegrees(a, b) {
-    let diff = Math.abs(a - b) % 360
-    if (diff > 180) diff = 360 - diff
-    return diff
 }
 
 function computeEyeContactScore(faceLandmarks) {
@@ -670,35 +653,6 @@ function computeEyeClosureRatio(faceLandmarks) {
     if (leftHorizontal <= 0 || rightHorizontal <= 0) return null
 
     return (leftVertical / leftHorizontal + rightVertical / rightHorizontal) / 2
-}
-
-function computeHandFaceTouch(faceLandmarks, handLandmarks) {
-    if (!faceLandmarks?.length || !handLandmarks?.length) return false
-
-    const faceLeft = faceLandmarks[234]
-    const faceRight = faceLandmarks[454]
-    if (!faceLeft || !faceRight) return false
-
-    const faceWidth = distance2d(faceLeft, faceRight)
-    if (faceWidth <= 0) return false
-
-    const watchPoints = [1, 4, 152, 10, 234, 454]
-        .map((idx) => faceLandmarks[idx])
-        .filter(Boolean)
-
-    if (!watchPoints.length) return false
-
-    let minDistance = Infinity
-    for (const handSet of handLandmarks) {
-        for (const handPoint of handSet) {
-            for (const facePoint of watchPoints) {
-                const current = distance2d(handPoint, facePoint)
-                if (current < minDistance) minDistance = current
-            }
-        }
-    }
-
-    return minDistance / faceWidth < HAND_FACE_TOUCH_RATIO
 }
 
 function downloadBlob(blob, fileName) {
@@ -963,9 +917,8 @@ function App() {
     const animationFrameRef = useRef(0)
     const lastVideoTimeRef = useRef(-1)
     const faceLandmarkerRef = useRef(null)
-    const handLandmarkerRef = useRef(null)
-    const poseLandmarkerRef = useRef(null)
     const uiUpdateAtRef = useRef(0)
+    const lastAnalysisAtRef = useRef(0)
     const recorderRef = useRef(null)
     const chunksRef = useRef([])
     const videoRecorderRef = useRef(null)
@@ -978,11 +931,6 @@ function App() {
     const recordingModeRef = useRef('audio')
     const recordingStartedAtPerfRef = useRef(0)
     const recordingLastFrameAtPerfRef = useRef(0)
-    const shoulderBaselineRef = useRef({
-        centerX: null,
-        tiltDeg: null,
-        rotationDeg: null,
-    })
     const gazeDeviationCountRef = useRef(0)
     const gazeDirectionCountsRef = useRef({
         left: 0,
@@ -995,22 +943,14 @@ function App() {
     const lastGazeCenteredRef = useRef(null)
     const prolongedClosureTotalMsRef = useRef(0)
     const prolongedClosureTimestampsSecRef = useRef([])
-    const touchCountDuringRecordingRef = useRef(0)
-    const touchDurationMsRef = useRef(0)
-    const touchStartedAtMsRef = useRef(0)
-    const shoulderPeakDriftPctRef = useRef(0)
-    const shoulderPeakTiltDegRef = useRef(0)
-    const shoulderPeakRotationDegRef = useRef(0)
+    const deepgramKeyInputRef = useRef(null)
 
     const blinkTrackerRef = useRef({
         closed: false,
         closedAt: 0,
         prolongedCounted: false,
     })
-
-    const touchTrackerRef = useRef({
-        touching: false,
-    })
+    const cameraOverlayControlsRef = useRef(null)
 
     const [settingsOpen, setSettingsOpen] = useState(false)
     const [confirmRemoveOpen, setConfirmRemoveOpen] = useState(false)
@@ -1027,6 +967,7 @@ function App() {
     const [banner, setBanner] = useState('')
     const [toast, setToast] = useState('')
     const [showKeyStatus, setShowKeyStatus] = useState(false)
+    const [isDeepgramKeyInvalid, setIsDeepgramKeyInvalid] = useState(false)
     const [darkMode, setDarkMode] = useState(() => getSavedValue(STORAGE_THEME) === 'dark')
     const [themeTogglePressCount, setThemeTogglePressCount] = useState(0)
     const [fallbackWithoutDeepgramKey, setFallbackWithoutDeepgramKey] = useState(
@@ -1055,9 +996,14 @@ function App() {
     const [invertCamera, setInvertCamera] = useState(
         () => getSavedValue(STORAGE_INVERT_CAMERA) === 'true',
     )
-    const [showInterviewer, setShowInterviewer] = useState(
-        () => getSavedValue(STORAGE_SHOW_INTERVIEWER) !== 'false',
+    const [showPiP, setShowPiP] = useState(
+        () => getSavedValue(STORAGE_SHOW_PIP) !== 'false',
     )
+    const [showInterviewer, setShowInterviewer] = useState(() => {
+        const savedShowPiP = getSavedValue(STORAGE_SHOW_PIP) !== 'false'
+        const savedShowInterviewer = getSavedValue(STORAGE_SHOW_INTERVIEWER) !== 'false'
+        return savedShowPiP ? savedShowInterviewer : false
+    })
     const [customInterviewerImageDataUrl, setCustomInterviewerImageDataUrl] = useState(
         () => getSavedValue(STORAGE_INTERVIEWER_CUSTOM_IMAGE),
     )
@@ -1098,6 +1044,7 @@ function App() {
     const [summaryModalOpen, setSummaryModalOpen] = useState(false)
     const [cvJdModalOpen, setCvJdModalOpen] = useState(false)
     const [changelogModalOpen, setChangelogModalOpen] = useState(false)
+    const [isCameraOverlayMenuOpen, setIsCameraOverlayMenuOpen] = useState(false)
     const [questionsBulkInput, setQuestionsBulkInput] = useState(() =>
         getImportedQuestionsFromCurrentUrl().join('\n'),
     )
@@ -1113,23 +1060,7 @@ function App() {
         getSavedValue(STORAGE_COMPANY_NAME),
     )
 
-    const [facesDetected, setFacesDetected] = useState(0)
-    const [handsDetected, setHandsDetected] = useState(0)
-    const [eyeContactScore, setEyeContactScore] = useState(null)
-    const [gazeDeviationPct, setGazeDeviationPct] = useState(null)
-    const [gazeDeviationCount, setGazeDeviationCount] = useState(0)
-    const [gazeDirectionCounts, setGazeDirectionCounts] = useState({
-        left: 0,
-        right: 0,
-        up: 0,
-        down: 0,
-    })
-    const [prolongedClosureCount, setProlongedClosureCount] = useState(0)
-    const [touchCount, setTouchCount] = useState(0)
-    const [isTouchingFace, setIsTouchingFace] = useState(false)
-    const [shoulderDriftPct, setShoulderDriftPct] = useState(null)
-    const [shoulderTiltDeltaDeg, setShoulderTiltDeltaDeg] = useState(null)
-    const [shoulderRotationDeg, setShoulderRotationDeg] = useState(null)
+    const [cameraUiMetrics, setCameraUiMetrics] = useState(() => createDefaultCameraUiMetrics())
 
     const [isRecording, setIsRecording] = useState(false)
     const [isTranscribing, setIsTranscribing] = useState(false)
@@ -1160,6 +1091,15 @@ function App() {
     const [selectedSummaryId, setSelectedSummaryId] = useState(
         () => getSavedValue(STORAGE_SELECTED_SUMMARY_ID),
     )
+    const {
+        facesDetected,
+        eyeContactScore,
+        gazeDeviationPct,
+        gazeDeviationCount,
+        gazeDirectionCounts,
+        prolongedClosureCount,
+    } = cameraUiMetrics
+
     const [previousAnswers, setPreviousAnswers] = useState([])
     const [isLoadingPreviousAnswers, setIsLoadingPreviousAnswers] = useState(false)
     const [previousAnswersError, setPreviousAnswersError] = useState('')
@@ -1323,6 +1263,10 @@ function App() {
     useEffect(() => {
         setSavedValue(STORAGE_INVERT_CAMERA, invertCamera ? 'true' : 'false')
     }, [invertCamera])
+
+    useEffect(() => {
+        setSavedValue(STORAGE_SHOW_PIP, showPiP ? 'true' : 'false')
+    }, [showPiP])
 
     useEffect(() => {
         setSavedValue(STORAGE_SHOW_INTERVIEWER, showInterviewer ? 'true' : 'false')
@@ -2147,8 +2091,6 @@ function App() {
             videoRecorderRef.current = null
             videoChunksRef.current = []
             faceLandmarkerRef.current?.close()
-            handLandmarkerRef.current?.close()
-            poseLandmarkerRef.current?.close()
         }
     }, [])
 
@@ -2207,6 +2149,7 @@ function App() {
             window.cancelAnimationFrame(animationFrameRef.current)
             animationFrameRef.current = 0
         }
+        lastAnalysisAtRef.current = 0
     }
 
     function stopCameraStream() {
@@ -2237,11 +2180,7 @@ function App() {
     }
 
     async function ensureLandmarkers() {
-        if (
-            faceLandmarkerRef.current &&
-            handLandmarkerRef.current &&
-            poseLandmarkerRef.current
-        ) {
+        if (faceLandmarkerRef.current) {
             return
         }
 
@@ -2262,33 +2201,6 @@ function App() {
                 numFaces: 1,
             },
         )
-
-        handLandmarkerRef.current = await HandLandmarker.createFromOptions(
-            wasmFileset,
-            {
-                baseOptions: {
-                    modelAssetPath:
-                        import.meta.env.VITE_HAND_LANDMARKER_MODEL_URL ||
-                        DEFAULT_HAND_MODEL_URL,
-                },
-                runningMode: 'VIDEO',
-                numHands: 2,
-            },
-        )
-
-        poseLandmarkerRef.current = await PoseLandmarker.createFromOptions(
-            wasmFileset,
-            {
-                baseOptions: {
-                    modelAssetPath:
-                        import.meta.env.VITE_POSE_LANDMARKER_MODEL_URL ||
-                        DEFAULT_POSE_MODEL_URL,
-                },
-                runningMode: 'VIDEO',
-                numPoses: 1,
-            },
-        )
-
     }
 
     function resetBehaviorCounters() {
@@ -2297,31 +2209,11 @@ function App() {
             closedAt: 0,
             prolongedCounted: false,
         }
-        touchTrackerRef.current = { touching: false }
 
-        setProlongedClosureCount(0)
-        setTouchCount(0)
-        setIsTouchingFace(false)
-        setShoulderDriftPct(null)
-        setShoulderTiltDeltaDeg(null)
-        setShoulderRotationDeg(null)
-        shoulderBaselineRef.current = {
-            centerX: null,
-            tiltDeg: null,
-            rotationDeg: null,
-        }
-    }
-
-    function recalibrateTorsoBaseline() {
-        shoulderBaselineRef.current = {
-            centerX: null,
-            tiltDeg: null,
-            rotationDeg: null,
-        }
-        setShoulderDriftPct(null)
-        setShoulderTiltDeltaDeg(null)
-        setShoulderRotationDeg(null)
-        setToast('Torso baseline recalibrating...')
+        setCameraUiMetrics((prev) => ({
+            ...prev,
+            prolongedClosureCount: 0,
+        }))
     }
 
     function resetInterviewTracking() {
@@ -2337,38 +2229,34 @@ function App() {
         gazeRegionRef.current = 'center'
         gazeCenteredTimeMsRef.current = 0
         lastGazeCenteredRef.current = null
-        setGazeDeviationCount(0)
-        setGazeDirectionCounts({ left: 0, right: 0, up: 0, down: 0 })
+        setCameraUiMetrics((prev) => ({
+            ...prev,
+            gazeDeviationCount: 0,
+            gazeDirectionCounts: { ...EMPTY_GAZE_DIRECTION_COUNTS },
+        }))
         prolongedClosureTotalMsRef.current = 0
         prolongedClosureTimestampsSecRef.current = []
-        touchCountDuringRecordingRef.current = 0
-        touchDurationMsRef.current = 0
-        touchStartedAtMsRef.current = 0
-        shoulderPeakDriftPctRef.current = 0
-        shoulderPeakTiltDegRef.current = 0
-        shoulderPeakRotationDegRef.current = 0
     }
 
     function resetStatisticsAndRecalibrate() {
         resetInterviewTracking()
         resetBehaviorCounters()
-        setFacesDetected(0)
-        setHandsDetected(0)
-        setEyeContactScore(null)
-        setGazeDeviationPct(null)
-        setGazeDeviationCount(0)
-        setGazeDirectionCounts({ left: 0, right: 0, up: 0, down: 0 })
-        recalibrateTorsoBaseline()
-        setToast('Statistics reset and torso baseline recalibrating...')
+        setCameraUiMetrics((prev) => ({
+            ...prev,
+            facesDetected: 0,
+            eyeContactScore: null,
+            gazeDeviationPct: null,
+            gazeDeviationCount: 0,
+            gazeDirectionCounts: { ...EMPTY_GAZE_DIRECTION_COUNTS },
+        }))
+        setToast('Statistics reset.')
     }
 
     const runAnalysisLoop = useCallback(() => {
         const video = videoRef.current
         const faceLandmarker = faceLandmarkerRef.current
-        const handLandmarker = handLandmarkerRef.current
-        const poseLandmarker = poseLandmarkerRef.current
 
-        if (!video || !faceLandmarker || !handLandmarker || !poseLandmarker) return
+        if (!video || !faceLandmarker) return
 
         const tick = () => {
             if (!videoRef.current) return
@@ -2397,40 +2285,27 @@ function App() {
                 frameVideo.readyState >= 2 &&
                 frameVideo.currentTime !== lastVideoTimeRef.current
             ) {
-                lastVideoTimeRef.current = frameVideo.currentTime
                 const nowMs = performance.now()
+                if (nowMs - lastAnalysisAtRef.current < ANALYSIS_DETECT_INTERVAL_MS) {
+                    animationFrameRef.current = window.requestAnimationFrame(tick)
+                    return
+                }
+
+                lastAnalysisAtRef.current = nowMs
+                lastVideoTimeRef.current = frameVideo.currentTime
 
                 const faceResult = faceLandmarker.detectForVideo(frameVideo, nowMs)
-                const handResult = handLandmarker.detectForVideo(frameVideo, nowMs)
-                const poseResult = poseLandmarker.detectForVideo(frameVideo, nowMs)
 
                 if (ctx) {
                     ctx.clearRect(0, 0, width, height)
                 }
 
                 const faceLandmarks = faceResult?.faceLandmarks || []
-                const handLandmarks = handResult?.landmarks || []
-                const poseLandmarks = poseResult?.landmarks || []
 
                 if (debugEnabledRef.current && ctx) {
                     for (const landmarkSet of faceLandmarks) {
                         drawLandmarkSet(ctx, landmarkSet, width, height, '#22a7a6')
                         drawFaceBoundingBox(ctx, landmarkSet, width, height, '#b9f3f2')
-                    }
-                    for (const landmarkSet of handLandmarks) {
-                        drawLandmarkSet(ctx, landmarkSet, width, height, '#e77e23', 2.8)
-                    }
-                    for (const landmarkSet of poseLandmarks) {
-                        const leftShoulder = landmarkSet[11]
-                        const rightShoulder = landmarkSet[12]
-                        drawLandmarkSet(
-                            ctx,
-                            [leftShoulder, rightShoulder].filter(Boolean),
-                            width,
-                            height,
-                            '#f5dc6d',
-                            4.4,
-                        )
                     }
                 }
 
@@ -2516,124 +2391,24 @@ function App() {
                         const duration = nowMs - blinkTracker.closedAt
                         if (duration >= PROLONGED_CLOSURE_MS) {
                             blinkTracker.prolongedCounted = true
-                            setProlongedClosureCount((prev) => prev + 1)
-                        }
-                    }
-                }
-
-                const touching = computeHandFaceTouch(mainFace, handLandmarks)
-                const touchTracker = touchTrackerRef.current
-                if (touching && !touchTracker.touching) {
-                    setTouchCount((prev) => prev + 1)
-                    if (recordingActiveRef.current) {
-                        touchCountDuringRecordingRef.current += 1
-                        touchStartedAtMsRef.current = nowMs
-                    }
-                }
-                if (!touching && touchTracker.touching && recordingActiveRef.current) {
-                    if (touchStartedAtMsRef.current > 0) {
-                        touchDurationMsRef.current += nowMs - touchStartedAtMsRef.current
-                        touchStartedAtMsRef.current = 0
-                    }
-                }
-                touchTracker.touching = touching
-
-                const mainPose = poseLandmarks[0]
-                let frameShoulderDriftPct = null
-                let frameShoulderTiltDeltaDeg = null
-                let frameShoulderRotationDeg = null
-                if (mainPose) {
-                    const leftShoulder = mainPose[11]
-                    const rightShoulder = mainPose[12]
-                    if (leftShoulder && rightShoulder) {
-                        const shoulderWidth = Math.abs(rightShoulder.x - leftShoulder.x)
-                        const centerX = (leftShoulder.x + rightShoulder.x) / 2
-                        const tiltDeg =
-                            (Math.atan2(
-                                rightShoulder.y - leftShoulder.y,
-                                rightShoulder.x - leftShoulder.x,
-                            ) *
-                                180) /
-                            Math.PI
-
-                        if (shoulderBaselineRef.current.centerX == null) {
-                            shoulderBaselineRef.current.centerX = centerX
-                        }
-                        if (shoulderBaselineRef.current.tiltDeg == null) {
-                            shoulderBaselineRef.current.tiltDeg = tiltDeg
-                        }
-
-                        if (shoulderWidth > 0) {
-                            frameShoulderDriftPct = Math.round(
-                                (Math.abs(
-                                    centerX - shoulderBaselineRef.current.centerX,
-                                ) /
-                                    shoulderWidth) *
-                                100,
-                            )
-                        }
-
-                        frameShoulderTiltDeltaDeg = Math.round(
-                            normalizedAngleDiffDegrees(
-                                tiltDeg,
-                                shoulderBaselineRef.current.tiltDeg,
-                            ),
-                        )
-
-                        // Signed yaw proxy based on shoulder depth difference.
-                        const shoulderDepthDelta =
-                            (rightShoulder.z ?? 0) - (leftShoulder.z ?? 0)
-                        if (shoulderWidth > 0) {
-                            const rawShoulderRotationDeg =
-                                (Math.atan2(shoulderDepthDelta, shoulderWidth) * 180) /
-                                Math.PI
-
-                            if (shoulderBaselineRef.current.rotationDeg == null) {
-                                shoulderBaselineRef.current.rotationDeg =
-                                    rawShoulderRotationDeg
-                            }
-
-                            frameShoulderRotationDeg = Math.round(
-                                rawShoulderRotationDeg -
-                                shoulderBaselineRef.current.rotationDeg,
-                            )
-                        }
-
-                        if (recordingActiveRef.current) {
-                            if (frameShoulderDriftPct != null) {
-                                shoulderPeakDriftPctRef.current = Math.max(
-                                    shoulderPeakDriftPctRef.current,
-                                    frameShoulderDriftPct,
-                                )
-                            }
-                            if (frameShoulderTiltDeltaDeg != null) {
-                                shoulderPeakTiltDegRef.current = Math.max(
-                                    shoulderPeakTiltDegRef.current,
-                                    frameShoulderTiltDeltaDeg,
-                                )
-                            }
-                            if (frameShoulderRotationDeg != null) {
-                                shoulderPeakRotationDegRef.current = Math.max(
-                                    shoulderPeakRotationDegRef.current,
-                                    Math.abs(frameShoulderRotationDeg),
-                                )
-                            }
+                            setCameraUiMetrics((prev) => ({
+                                ...prev,
+                                prolongedClosureCount: prev.prolongedClosureCount + 1,
+                            }))
                         }
                     }
                 }
 
                 if (nowMs - uiUpdateAtRef.current > 150) {
                     uiUpdateAtRef.current = nowMs
-                    setFacesDetected(faceLandmarks.length)
-                    setHandsDetected(handLandmarks.length)
-                    setEyeContactScore(eyeContact)
-                    setGazeDeviationPct(gazeDeviation)
-                    setGazeDeviationCount(gazeDeviationCountRef.current)
-                    setGazeDirectionCounts({ ...gazeDirectionCountsRef.current })
-                    setIsTouchingFace(touching)
-                    setShoulderDriftPct(frameShoulderDriftPct)
-                    setShoulderTiltDeltaDeg(frameShoulderTiltDeltaDeg)
-                    setShoulderRotationDeg(frameShoulderRotationDeg)
+                    setCameraUiMetrics((prev) => ({
+                        ...prev,
+                        facesDetected: faceLandmarks.length,
+                        eyeContactScore: eyeContact,
+                        gazeDeviationPct: gazeDeviation,
+                        gazeDeviationCount: gazeDeviationCountRef.current,
+                        gazeDirectionCounts: { ...gazeDirectionCountsRef.current },
+                    }))
                 }
             }
 
@@ -2690,10 +2465,12 @@ function App() {
         portraitVideoRef.current = false
         setIsPortraitVideo(false)
         setCameraStatus('idle')
-        setFacesDetected(0)
-        setHandsDetected(0)
-        setEyeContactScore(null)
-        setGazeDeviationPct(null)
+        setCameraUiMetrics((prev) => ({
+            ...prev,
+            facesDetected: 0,
+            eyeContactScore: null,
+            gazeDeviationPct: null,
+        }))
         resetBehaviorCounters()
 
         const canvas = overlayRef.current
@@ -2731,6 +2508,14 @@ function App() {
         setSettingsOpen(true)
         setKeyInput(savedKey)
         setFieldError('')
+    }
+
+    function openSettingsAndFocusDeepgramInput() {
+        openSettings()
+        window.requestAnimationFrame(() => {
+            deepgramKeyInputRef.current?.focus()
+            deepgramKeyInputRef.current?.select()
+        })
     }
 
     function closeSettings() {
@@ -2784,6 +2569,9 @@ function App() {
                 'Could not validate key. Check the key and try again.',
             )
             setToast('Could not validate key. Check the key and try again.')
+            if (savedKey && trimmedKey === savedKey) {
+                setIsDeepgramKeyInvalid(true)
+            }
             return
         }
 
@@ -2792,6 +2580,7 @@ function App() {
         setSavedKey(trimmedKey)
         setShowKeyStatus(true)
         setLastValidatedAt(nowIso)
+        setIsDeepgramKeyInvalid(false)
         setSavedValue(STORAGE_KEY, trimmedKey)
         setSavedValue(STORAGE_VALIDATED_AT, nowIso)
 
@@ -2808,6 +2597,7 @@ function App() {
         setSavedKey('')
         setShowKeyStatus(false)
         setLastValidatedAt('')
+        setIsDeepgramKeyInvalid(false)
         setKeyInput('')
         setConfirmRemoveOpen(false)
         setTranscript('')
@@ -2830,19 +2620,10 @@ function App() {
             question,
             metrics: {
                 facesDetected,
-                handsDetected,
                 eyeContactPercent:
                     eyeContactScore == null ? null : Math.round(eyeContactScore * 100),
                 gazeDeviationPercent: gazeDeviationPct,
                 prolongedEyeClosureCount: prolongedClosureCount,
-                handToFaceTouchCount: touchCount,
-                isTouchingFace,
-                shoulderDriftPercent: shoulderDriftPct,
-                shoulderTiltDeltaDegrees: shoulderTiltDeltaDeg,
-                shoulderRotationDegrees: shoulderRotationDeg,
-                shoulderShiftStatus,
-                shoulderTiltStatus,
-                shoulderRotationStatus,
             },
             transcript: reportTranscript,
         }
@@ -3748,7 +3529,6 @@ function App() {
             setLatestInterviewMetrics(null)
             sessionStartedAtRef.current = new Date().toISOString()
             resetInterviewTracking()
-            recalibrateTorsoBaseline()
 
             const ttsQuestion = importedQuestion.trim() || questionInput.trim()
             await speakQuestionIfEnabled(ttsQuestion)
@@ -3928,27 +3708,6 @@ function App() {
             const wpm = Math.round(wpmRaw)
             const gazeCenterPct = Math.round(gazeCenterPctRaw)
 
-            if (touchStartedAtMsRef.current > 0) {
-                touchDurationMsRef.current +=
-                    performance.now() - touchStartedAtMsRef.current
-                touchStartedAtMsRef.current = 0
-            }
-
-            const handFaceTouchDurationSec = touchDurationMsRef.current / 1000
-            const handFaceTouchPerMin =
-                answerLengthSec > 0
-                    ? touchCountDuringRecordingRef.current / (answerLengthSec / 60)
-                    : 0
-
-            const shoulderRotationStatusFromPeak =
-                shoulderPeakRotationDegRef.current >= SHOULDER_ROTATION_ALERT_DEG
-                    ? 'rotating too much'
-                    : 'facing forward'
-            const shoulderRotationDirection = describeTorsoRotation(
-                shoulderRotationDeg,
-                SHOULDER_ROTATION_ALERT_DEG,
-            )
-
             const capturedAtIso = new Date().toISOString()
             const trimmedQuestion = questionInput.trim()
             const interviewMetrics = {
@@ -3965,15 +3724,6 @@ function App() {
                     prolongedClosureTimestampsSecRef.current.length,
                 prolongedClosureTimestampsSec:
                     prolongedClosureTimestampsSecRef.current,
-                handFaceTouchPerMin,
-                handFaceTouchDurationSec,
-                handFaceTouchRegions: 'none',
-                shoulderShiftPeakPct: shoulderPeakDriftPctRef.current,
-                shoulderTiltPeakDeg: shoulderPeakTiltDegRef.current,
-                shoulderRotationPeakDeg: shoulderPeakRotationDegRef.current,
-                shoulderRotationSignedDeg: shoulderRotationDeg,
-                shoulderRotationDirection,
-                shoulderRotationStatus: shoulderRotationStatusFromPeak,
             }
 
             const outputBlock = buildOutputText({
@@ -4051,6 +3801,13 @@ function App() {
         } catch (error) {
             if (error?.speechMeta) {
                 setTranscriptionProviderMeta(error.speechMeta)
+                if (
+                    hasKey &&
+                    (error.speechMeta.fallbackReason === 'auth-failure' ||
+                        error.speechMeta.fallbackReason === 'key-validation')
+                ) {
+                    setIsDeepgramKeyInvalid(true)
+                }
             }
             setTranscript('')
             setLatestInterviewMetrics(null)
@@ -4067,22 +3824,6 @@ function App() {
         }
     }
 
-    const shoulderShiftStatus =
-        shoulderDriftPct == null
-            ? 'n/a'
-            : shoulderDriftPct >= SHOULDER_SHIFT_ALERT_PCT
-                ? 'too much movement'
-                : 'steady'
-    const shoulderTiltStatus =
-        shoulderTiltDeltaDeg == null
-            ? 'n/a'
-            : shoulderTiltDeltaDeg >= SHOULDER_TILT_ALERT_DEG
-                ? 'tilting too much'
-                : 'level'
-    const shoulderRotationStatus =
-        shoulderRotationDeg == null
-            ? 'n/a'
-            : describeTorsoRotation(shoulderRotationDeg, SHOULDER_ROTATION_ALERT_DEG)
     const transcriptDisplayText =
         transcript || 'No transcript yet. Start recording to capture your answer transcript.'
     const transcriptionProviderStatus = describeSpeechMeta(
@@ -4093,6 +3834,16 @@ function App() {
         'Latest question TTS provider',
         questionTtsProviderMeta,
     )
+    const deepgramKeyWarningText = !hasKey
+        ? 'Deepgram Key Missing'
+        : isDeepgramKeyInvalid
+            ? 'Deepgram Key Invalid'
+            : ''
+    const cameraDisplayMode = showInterviewer
+        ? showSelfView
+            ? CAMERA_DISPLAY_MODE_INTERVIEWER_PLUS_SELF_PIP
+            : CAMERA_DISPLAY_MODE_INTERVIEWER_ONLY
+        : CAMERA_DISPLAY_MODE_SELF_ONLY
     const cameraActionButton =
         !hasCameraAccess && cameraPermissionState !== 'granted' ? (
             <button
@@ -4116,11 +3867,66 @@ function App() {
         })
     }
 
+    function handleCameraOverlayToggle() {
+        setIsCameraOverlayMenuOpen(false)
+
+        if (enableCamera) {
+            setEnableCamera(false)
+            stopCamera()
+            return
+        }
+
+        setEnableCamera(true)
+        void startCamera()
+    }
+
+    function applyCameraDisplayMode(nextMode) {
+        if (nextMode === CAMERA_DISPLAY_MODE_SELF_ONLY) {
+            setShowSelfView(true)
+            setShowInterviewer(false)
+            setShowPiP(false)
+            return
+        }
+
+        if (nextMode === CAMERA_DISPLAY_MODE_INTERVIEWER_PLUS_SELF_PIP) {
+            setShowSelfView(true)
+            setShowInterviewer(true)
+            setShowPiP(true)
+            return
+        }
+
+        if (nextMode === CAMERA_DISPLAY_MODE_INTERVIEWER_ONLY) {
+            setShowSelfView(false)
+            setShowInterviewer(true)
+            setShowPiP(true)
+        }
+    }
+
+    function handleToggleCameraOverlayMenu() {
+        setIsCameraOverlayMenuOpen((prev) => !prev)
+    }
+
+    useEffect(() => {
+        if (!isCameraOverlayMenuOpen) return undefined
+
+        function onPointerDown(event) {
+            if (!cameraOverlayControlsRef.current) return
+            if (cameraOverlayControlsRef.current.contains(event.target)) return
+            setIsCameraOverlayMenuOpen(false)
+        }
+
+        window.addEventListener('pointerdown', onPointerDown)
+        return () => window.removeEventListener('pointerdown', onPointerDown)
+    }, [isCameraOverlayMenuOpen])
+
     return (
         <div className="app-shell">
             <header className="topbar">
                 <div className="topbar-inner">
-                    <h1>Mock Interviewer</h1>
+                    <div className="topbar-title-row">
+                        <h1>Mock Interviewer</h1>
+                        <span className="topbar-version-label">v{APP_VERSION}</span>
+                    </div>
                     <div className="topbar-actions">
                         <button
                             type="button"
@@ -4276,8 +4082,15 @@ function App() {
                             />
                         )}
 
+                        <img
+                            src={meetingOverlayImage}
+                            className="interviewer-image meeting-overlay-image"
+                            alt="Meeting overlay"
+                            draggable={false}
+                        />
+
                         {showSelfView ? (
-                            <div className={`self-view-frame${showInterviewer ? ' pip' : ' full'}${isPortraitVideo ? ' portrait' : ''}`}>
+                            <div className={`self-view-frame${showPiP ? ' pip' : ' full'}${isPortraitVideo ? ' portrait' : ''}`}>
                                 <video
                                     ref={videoRef}
                                     className="camera-video"
@@ -4298,17 +4111,87 @@ function App() {
                                     </div>
                                 )}
                             </div>
-                        ) : (
-                            !showInterviewer && cameraStatus !== 'ready' && (
-                                <div className="camera-empty">
-                                    <p>
-                                        {cameraStatus === 'loading'
-                                            ? 'Starting camera...'
-                                            : 'Camera disabled'}
-                                    </p>
+                        ) : null}
+
+                        <div className="camera-toggle-overlay-wrap" ref={cameraOverlayControlsRef}>
+                            <button
+                                type="button"
+                                className={`camera-toggle-overlay-btn${enableCamera ? '' : ' is-disabled'}`}
+                                onClick={handleCameraOverlayToggle}
+                                aria-label={enableCamera ? 'Disable camera' : 'Enable camera'}
+                                title={enableCamera ? 'Disable camera' : 'Enable camera'}
+                            >
+                                <span className="material-symbols-outlined" aria-hidden="true">
+                                    {enableCamera ? 'videocam' : 'videocam_off'}
+                                </span>
+                                <span className="camera-toggle-overlay-label">Video</span>
+                            </button>
+                            <button
+                                type="button"
+                                className="camera-toggle-overlay-caret"
+                                onClick={handleToggleCameraOverlayMenu}
+                                aria-label="Open webcam quick settings"
+                                aria-expanded={isCameraOverlayMenuOpen}
+                                aria-haspopup="menu"
+                                title="Webcam quick settings"
+                            >
+                                <span className="material-symbols-outlined" aria-hidden="true">
+                                    {isCameraOverlayMenuOpen ? 'keyboard_arrow_down' : 'keyboard_arrow_up'}
+                                </span>
+                            </button>
+                            {isCameraOverlayMenuOpen ? (
+                                <div className="camera-overlay-settings-menu" role="menu" aria-label="Webcam settings">
+                                    <button
+                                        type="button"
+                                        className="camera-overlay-settings-item"
+                                        role="menuitemradio"
+                                        aria-checked={
+                                            cameraDisplayMode === CAMERA_DISPLAY_MODE_INTERVIEWER_PLUS_SELF_PIP
+                                        }
+                                        onClick={() =>
+                                            applyCameraDisplayMode(
+                                                CAMERA_DISPLAY_MODE_INTERVIEWER_PLUS_SELF_PIP,
+                                            )
+                                        }
+                                    >
+                                        <span>Show both</span>
+                                        <span className="material-symbols-outlined" aria-hidden="true">
+                                            {cameraDisplayMode === CAMERA_DISPLAY_MODE_INTERVIEWER_PLUS_SELF_PIP
+                                                ? 'radio_button_checked'
+                                                : 'radio_button_unchecked'}
+                                        </span>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="camera-overlay-settings-item"
+                                        role="menuitemradio"
+                                        aria-checked={cameraDisplayMode === CAMERA_DISPLAY_MODE_SELF_ONLY}
+                                        onClick={() => applyCameraDisplayMode(CAMERA_DISPLAY_MODE_SELF_ONLY)}
+                                    >
+                                        <span>Show self only</span>
+                                        <span className="material-symbols-outlined" aria-hidden="true">
+                                            {cameraDisplayMode === CAMERA_DISPLAY_MODE_SELF_ONLY
+                                                ? 'radio_button_checked'
+                                                : 'radio_button_unchecked'}
+                                        </span>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="camera-overlay-settings-item"
+                                        role="menuitemradio"
+                                        aria-checked={cameraDisplayMode === CAMERA_DISPLAY_MODE_INTERVIEWER_ONLY}
+                                        onClick={() => applyCameraDisplayMode(CAMERA_DISPLAY_MODE_INTERVIEWER_ONLY)}
+                                    >
+                                        <span>Show interviewer only</span>
+                                        <span className="material-symbols-outlined" aria-hidden="true">
+                                            {cameraDisplayMode === CAMERA_DISPLAY_MODE_INTERVIEWER_ONLY
+                                                ? 'radio_button_checked'
+                                                : 'radio_button_unchecked'}
+                                        </span>
+                                    </button>
                                 </div>
-                            )
-                        )}
+                            ) : null}
+                        </div>
 
                         {questionInput.trim() ? (
                             <div className="camera-question-overlay" aria-live="polite">
@@ -4322,13 +4205,23 @@ function App() {
                         ) : null}
                     </div>
 
-                    {!debugEnabled && showSelfView && cameraStatus === 'ready' && facesDetected === 0 ? (
+                    {debugEnabled && showSelfView && cameraStatus === 'ready' && facesDetected === 0 ? (
                         <p className="face-detected-text">No face detected</p>
                     ) : null}
 
                     <div className="actions wrap recording-actions camera-recording-actions">
                         {!isRecording ? (
                             <>
+                                {deepgramKeyWarningText ? (
+                                    <button
+                                        type="button"
+                                        className="camera-recording-key-status"
+                                        onClick={openSettingsAndFocusDeepgramInput}
+                                        title="Open Settings to add or validate your Deepgram API key"
+                                    >
+                                        {deepgramKeyWarningText}
+                                    </button>
+                                ) : null}
                                 <div className="camera-recording-primary">
                                     <button
                                         type="button"
@@ -4389,29 +4282,12 @@ function App() {
                                     <button
                                         type="button"
                                         className="btn ghost"
-                                        onClick={recalibrateTorsoBaseline}
-                                        disabled={cameraStatus !== 'ready' || isRecording || isTranscribing}
-                                        title={
-                                            cameraStatus === 'ready'
-                                                ? 'Set current torso orientation as neutral baseline'
-                                                : 'Start camera to recalibrate torso baseline'
-                                        }
-                                    >
-                                        Recalibrate Torso Baseline
-                                    </button>
-                                    <button
-                                        type="button"
-                                        className="btn ghost"
                                         onClick={resetStatisticsAndRecalibrate}
                                         disabled={cameraStatus !== 'ready' || isRecording || isTranscribing}
                                     >
                                         Reset Statistics
                                     </button>
                                 </div>
-                                <p className="muted baseline-note">
-                                    Torso baseline auto-recalibrates when you start video or audio
-                                    recording.
-                                </p>
                             </div>
                         </div>
                     )}
@@ -4421,10 +4297,6 @@ function App() {
                             <article className="metric-card">
                                 <p className="metric-label">Face detected</p>
                                 <p className="metric-value">{facesDetected > 0 ? 'true' : 'false'}</p>
-                            </article>
-                            <article className="metric-card">
-                                <p className="metric-label">Hands detected</p>
-                                <p className="metric-value">{handsDetected}</p>
                             </article>
                             <article className="metric-card">
                                 <p className="metric-label">Eye contact proxy</p>
@@ -4460,37 +4332,6 @@ function App() {
                             <article className="metric-card">
                                 <p className="metric-label">Prolonged closure</p>
                                 <p className="metric-value">{prolongedClosureCount}</p>
-                            </article>
-                            <article className="metric-card">
-                                <p className="metric-label">Hand-to-face touches</p>
-                                <p className="metric-value">{touchCount}</p>
-                            </article>
-                            <article className="metric-card">
-                                <p className="metric-label">Touching face now</p>
-                                <p className="metric-value">{isTouchingFace ? 'yes' : 'no'}</p>
-                            </article>
-                            <article className="metric-card">
-                                <p className="metric-label">Shoulder side shift</p>
-                                <p className="metric-value">
-                                    {shoulderDriftPct == null ? 'n/a' : `${shoulderDriftPct}%`}
-                                </p>
-                                <p className="metric-label">{shoulderShiftStatus}</p>
-                            </article>
-                            <article className="metric-card">
-                                <p className="metric-label">Shoulder tilt delta</p>
-                                <p className="metric-value">
-                                    {shoulderTiltDeltaDeg == null ? 'n/a' : `${shoulderTiltDeltaDeg}°`}
-                                </p>
-                                <p className="metric-label">{shoulderTiltStatus}</p>
-                            </article>
-                            <article className="metric-card">
-                                <p className="metric-label">Shoulder rotation</p>
-                                <p className="metric-value">
-                                    {shoulderRotationDeg == null
-                                        ? 'n/a'
-                                        : formatSignedDegrees(shoulderRotationDeg)}
-                                </p>
-                                <p className="metric-label">{shoulderRotationStatus}</p>
                             </article>
                         </div>
                     ) : null}
@@ -4688,8 +4529,8 @@ function App() {
                                                 <span className="value">{latestInterviewMetrics.gazeDeviationCount}</span>
                                             </div>
                                             <div className="transcript-metric-chip">
-                                                <span className="label">Shoulder shift</span>
-                                                <span className="value">{latestInterviewMetrics.shoulderShiftPeakPct}%</span>
+                                                <span className="label">Prolonged closures</span>
+                                                <span className="value">{latestInterviewMetrics.prolongedClosureEvents}</span>
                                             </div>
                                         </div>
                                     ) : (
@@ -4705,10 +4546,6 @@ function App() {
                     </section>
                 )}
             </main>
-
-            <footer className="app-footer">
-                <p>Version {APP_VERSION}</p>
-            </footer>
 
             {changelogModalOpen && (
                 <div
@@ -5442,7 +5279,10 @@ function App() {
                         onClick={(event) => event.stopPropagation()}
                     >
                         <div className="settings-modal-header">
-                            <h2 id="settings-title">Settings</h2>
+                            <div className="settings-title-row">
+                                <h2 id="settings-title">Settings</h2>
+                                <span className="settings-version-label">v{APP_VERSION}</span>
+                            </div>
                             <div className="settings-header-actions">
                                 <button
                                     type="button"
@@ -5472,6 +5312,7 @@ function App() {
                             </label>
                             <div className="key-input-row">
                                 <input
+                                    ref={deepgramKeyInputRef}
                                     id="deepgram-key"
                                     type={showKey ? 'text' : 'password'}
                                     value={keyInput}
@@ -5558,19 +5399,40 @@ function App() {
                                 <label className="label">Camera Display</label>
                                 <label className="debug-toggle">
                                     <input
-                                        type="checkbox"
-                                        checked={showInterviewer}
-                                        onChange={(event) => setShowInterviewer(event.target.checked)}
+                                        type="radio"
+                                        name="camera-display-mode"
+                                        checked={
+                                            cameraDisplayMode === CAMERA_DISPLAY_MODE_INTERVIEWER_PLUS_SELF_PIP
+                                        }
+                                        onChange={() =>
+                                            applyCameraDisplayMode(
+                                                CAMERA_DISPLAY_MODE_INTERVIEWER_PLUS_SELF_PIP,
+                                            )
+                                        }
                                     />
-                                    <span>Show Interviewer</span>
+                                    <span>Show both</span>
                                 </label>
                                 <label className="debug-toggle">
                                     <input
-                                        type="checkbox"
-                                        checked={showSelfView}
-                                        onChange={(event) => setShowSelfView(event.target.checked)}
+                                        type="radio"
+                                        name="camera-display-mode"
+                                        checked={cameraDisplayMode === CAMERA_DISPLAY_MODE_SELF_ONLY}
+                                        onChange={() =>
+                                            applyCameraDisplayMode(CAMERA_DISPLAY_MODE_SELF_ONLY)
+                                        }
                                     />
-                                    <span>Show Self View</span>
+                                    <span>Show self only</span>
+                                </label>
+                                <label className="debug-toggle">
+                                    <input
+                                        type="radio"
+                                        name="camera-display-mode"
+                                        checked={cameraDisplayMode === CAMERA_DISPLAY_MODE_INTERVIEWER_ONLY}
+                                        onChange={() =>
+                                            applyCameraDisplayMode(CAMERA_DISPLAY_MODE_INTERVIEWER_ONLY)
+                                        }
+                                    />
+                                    <span>Show interviewer only</span>
                                 </label>
                                 <label className="debug-toggle">
                                     <input
@@ -5626,7 +5488,7 @@ function App() {
                                             className="btn ghost"
                                             onClick={() => interviewerUploadInputRef.current?.click()}
                                         >
-                                            Upload Interviewer Image
+                                            Choose Custom Interviewer
                                         </button>
                                         {hasCustomInterviewerImage && (
                                             <button
@@ -5646,7 +5508,7 @@ function App() {
                                         onChange={handleInterviewerImageUpload}
                                     />
                                     <p className="muted interviewer-image-help">
-                                        Upload a custom interviewer image from your device.
+                                        Choose a custom interviewer image from your device.
                                     </p>
                                 </div>
                             </div>
