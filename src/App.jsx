@@ -11,7 +11,8 @@ import {
     transcribeWithFallback,
     validateSpeechFallbackConfig,
 } from './speech/providers'
-import interviewerImage from './assets/interviewer.jpg'
+import defaultInterviewerImage from './assets/interviewers/interviewer.jpg'
+import changelogMarkdown from '../CHANGELOG.md?raw'
 import './App.css'
 
 const STORAGE_KEY = 'mia.deepgram.apiKey'
@@ -19,6 +20,8 @@ const STORAGE_VALIDATED_AT = 'mia.deepgram.lastValidatedAt'
 const STORAGE_THEME = 'mia.theme'
 const STORAGE_INVERT_CAMERA = 'mia.invertCamera'
 const STORAGE_SHOW_INTERVIEWER = 'mia.showInterviewer'
+const STORAGE_INTERVIEWER_IMAGE_ID = 'mia.interviewer.imageId'
+const STORAGE_INTERVIEWER_CUSTOM_IMAGE = 'mia.interviewer.customImageDataUrl'
 const STORAGE_SHOW_SELF_VIEW = 'mia.showSelfView'
 const STORAGE_ENABLE_CAMERA = 'mia.enableCamera'
 const STORAGE_FALLBACK_WITHOUT_KEY = 'mia.speech.fallbackWithoutDeepgramKey'
@@ -52,6 +55,49 @@ const DEFAULT_DEEPGRAM_LISTEN_URL =
 const DEFAULT_DEEPGRAM_SPEAK_URL =
     'https://api.deepgram.com/v1/speak?model=aura-2-thalia-en'
 
+const LEGACY_DEFAULT_INTERVIEWER_IMAGE_ID = 'default'
+const CUSTOM_INTERVIEWER_IMAGE_ID = 'custom-upload'
+const interviewerImageModules = import.meta.glob(
+    './assets/interviewers/*.{png,jpg,jpeg,webp,avif,gif}',
+    { eager: true, import: 'default' },
+)
+
+function toInterviewerImageId(filePath) {
+    return filePath
+        .split('/')
+        .pop()
+        ?.replace(/\.[^.]+$/, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '') || 'interviewer'
+}
+
+function toInterviewerImageLabel(filePath) {
+    const fileName = filePath.split('/').pop()?.replace(/\.[^.]+$/, '') || 'interviewer'
+    const words = fileName
+        .replace(/[_-]+/g, ' ')
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+
+    if (!words.length) return 'Interviewer'
+    return words.join(' ')
+}
+
+const BUILT_IN_INTERVIEWER_IMAGES = Object.entries(interviewerImageModules)
+    .map(([filePath, src]) => ({
+        id: toInterviewerImageId(filePath),
+        label: toInterviewerImageLabel(filePath),
+        src,
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label))
+
+const DEFAULT_INTERVIEWER_IMAGE_ID =
+    BUILT_IN_INTERVIEWER_IMAGES.find((option) => option.id === 'interviewer')?.id ||
+    BUILT_IN_INTERVIEWER_IMAGES[0]?.id ||
+    LEGACY_DEFAULT_INTERVIEWER_IMAGE_ID
+
 const PROLONGED_CLOSURE_MS = 800
 const EYE_CLOSED_RATIO = 0.18
 const EYE_REOPEN_RATIO = 0.205
@@ -63,6 +109,68 @@ const GAZE_CENTER_DEVIATION_THRESHOLD_PCT = 25
 const GAZE_DIRECTION_EXIT_THRESHOLD_PCT = 24
 const GAZE_DIRECTION_RETURN_THRESHOLD_PCT = 20
 const GAZE_DIRECTION_DOMINANCE_PCT = 4
+
+function parseRecentChangelogReleases(markdown, limit = 10) {
+    const lines = markdown.split(/\r?\n/)
+    const releases = []
+    let currentRelease = null
+    let currentSection = ''
+
+    for (const line of lines) {
+        const releaseMatch = line.match(/^## \[([^\]]+)\] - (.+)$/)
+        if (releaseMatch) {
+            if (currentRelease) {
+                releases.push(currentRelease)
+            }
+
+            if (releaseMatch[1] === 'X.Y.Z') {
+                currentRelease = null
+                currentSection = ''
+                continue
+            }
+
+            currentRelease = {
+                version: releaseMatch[1],
+                date: releaseMatch[2],
+                sections: [],
+            }
+            currentSection = ''
+            continue
+        }
+
+        if (!currentRelease) continue
+
+        const sectionMatch = line.match(/^###\s+(.+)$/)
+        if (sectionMatch) {
+            currentSection = sectionMatch[1]
+            currentRelease.sections.push({
+                title: currentSection,
+                bullets: [],
+            })
+            continue
+        }
+
+        const bulletMatch = line.match(/^-\s+(.+)$/)
+        if (!bulletMatch) continue
+
+        if (!currentSection) {
+            currentSection = 'Notes'
+            currentRelease.sections.push({
+                title: currentSection,
+                bullets: [],
+            })
+        }
+
+        const targetSection = currentRelease.sections[currentRelease.sections.length - 1]
+        targetSection.bullets.push(bulletMatch[1])
+    }
+
+    if (currentRelease) {
+        releases.push(currentRelease)
+    }
+
+    return releases.slice(0, limit)
+}
 
 function validateKeyFormat(rawValue) {
     const value = rawValue.trim()
@@ -598,6 +706,15 @@ function downloadBlob(blob, fileName) {
     URL.revokeObjectURL(url)
 }
 
+function fileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(String(reader.result || ''))
+        reader.onerror = () => reject(reader.error || new Error('Failed to read file.'))
+        reader.readAsDataURL(file)
+    })
+}
+
 function sanitizeDisplayText(value, fallback = '') {
     const text = String(value ?? '')
         .split('')
@@ -934,6 +1051,29 @@ function App() {
     const [showInterviewer, setShowInterviewer] = useState(
         () => getSavedValue(STORAGE_SHOW_INTERVIEWER) !== 'false',
     )
+    const [customInterviewerImageDataUrl, setCustomInterviewerImageDataUrl] = useState(
+        () => getSavedValue(STORAGE_INTERVIEWER_CUSTOM_IMAGE),
+    )
+    const [interviewerImageId, setInterviewerImageId] = useState(() => {
+        const saved = getSavedValue(STORAGE_INTERVIEWER_IMAGE_ID)
+        if (saved === LEGACY_DEFAULT_INTERVIEWER_IMAGE_ID) {
+            return DEFAULT_INTERVIEWER_IMAGE_ID
+        }
+        if (
+            saved &&
+            saved !== CUSTOM_INTERVIEWER_IMAGE_ID &&
+            !BUILT_IN_INTERVIEWER_IMAGES.some((option) => option.id === saved)
+        ) {
+            return DEFAULT_INTERVIEWER_IMAGE_ID
+        }
+        if (
+            saved === CUSTOM_INTERVIEWER_IMAGE_ID &&
+            !getSavedValue(STORAGE_INTERVIEWER_CUSTOM_IMAGE)
+        ) {
+            return DEFAULT_INTERVIEWER_IMAGE_ID
+        }
+        return saved || DEFAULT_INTERVIEWER_IMAGE_ID
+    })
     const [showSelfView, setShowSelfView] = useState(
         () => getSavedValue(STORAGE_SHOW_SELF_VIEW) !== 'false',
     )
@@ -950,9 +1090,14 @@ function App() {
     const [questionsDrawerOpen, setQuestionsDrawerOpen] = useState(false)
     const [summaryModalOpen, setSummaryModalOpen] = useState(false)
     const [cvJdModalOpen, setCvJdModalOpen] = useState(false)
+    const [changelogModalOpen, setChangelogModalOpen] = useState(false)
     const [questionsBulkInput, setQuestionsBulkInput] = useState(() =>
         getImportedQuestionsFromCurrentUrl().join('\n'),
     )
+    const [activeQuestionListIndex, setActiveQuestionListIndex] = useState(() => {
+        const imported = getImportedQuestionsFromCurrentUrl()
+        return imported.length ? 0 : null
+    })
     const [nextQuestionCursor, setNextQuestionCursor] = useState(0)
     const [answeredQuestionKeys, setAnsweredQuestionKeys] = useState([])
     const [cvText, setCvText] = useState(() => getSavedValue(STORAGE_CV_TEXT))
@@ -1024,11 +1169,14 @@ function App() {
         audio: '',
         video: '',
     })
+    const [selectedPreviousAnswerTotalSizeBytes, setSelectedPreviousAnswerTotalSizeBytes] = useState(0)
     const [recycleBinSizeBytes, setRecycleBinSizeBytes] = useState(0)
+    const [recordingsFolderSizeBytes, setRecordingsFolderSizeBytes] = useState(0)
     const [isRecycleBinBusy, setIsRecycleBinBusy] = useState(false)
     const historyVideoRef = useRef(null)
     const historyAudioRef = useRef(null)
     const selectedHistoryMediaRef = useRef({ audioUrl: '', videoUrl: '' })
+    const interviewerUploadInputRef = useRef(null)
 
     const hasKey = savedKey.length > 0
     const speechFallbackConfig = useMemo(
@@ -1050,6 +1198,17 @@ function App() {
     const maskedSummary = hasKey
         ? `Key saved (ends with ${savedKey.slice(-2).padStart(6, '*')})`
         : 'No key saved yet.'
+    const hasCustomInterviewerImage = Boolean(customInterviewerImageDataUrl)
+    const activeInterviewerImageSrc = useMemo(() => {
+        if (interviewerImageId === CUSTOM_INTERVIEWER_IMAGE_ID && customInterviewerImageDataUrl) {
+            return customInterviewerImageDataUrl
+        }
+
+        const matchedBuiltIn = BUILT_IN_INTERVIEWER_IMAGES.find(
+            (option) => option.id === interviewerImageId,
+        )
+        return matchedBuiltIn?.src || defaultInterviewerImage
+    }, [customInterviewerImageDataUrl, interviewerImageId])
 
     const needsRevalidation = useMemo(() => {
         if (!lastValidatedAt) return false
@@ -1068,6 +1227,10 @@ function App() {
 
     const fileSystemAccessSupported = useMemo(() => isFileSystemAccessSupported(), [])
     const isFolderFeatureDisabled = !fileSystemAccessSupported || isIphoneClient
+    const recentChangelogEntries = useMemo(
+        () => parseRecentChangelogReleases(changelogMarkdown, 10),
+        [],
+    )
 
     useEffect(() => {
         if (!toast) return undefined
@@ -1150,6 +1313,18 @@ function App() {
     useEffect(() => {
         setSavedValue(STORAGE_SHOW_INTERVIEWER, showInterviewer ? 'true' : 'false')
     }, [showInterviewer])
+
+    useEffect(() => {
+        setSavedValue(STORAGE_INTERVIEWER_IMAGE_ID, interviewerImageId)
+    }, [interviewerImageId])
+
+    useEffect(() => {
+        if (customInterviewerImageDataUrl) {
+            setSavedValue(STORAGE_INTERVIEWER_CUSTOM_IMAGE, customInterviewerImageDataUrl)
+            return
+        }
+        clearSavedValue(STORAGE_INTERVIEWER_CUSTOM_IMAGE)
+    }, [customInterviewerImageDataUrl])
 
     useEffect(() => {
         setSavedValue(STORAGE_SHOW_SELF_VIEW, showSelfView ? 'true' : 'false')
@@ -1389,6 +1564,7 @@ function App() {
                         audio: '',
                         video: '',
                     })
+                    setSelectedPreviousAnswerTotalSizeBytes(0)
                 }
                 return
             }
@@ -1412,6 +1588,29 @@ function App() {
 
             if (!cancelled) {
                 setSelectedPreviousAnswerFileSizes({ report, text, audio, video })
+
+                // Avoid double-counting when audio and video point to the same file handle.
+                const uniqueHandles = []
+                for (const handle of [
+                    selectedPreviousAnswer.reportHandle,
+                    selectedPreviousAnswer.textHandle,
+                    selectedPreviousAnswer.audioHandle,
+                    selectedPreviousAnswer.videoHandle,
+                ]) {
+                    if (!handle || uniqueHandles.includes(handle)) continue
+                    uniqueHandles.push(handle)
+                }
+
+                let totalSizeBytes = 0
+                for (const handle of uniqueHandles) {
+                    try {
+                        const file = await handle.getFile()
+                        totalSizeBytes += Number(file.size) || 0
+                    } catch {
+                        // Ignore unreadable files when calculating size.
+                    }
+                }
+                setSelectedPreviousAnswerTotalSizeBytes(totalSizeBytes)
             }
         }
 
@@ -1459,6 +1658,13 @@ function App() {
         )
     }, [currentAnswerSummaryFingerprint, interviewSummaries])
 
+    const selectedPreviousAnswerTotalSizeLabel = useMemo(() => {
+        if (!selectedPreviousAnswer) return ''
+        return selectedPreviousAnswerTotalSizeBytes > 0
+            ? formatFileSize(selectedPreviousAnswerTotalSizeBytes)
+            : 'n/a'
+    }, [selectedPreviousAnswer, selectedPreviousAnswerTotalSizeBytes])
+
     const isVideoStartDisabled =
         isTranscribing || isPreparingRecording || cameraStatus !== 'ready'
     const videoStartDisabledReason =
@@ -1482,6 +1688,37 @@ function App() {
     function suppressDisabledTooltipPointerDefault(event, isDisabled) {
         if (!isDisabled) return
         event.preventDefault()
+    }
+
+    async function handleInterviewerImageUpload(event) {
+        const file = event.target.files?.[0]
+        event.target.value = ''
+        if (!file) return
+
+        if (!file.type.startsWith('image/')) {
+            setToast('Select a valid image file for the interviewer.')
+            return
+        }
+
+        try {
+            const dataUrl = await fileToDataUrl(file)
+            if (!dataUrl) {
+                setToast('Could not read this image file.')
+                return
+            }
+
+            setCustomInterviewerImageDataUrl(dataUrl)
+            setInterviewerImageId(CUSTOM_INTERVIEWER_IMAGE_ID)
+            setToast('Custom interviewer image uploaded.')
+        } catch {
+            setToast('Could not read this image file.')
+        }
+    }
+
+    function clearCustomInterviewerImage() {
+        setCustomInterviewerImageDataUrl('')
+        setInterviewerImageId(DEFAULT_INTERVIEWER_IMAGE_ID)
+        setToast('Custom interviewer image removed.')
     }
 
     useEffect(() => {
@@ -1649,6 +1886,14 @@ function App() {
         setCvJdModalOpen(false)
     }
 
+    function openChangelogModal() {
+        setChangelogModalOpen(true)
+    }
+
+    function closeChangelogModal() {
+        setChangelogModalOpen(false)
+    }
+
     function buildCvJdForGeminiMarkdown() {
         const companyName = companyNameInput.trim()
         const candidateCv = cvText.trim()
@@ -1694,14 +1939,40 @@ function App() {
     }
 
     function importQuestion(questionText, options = {}) {
-        const { closePanel = true } = options
+        const { closePanel = true, questionIndex = null } = options
         const nextQuestion = questionText.trim()
         if (!nextQuestion) return
 
         setQuestionInput(nextQuestion)
+        setActiveQuestionListIndex(Number.isInteger(questionIndex) ? questionIndex : null)
         setBanner('')
         if (closePanel) {
             setQuestionsDrawerOpen(false)
+        }
+    }
+
+    function parseQuestionsFromBulkInput(rawBulkInput) {
+        return rawBulkInput
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean)
+    }
+
+    function handleQuestionsBulkInputChange(rawBulkInput) {
+        setQuestionsBulkInput(rawBulkInput)
+
+        if (activeQuestionListIndex == null) return
+
+        const parsed = parseQuestionsFromBulkInput(rawBulkInput)
+        const updatedCurrentQuestion = parsed[activeQuestionListIndex]
+
+        if (!updatedCurrentQuestion) {
+            setActiveQuestionListIndex(null)
+            return
+        }
+
+        if (questionInput !== updatedCurrentQuestion) {
+            setQuestionInput(updatedCurrentQuestion)
         }
     }
 
@@ -1712,6 +1983,7 @@ function App() {
     function clearQuestionsList() {
         if (!parsedDrawerQuestions.length) return
         setQuestionsBulkInput('')
+        setActiveQuestionListIndex(null)
         setNextQuestionCursor(0)
         setToast('Questions list cleared.')
     }
@@ -1727,6 +1999,13 @@ function App() {
 
         const nextParsed = parsed.filter((_, parsedIndex) => parsedIndex !== index)
         setQuestionsBulkInput(nextParsed.join('\n'))
+
+        setActiveQuestionListIndex((prev) => {
+            if (prev == null) return null
+            if (prev === index) return null
+            if (prev > index) return prev - 1
+            return prev
+        })
 
         setNextQuestionCursor(0)
 
@@ -1748,6 +2027,7 @@ function App() {
 
         importQuestion(nextQuestion, {
             closePanel: false,
+            questionIndex: nextIndex,
         })
 
         setNextQuestionCursor((prev) =>
@@ -3148,6 +3428,27 @@ function App() {
         }
     }, [isFolderFeatureDisabled])
 
+    const refreshRecordingsFolderSize = useCallback(async () => {
+        if (isFolderFeatureDisabled || !recordingsFolderRef.current) {
+            setRecordingsFolderSizeBytes(0)
+            return
+        }
+
+        const folderHandle = recordingsFolderRef.current
+        const granted = await ensureDirectoryPermission(folderHandle)
+        if (!granted) {
+            setRecordingsFolderSizeBytes(0)
+            return
+        }
+
+        try {
+            const bytes = await calculateDirectorySizeBytes(folderHandle)
+            setRecordingsFolderSizeBytes(bytes)
+        } catch {
+            setRecordingsFolderSizeBytes(0)
+        }
+    }, [isFolderFeatureDisabled])
+
     async function clearRecycleBin() {
         if (isFolderFeatureDisabled) {
             setToast('Recycle bin is unavailable in this browser.')
@@ -3192,7 +3493,13 @@ function App() {
     useEffect(() => {
         if (!settingsOpen) return
         void refreshRecycleBinSize()
-    }, [settingsOpen, recordingsFolderName, refreshRecycleBinSize])
+        void refreshRecordingsFolderSize()
+    }, [
+        settingsOpen,
+        recordingsFolderName,
+        refreshRecycleBinSize,
+        refreshRecordingsFolderSize,
+    ])
 
     async function saveSessionArtifactsToSelectedFolder({
         capturedAtIso,
@@ -3510,6 +3817,7 @@ function App() {
     async function stopRecordingAndTranscribe() {
         if (!recorderRef.current || !isRecording) return
 
+        const recordingStoppedAtPerf = performance.now()
         const recorder = recorderRef.current
         const videoRecorder = videoRecorderRef.current
         setIsRecording(false)
@@ -3576,7 +3884,7 @@ function App() {
 
             const answerLengthSec = Math.max(
                 0,
-                (performance.now() - recordingStartedAtPerfRef.current) / 1000,
+                (recordingStoppedAtPerf - recordingStartedAtPerfRef.current) / 1000,
             )
             const words = countWords(normalizedTranscript)
             const wpmRaw = answerLengthSec > 0 ? words / (answerLengthSec / 60) : 0
@@ -3925,7 +4233,7 @@ function App() {
                     <div className={`camera-frame${!showInterviewer && isPortraitVideo ? ' portrait' : ''}${invertCamera ? ' inverted' : ''}`}>
                         {showInterviewer && (
                             <img
-                                src={interviewerImage}
+                                src={activeInterviewerImageSrc}
                                 className="interviewer-image"
                                 alt="Mock interviewer"
                                 draggable={false}
@@ -4286,7 +4594,10 @@ function App() {
                                     className="field question-field"
                                     aria-label="Interview question"
                                     value={questionInput}
-                                    onChange={(event) => setQuestionInput(event.target.value)}
+                                    onChange={(event) => {
+                                        setQuestionInput(event.target.value)
+                                        setActiveQuestionListIndex(null)
+                                    }}
                                     autoComplete="off"
                                     rows={2}
                                     placeholder="Type your question here, or import from the questions tab"
@@ -4362,6 +4673,76 @@ function App() {
             <footer className="app-footer">
                 <p>Version {APP_VERSION}</p>
             </footer>
+
+            {changelogModalOpen && (
+                <div
+                    className="overlay changelog-overlay"
+                    role="presentation"
+                    onPointerDown={(event) => {
+                        if (event.target === event.currentTarget) {
+                            closeChangelogModal()
+                        }
+                    }}
+                >
+                    <div
+                        id="changelog-modal"
+                        className="modal question-modal changelog-modal"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="changelog-title"
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        <div className="history-modal-header">
+                            <h2 id="changelog-title">Changelog (Last 10 Releases)</h2>
+                            <div className="summary-header-actions">
+                                <button
+                                    type="button"
+                                    className="btn ghost history-close-btn"
+                                    onClick={closeChangelogModal}
+                                    aria-label="Close"
+                                    title="Close"
+                                >
+                                    X
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="question-modal-body changelog-modal-body">
+                            <div className="question-modal-inner changelog-modal-inner">
+                                {recentChangelogEntries.length ? (
+                                    <div className="changelog-release-list">
+                                        {recentChangelogEntries.map((release) => (
+                                            <article key={`${release.version}-${release.date}`} className="changelog-release-card">
+                                                <h3>
+                                                    {release.version} <span className="muted">{release.date}</span>
+                                                </h3>
+                                                {release.sections.length ? (
+                                                    release.sections.map((section) => (
+                                                        <section key={`${release.version}-${section.title}`} className="changelog-section">
+                                                            <p className="label changelog-section-title">{section.title}</p>
+                                                            {section.bullets.length ? (
+                                                                <ul className="changelog-bullet-list">
+                                                                    {section.bullets.map((item, index) => (
+                                                                        <li key={`${release.version}-${section.title}-${index}`}>{item}</li>
+                                                                    ))}
+                                                                </ul>
+                                                            ) : null}
+                                                        </section>
+                                                    ))
+                                                ) : (
+                                                    <p className="muted">No changes listed.</p>
+                                                )}
+                                            </article>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <p className="muted">No changelog entries found.</p>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {historyModalOpen && (
                 <div
@@ -4455,20 +4836,7 @@ function App() {
                                                     {formatReadableCapturedDate(selectedPreviousAnswer.capturedAt)}
                                                 </p>
                                                 <p className="metric-label history-detail-meta">
-                                                    Report: {selectedPreviousAnswer.reportFileName || 'n/a'}
-                                                    {selectedPreviousAnswerFileSizes.report ? ` (${selectedPreviousAnswerFileSizes.report})` : ''}
-                                                </p>
-                                                <p className="metric-label history-detail-meta">
-                                                    Transcript: {selectedPreviousAnswer.textFileName || 'n/a'}
-                                                    {selectedPreviousAnswerFileSizes.text ? ` (${selectedPreviousAnswerFileSizes.text})` : ''}
-                                                </p>
-                                                <p className="metric-label history-detail-meta">
-                                                    Audio: {selectedPreviousAnswer.audioFileName || 'n/a'}
-                                                    {selectedPreviousAnswerFileSizes.audio ? ` (${selectedPreviousAnswerFileSizes.audio})` : ''}
-                                                </p>
-                                                <p className="metric-label history-detail-meta">
-                                                    Video: {selectedPreviousAnswer.videoFileName || 'n/a'}
-                                                    {selectedPreviousAnswerFileSizes.video ? ` (${selectedPreviousAnswerFileSizes.video})` : ''}
+                                                    Total file size: {selectedPreviousAnswerTotalSizeLabel}
                                                 </p>
                                             </div>
                                             <div className="history-detail-actions">
@@ -4506,6 +4874,41 @@ function App() {
                                         </div>
 
                                         <div className="history-detail-scroll">
+                                            <details className="transcript-box history-files">
+                                                <summary>Files</summary>
+                                                <div className="history-files-body">
+                                                    <p className="metric-label history-detail-meta">
+                                                        Report: {selectedPreviousAnswer.reportFileName || 'n/a'}
+                                                        {selectedPreviousAnswerFileSizes.report ? ` (${selectedPreviousAnswerFileSizes.report})` : ''}
+                                                    </p>
+                                                    <p className="metric-label history-detail-meta">
+                                                        Transcript: {selectedPreviousAnswer.textFileName || 'n/a'}
+                                                        {selectedPreviousAnswerFileSizes.text ? ` (${selectedPreviousAnswerFileSizes.text})` : ''}
+                                                    </p>
+                                                    {selectedPreviousAnswer.audioFileName &&
+                                                        selectedPreviousAnswer.videoFileName &&
+                                                        selectedPreviousAnswer.audioFileName === selectedPreviousAnswer.videoFileName ? (
+                                                        <p className="metric-label history-detail-meta">
+                                                            Media file: {selectedPreviousAnswer.audioFileName}
+                                                            {(selectedPreviousAnswerFileSizes.audio || selectedPreviousAnswerFileSizes.video)
+                                                                ? ` (${selectedPreviousAnswerFileSizes.audio || selectedPreviousAnswerFileSizes.video})`
+                                                                : ''}
+                                                        </p>
+                                                    ) : (
+                                                        <>
+                                                            <p className="metric-label history-detail-meta">
+                                                                Audio: {selectedPreviousAnswer.audioFileName || 'n/a'}
+                                                                {selectedPreviousAnswerFileSizes.audio ? ` (${selectedPreviousAnswerFileSizes.audio})` : ''}
+                                                            </p>
+                                                            <p className="metric-label history-detail-meta">
+                                                                Video: {selectedPreviousAnswer.videoFileName || 'n/a'}
+                                                                {selectedPreviousAnswerFileSizes.video ? ` (${selectedPreviousAnswerFileSizes.video})` : ''}
+                                                            </p>
+                                                        </>
+                                                    )}
+                                                </div>
+                                            </details>
+
                                             <div className="transcript-box history-media">
                                                 <div className="history-media-head">
                                                     <h3>Recording</h3>
@@ -4911,7 +5314,9 @@ function App() {
                                 <textarea
                                     className="field question-list-field"
                                     value={questionsBulkInput}
-                                    onChange={(event) => setQuestionsBulkInput(event.target.value)}
+                                    onChange={(event) =>
+                                        handleQuestionsBulkInputChange(event.target.value)
+                                    }
                                     rows={6}
                                     placeholder={[
                                         'Tell me about a challenging project you worked on.',
@@ -4947,7 +5352,9 @@ function App() {
                                                                 type="button"
                                                                 className="btn"
                                                                 onClick={() => {
-                                                                    importQuestion(question)
+                                                                    importQuestion(question, {
+                                                                        questionIndex: index,
+                                                                    })
                                                                 }}
                                                                 disabled={isImportQuestionDisabled}
                                                             >
@@ -5000,15 +5407,24 @@ function App() {
                     >
                         <div className="settings-modal-header">
                             <h2 id="settings-title">Settings</h2>
-                            <button
-                                type="button"
-                                className="btn ghost history-close-btn"
-                                onClick={closeSettings}
-                                aria-label="Close"
-                                title="Close"
-                            >
-                                X
-                            </button>
+                            <div className="settings-header-actions">
+                                <button
+                                    type="button"
+                                    className="settings-changelog-link"
+                                    onClick={openChangelogModal}
+                                >
+                                    Changelog
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn ghost history-close-btn"
+                                    onClick={closeSettings}
+                                    aria-label="Close"
+                                    title="Close"
+                                >
+                                    X
+                                </button>
+                            </div>
                         </div>
                         <div className="settings-modal-body">
                             <p className="muted">
@@ -5038,7 +5454,7 @@ function App() {
                                     Save key
                                 </button>
                             </div>
-                            <div className="actions wrap">
+                            <div className="actions wrap key-actions-row">
                                 <button
                                     type="button"
                                     className="btn ghost"
@@ -5149,6 +5565,54 @@ function App() {
                                     />
                                     <span>Invert camera</span>
                                 </label>
+                                <div className="interviewer-image-settings">
+                                    <label htmlFor="interviewer-image-select" className="label">
+                                        Interviewer Image
+                                    </label>
+                                    <select
+                                        id="interviewer-image-select"
+                                        className="field"
+                                        value={interviewerImageId}
+                                        onChange={(event) => setInterviewerImageId(event.target.value)}
+                                    >
+                                        {BUILT_IN_INTERVIEWER_IMAGES.map((option) => (
+                                            <option key={option.id} value={option.id}>
+                                                {option.label}
+                                            </option>
+                                        ))}
+                                        {hasCustomInterviewerImage && (
+                                            <option value={CUSTOM_INTERVIEWER_IMAGE_ID}>Custom Upload</option>
+                                        )}
+                                    </select>
+                                    <div className="actions wrap interviewer-image-actions">
+                                        <button
+                                            type="button"
+                                            className="btn ghost"
+                                            onClick={() => interviewerUploadInputRef.current?.click()}
+                                        >
+                                            Upload Interviewer Image
+                                        </button>
+                                        {hasCustomInterviewerImage && (
+                                            <button
+                                                type="button"
+                                                className="btn ghost"
+                                                onClick={clearCustomInterviewerImage}
+                                            >
+                                                Remove Custom Image
+                                            </button>
+                                        )}
+                                    </div>
+                                    <input
+                                        ref={interviewerUploadInputRef}
+                                        type="file"
+                                        accept="image/*"
+                                        className="sr-only"
+                                        onChange={handleInterviewerImageUpload}
+                                    />
+                                    <p className="muted interviewer-image-help">
+                                        Upload a custom interviewer image from your device.
+                                    </p>
+                                </div>
                             </div>
 
                             <div className="settings-section">
@@ -5174,7 +5638,7 @@ function App() {
                                         {isIphoneClient
                                             ? 'Recording save folder is unavailable on iPhone browsers.'
                                             : recordingsFolderName
-                                                ? `Current folder: ${recordingsFolderName}`
+                                                ? `Current folder: ${recordingsFolderName} (Size: ${formatFileSize(recordingsFolderSizeBytes)})`
                                                 : fileSystemAccessSupported
                                                     ? 'No folder selected. Recordings can still be downloaded manually.'
                                                     : 'Folder selection is unavailable in this browser.'}

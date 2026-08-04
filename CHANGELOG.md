@@ -21,17 +21,26 @@ Use this template for future releases:
 
 ## [1.7.23] - 2026-08-04
 
+### Added
+- Added selected recording-folder size display in Settings: `Current folder: <name> (Size: xx MB)`.
+
 ### Changed
 - Renamed `Session Summary` UI labels to `Answer Summary` across topbar, modal title, action labels, and related confirmation messaging.
 - Question overlay numbering now uses `1.` style instead of `#1` for improved readability.
 - Removed the `Question, Transcript and Metrics` panel from the main layout.
+- Moved the `Changelog` text link into the Settings modal header and aligned it directly left of the close (`X`) button.
+- Updated the `Changelog` modal overlay stacking so it opens above the Settings modal.
+- Refined spacing in Settings around the key actions row and reduced the height of the Deepgram API key input and Save key button.
+- Adjusted history modal header spacing to use margin-based side and vertical spacing.
 
 ### Fixed
+- Excluded the release template placeholder (`X.Y.Z`) from the in-app changelog modal list.
 - Warning surfaces that were shown inline in the removed panel are now shown through popup toast notifications.
 
 ## [1.7.22] - 2026-08-04
 
 ### Changed
+- Moved the webcam question text overlay up by 15px for improved readability and framing.
 - The interviewer image is now non-draggable to prevent accidental drag behavior in the camera panel.
 
 ### Fixed
@@ -40,7 +49,12 @@ Use this template for future releases:
 ## [1.7.21] - 2026-08-04
 
 ### Added
+- Added a custom webcam background workflow for the interviewer view: you can now upload a custom interviewer image and switch between built-in and uploaded backgrounds in Settings.
+- Added a changelog modal accessible from the footer (`Last 10 Changes`) that displays the 10 most recent releases.
 - Session summary now persists across page refreshes, including saved summary entries and selected summary view state.
+
+### Changed
+- Changelog modal content is now populated directly from `CHANGELOG.md`.
 
 ## [1.7.20] - 2026-08-04
 
