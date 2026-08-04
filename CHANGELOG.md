@@ -19,6 +19,11 @@ Use this template for future releases:
 -
 ```
 
+## [1.7.20] - 2026-08-04
+
+### Fixed
+- Fixed metrics display for `gazeDeviationDirectionCounts` so it renders as readable direction counts (`L / R / U / D`) instead of `[object Object]`.
+
 ## [1.7.19] - 2026-08-04
 
 ### Changed
