@@ -27,6 +27,9 @@ Use this template for future releases:
 ### Fixed
 - Auto-Add summary behavior now ignores stale local storage values that previously disabled it, ensuring summary auto-add remains active by default.
 
+### Added
+- Added a hidden easter egg that appears after pressing a particular button a certain number of times.
+
 ## [1.7.23] - 2026-08-04
 
 ### Added
