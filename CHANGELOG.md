@@ -19,6 +19,24 @@ Use this template for future releases:
 -
 ```
 
+## [1.7.23] - 2026-08-04
+
+### Changed
+- Renamed `Session Summary` UI labels to `Answer Summary` across topbar, modal title, action labels, and related confirmation messaging.
+- Question overlay numbering now uses `1.` style instead of `#1` for improved readability.
+- Removed the `Question, Transcript and Metrics` panel from the main layout.
+
+### Fixed
+- Warning surfaces that were shown inline in the removed panel are now shown through popup toast notifications.
+
+## [1.7.22] - 2026-08-04
+
+### Changed
+- The interviewer image is now non-draggable to prevent accidental drag behavior in the camera panel.
+
+### Fixed
+- `Next Question` now becomes unavailable immediately when recording start begins, eliminating the brief moment it could still be pressed between TTS start and recording.
+
 ## [1.7.21] - 2026-08-04
 
 ### Added

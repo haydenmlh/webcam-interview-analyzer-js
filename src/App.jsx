@@ -728,6 +728,42 @@ function formatMetricDisplayValue(key, value) {
     return String(value)
 }
 
+function formatFileSize(bytes) {
+    if (!Number.isFinite(bytes) || bytes < 0) return 'n/a'
+    if (bytes < 1024) return `${bytes} B`
+
+    const units = ['KB', 'MB', 'GB', 'TB']
+    let value = bytes / 1024
+    let unitIndex = 0
+    while (value >= 1024 && unitIndex < units.length - 1) {
+        value /= 1024
+        unitIndex += 1
+    }
+
+    const precision = value >= 100 ? 0 : value >= 10 ? 1 : 2
+    return `${value.toFixed(precision)} ${units[unitIndex]}`
+}
+
+async function calculateDirectorySizeBytes(directoryHandle) {
+    let totalBytes = 0
+    for await (const [, entryHandle] of directoryHandle.entries()) {
+        if (entryHandle.kind === 'file') {
+            try {
+                const file = await entryHandle.getFile()
+                totalBytes += file.size
+            } catch {
+                // Ignore unreadable files when calculating size.
+            }
+            continue
+        }
+
+        if (entryHandle.kind === 'directory') {
+            totalBytes += await calculateDirectorySizeBytes(entryHandle)
+        }
+    }
+    return totalBytes
+}
+
 function getSummaryFingerprint(entry) {
     return JSON.stringify({
         question: sanitizeDisplayText(entry?.question, '(no question)'),
@@ -946,6 +982,7 @@ function App() {
     const [isRecording, setIsRecording] = useState(false)
     const [isTranscribing, setIsTranscribing] = useState(false)
     const [isSpeakingQuestion, setIsSpeakingQuestion] = useState(false)
+    const [isPreparingRecording, setIsPreparingRecording] = useState(false)
     const [readQuestionWithTts, setReadQuestionWithTts] = useState(true)
     const [transcriptionProviderMeta, setTranscriptionProviderMeta] = useState(null)
     const [questionTtsProviderMeta, setQuestionTtsProviderMeta] = useState(null)
@@ -981,6 +1018,14 @@ function App() {
         videoUrl: '',
     })
     const [historyPlaybackRate, setHistoryPlaybackRate] = useState(1)
+    const [selectedPreviousAnswerFileSizes, setSelectedPreviousAnswerFileSizes] = useState({
+        report: '',
+        text: '',
+        audio: '',
+        video: '',
+    })
+    const [recycleBinSizeBytes, setRecycleBinSizeBytes] = useState(0)
+    const [isRecycleBinBusy, setIsRecycleBinBusy] = useState(false)
     const historyVideoRef = useRef(null)
     const historyAudioRef = useRef(null)
     const selectedHistoryMediaRef = useRef({ audioUrl: '', videoUrl: '' })
@@ -1332,6 +1377,51 @@ function App() {
         [previousAnswers, selectedPreviousAnswerId],
     )
 
+    useEffect(() => {
+        let cancelled = false
+
+        async function loadSelectedAnswerFileSizes() {
+            if (!selectedPreviousAnswer) {
+                if (!cancelled) {
+                    setSelectedPreviousAnswerFileSizes({
+                        report: '',
+                        text: '',
+                        audio: '',
+                        video: '',
+                    })
+                }
+                return
+            }
+
+            async function getHandleSize(handle) {
+                if (!handle) return ''
+                try {
+                    const file = await handle.getFile()
+                    return formatFileSize(file.size)
+                } catch {
+                    return ''
+                }
+            }
+
+            const [report, text, audio, video] = await Promise.all([
+                getHandleSize(selectedPreviousAnswer.reportHandle),
+                getHandleSize(selectedPreviousAnswer.textHandle),
+                getHandleSize(selectedPreviousAnswer.audioHandle),
+                getHandleSize(selectedPreviousAnswer.videoHandle),
+            ])
+
+            if (!cancelled) {
+                setSelectedPreviousAnswerFileSizes({ report, text, audio, video })
+            }
+        }
+
+        void loadSelectedAnswerFileSizes()
+
+        return () => {
+            cancelled = true
+        }
+    }, [selectedPreviousAnswer])
+
     const selectedPreviousAnswerSummaryFingerprint = useMemo(() => {
         if (!selectedPreviousAnswer) return ''
         return getSummaryFingerprint({
@@ -1369,10 +1459,12 @@ function App() {
         )
     }, [currentAnswerSummaryFingerprint, interviewSummaries])
 
-    const isVideoStartDisabled = isTranscribing || cameraStatus !== 'ready'
+    const isVideoStartDisabled =
+        isTranscribing || isPreparingRecording || cameraStatus !== 'ready'
     const videoStartDisabledReason =
         cameraStatus !== 'ready' ? 'Camera access is not allowed yet' : ''
-    const isImportQuestionDisabled = isRecording || isTranscribing || isSpeakingQuestion
+    const isImportQuestionDisabled =
+        isRecording || isTranscribing || isSpeakingQuestion || isPreparingRecording
 
     const shouldPromptFolderFromPreviousAnswers =
         !isFolderFeatureDisabled && !recordingsFolderName
@@ -1468,10 +1560,32 @@ function App() {
 
     const nextQuestionTitle =
         isImportQuestionDisabled
-            ? 'Unavailable while recording/transcribing/question audio is active.'
+            ? 'Unavailable while recording/transcribing/question audio/prep is active.'
             : showNoNextQuestionTooltip
                 ? undefined
                 : `${parsedDrawerQuestions.length} question(s) in question list`
+
+    const shouldShowSessionPanel = false
+
+    const warningPopupMessage = useMemo(() => {
+        if (banner) return banner
+        if (previousAnswersError) return previousAnswersError
+        if (needsRevalidation) {
+            return 'Revalidation recommended. Your key was last checked over 30 days ago.'
+        }
+        if (!hasTtsProvider && readQuestionWithTts) {
+            return 'Question TTS uses your system voice and is unavailable in this browser.'
+        }
+        return ''
+    }, [
+        banner,
+        previousAnswersError,
+        needsRevalidation,
+        hasTtsProvider,
+        readQuestionWithTts,
+    ])
+
+    const activePopupMessage = toast || warningPopupMessage
 
     const overallInterviewSummary = useMemo(() => {
         if (!interviewSummaries.length) {
@@ -3008,6 +3122,78 @@ function App() {
         return { ok: true, movedCount, skipped: false }
     }
 
+    const refreshRecycleBinSize = useCallback(async () => {
+        if (isFolderFeatureDisabled || !recordingsFolderRef.current) {
+            setRecycleBinSizeBytes(0)
+            return
+        }
+
+        const folderHandle = recordingsFolderRef.current
+        const granted = await ensureDirectoryPermission(folderHandle)
+        if (!granted) {
+            setRecycleBinSizeBytes(0)
+            return
+        }
+
+        try {
+            const recycleRootHandle = await folderHandle.getDirectoryHandle(RECYCLE_BIN_FOLDER_NAME)
+            const bytes = await calculateDirectorySizeBytes(recycleRootHandle)
+            setRecycleBinSizeBytes(bytes)
+        } catch (error) {
+            if (error?.name === 'NotFoundError') {
+                setRecycleBinSizeBytes(0)
+                return
+            }
+            setRecycleBinSizeBytes(0)
+        }
+    }, [isFolderFeatureDisabled])
+
+    async function clearRecycleBin() {
+        if (isFolderFeatureDisabled) {
+            setToast('Recycle bin is unavailable in this browser.')
+            return
+        }
+
+        const folderHandle = recordingsFolderRef.current
+        if (!folderHandle) {
+            setToast('Select a save folder first.')
+            return
+        }
+
+        const granted = await ensureDirectoryPermission(folderHandle)
+        if (!granted) {
+            setToast('Folder permission denied. Re-select the folder and retry.')
+            return
+        }
+
+        setIsRecycleBinBusy(true)
+        try {
+            const recycleRootHandle = await folderHandle.getDirectoryHandle(RECYCLE_BIN_FOLDER_NAME)
+            for await (const [entryName, entryHandle] of recycleRootHandle.entries()) {
+                if (entryHandle.kind === 'directory') {
+                    await recycleRootHandle.removeEntry(entryName, { recursive: true })
+                } else {
+                    await recycleRootHandle.removeEntry(entryName)
+                }
+            }
+            setToast('Recycle bin cleared.')
+        } catch (error) {
+            if (error?.name === 'NotFoundError') {
+                setToast('Recycle bin is already empty.')
+            } else {
+                setToast('Could not clear recycle bin.')
+            }
+        } finally {
+            setIsRecycleBinBusy(false)
+            await refreshRecycleBinSize()
+        }
+    }
+
+    useEffect(() => {
+        if (!settingsOpen) return
+        void refreshRecycleBinSize()
+    }, [settingsOpen, recordingsFolderName, refreshRecycleBinSize])
+
     async function saveSessionArtifactsToSelectedFolder({
         capturedAtIso,
         question,
@@ -3202,7 +3388,7 @@ function App() {
     }
 
     async function startRecording(mode = 'audio', importedQuestion = '') {
-        if (isRecording || isTranscribing) return
+        if (isRecording || isTranscribing || isPreparingRecording) return
 
         if (!hasSttProvider) {
             openSettings()
@@ -3216,6 +3402,7 @@ function App() {
         }
 
         try {
+            setIsPreparingRecording(true)
             recordingModeRef.current = mode
             setBanner('')
             if (!hasKey && canUseSttFallbackWithoutKey) {
@@ -3293,6 +3480,7 @@ function App() {
             if (videoRecorder) {
                 videoRecorder.start()
             }
+            setIsPreparingRecording(false)
             setIsRecording(true)
 
             const startedQuestionKey = normalizeQuestionKey(questionInput)
@@ -3306,6 +3494,7 @@ function App() {
 
             setToast(mode === 'video' ? 'Video recording started.' : 'Audio recording started.')
         } catch {
+            setIsPreparingRecording(false)
             recordingActiveRef.current = false
             recordingModeRef.current = 'audio'
             setBanner('Recording setup failed. Check camera/microphone permissions and try again.')
@@ -3676,9 +3865,9 @@ function App() {
                             }}
                             aria-expanded={summaryModalOpen}
                             aria-controls="summary-modal"
-                            title={summaryModalOpen ? 'Hide session summary modal' : 'Show session summary modal'}
+                            title={summaryModalOpen ? 'Hide answer summary modal' : 'Show answer summary modal'}
                         >
-                            Session Summary
+                            Answer Summary
                         </button>
                     )}
                     {isDesktopViewport && (
@@ -3739,6 +3928,7 @@ function App() {
                                 src={interviewerImage}
                                 className="interviewer-image"
                                 alt="Mock interviewer"
+                                draggable={false}
                             />
                         )}
 
@@ -3780,7 +3970,7 @@ function App() {
                             <div className="camera-question-overlay" aria-live="polite">
                                 <p>
                                     {currentQuestionListNumber
-                                        ? `#${currentQuestionListNumber} `
+                                        ? `${currentQuestionListNumber}. `
                                         : ''}
                                     {questionInput.trim()}
                                 </p>
@@ -3962,9 +4152,10 @@ function App() {
                     ) : null}
                 </section>
 
-                <section
-                    className={`panel session${centerCameraLayout ? ' centered-session-panel' : ''}${isDesktopViewport ? ' floating-session-panel' : ''}${isDesktopViewport && isSessionPanelMinimized ? ' is-minimized' : ''}`}
-                >
+                {shouldShowSessionPanel && (
+                    <section
+                        className={`panel session${centerCameraLayout ? ' centered-session-panel' : ''}${isDesktopViewport ? ' floating-session-panel' : ''}${isDesktopViewport && isSessionPanelMinimized ? ' is-minimized' : ''}`}
+                    >
                     {isDesktopViewport && (
                         <div className="floating-session-head">
                             <h3>Question, Transcript and Metrics</h3>
@@ -4164,7 +4355,8 @@ function App() {
                             {isDesktopViewport && previousAnswersError && <p className="warning">{previousAnswersError}</p>}
                         </div>
                     )}
-                </section>
+                    </section>
+                )}
             </main>
 
             <footer className="app-footer">
@@ -4261,6 +4453,22 @@ function App() {
                                                     {selectedPreviousAnswer.folderPath ? `${selectedPreviousAnswer.folderPath} · ` : ''}
                                                     {selectedPreviousAnswer.source} ·{' '}
                                                     {formatReadableCapturedDate(selectedPreviousAnswer.capturedAt)}
+                                                </p>
+                                                <p className="metric-label history-detail-meta">
+                                                    Report: {selectedPreviousAnswer.reportFileName || 'n/a'}
+                                                    {selectedPreviousAnswerFileSizes.report ? ` (${selectedPreviousAnswerFileSizes.report})` : ''}
+                                                </p>
+                                                <p className="metric-label history-detail-meta">
+                                                    Transcript: {selectedPreviousAnswer.textFileName || 'n/a'}
+                                                    {selectedPreviousAnswerFileSizes.text ? ` (${selectedPreviousAnswerFileSizes.text})` : ''}
+                                                </p>
+                                                <p className="metric-label history-detail-meta">
+                                                    Audio: {selectedPreviousAnswer.audioFileName || 'n/a'}
+                                                    {selectedPreviousAnswerFileSizes.audio ? ` (${selectedPreviousAnswerFileSizes.audio})` : ''}
+                                                </p>
+                                                <p className="metric-label history-detail-meta">
+                                                    Video: {selectedPreviousAnswer.videoFileName || 'n/a'}
+                                                    {selectedPreviousAnswerFileSizes.video ? ` (${selectedPreviousAnswerFileSizes.video})` : ''}
                                                 </p>
                                             </div>
                                             <div className="history-detail-actions">
@@ -4418,7 +4626,7 @@ function App() {
                         onClick={(event) => event.stopPropagation()}
                     >
                         <div className="history-modal-header">
-                            <h2 id="summary-title">Interview Session Summary</h2>
+                            <h2 id="summary-title">Interview Answer Summary</h2>
                             <div className="summary-header-actions">
                                 <button
                                     type="button"
@@ -4426,7 +4634,7 @@ function App() {
                                     onClick={copySummaryToClipboard}
                                     disabled={!interviewSummaries.length}
                                 >
-                                    Copy Session Summary for Gem
+                                    Copy Answer Summary for Gem
                                 </button>
                                 <button
                                     type="button"
@@ -4971,6 +5179,9 @@ function App() {
                                                     ? 'No folder selected. Recordings can still be downloaded manually.'
                                                     : 'Folder selection is unavailable in this browser.'}
                                     </p>
+                                    <p className="muted">
+                                        Recycle Bin size: {formatFileSize(recycleBinSizeBytes)}
+                                    </p>
                                     <div className="actions wrap">
                                         <button
                                             type="button"
@@ -4990,6 +5201,14 @@ function App() {
                                                 Clear Save Folder
                                             </button>
                                         )}
+                                        <button
+                                            type="button"
+                                            className="btn ghost"
+                                            onClick={clearRecycleBin}
+                                            disabled={isFolderFeatureDisabled || !recordingsFolderName || isRecycleBinBusy || recycleBinSizeBytes <= 0}
+                                        >
+                                            {isRecycleBinBusy ? 'Clearing Recycle Bin...' : 'Clear Recycle Bin'}
+                                        </button>
                                     </div>
                                     <label className="debug-toggle">
                                         <input
@@ -5084,7 +5303,7 @@ function App() {
                                 ? 'This question will be removed from the Questions Import list.'
                                 : pendingDeleteAction.kind === 'previous-answer'
                                     ? `This will remove the selected answer and move linked saved files into ${RECYCLE_BIN_FOLDER_NAME} under the selected folder.`
-                                    : 'This will remove the selected answer from Session Summary only. Saved folder files will not be deleted.'}
+                                    : 'This will remove the selected answer from Answer Summary only. Saved folder files will not be deleted.'}
                         </p>
                         <div className="actions">
                             <button
@@ -5107,10 +5326,10 @@ function App() {
             )}
 
             <div className="sr-only" aria-live="polite">
-                {toast}
+                {activePopupMessage}
             </div>
             {hasKey && showKeyStatus && <div className="key-status-toast">{maskedSummary}</div>}
-            {toast && <div className="toast">{toast}</div>}
+            {activePopupMessage && <div className="toast">{activePopupMessage}</div>}
         </div>
     )
 }
