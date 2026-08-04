@@ -1025,10 +1025,7 @@ function App() {
     const [fallbackWithoutDeepgramKey, setFallbackWithoutDeepgramKey] = useState(
         () => getSavedValue(STORAGE_FALLBACK_WITHOUT_KEY) !== 'false',
     )
-    const [autoAddCompletedAnswersToSummary, setAutoAddCompletedAnswersToSummary] = useState(() => {
-        const saved = getSavedValue(STORAGE_AUTO_ADD_SUMMARY)
-        return saved ? saved === 'true' : true
-    })
+    const [autoAddCompletedAnswersToSummary] = useState(true)
     const [autoSaveMediaToFolder, setAutoSaveMediaToFolder] = useState(() => {
         const saved = getSavedValue(STORAGE_AUTO_SAVE_MEDIA_TO_FOLDER)
         return saved ? saved === 'true' : true
@@ -4502,8 +4499,8 @@ function App() {
                                         <input
                                             type="checkbox"
                                             checked={autoAddCompletedAnswersToSummary}
-                                            onChange={(event) => setAutoAddCompletedAnswersToSummary(event.target.checked)}
-                                            disabled={isRecording || isTranscribing}
+                                            readOnly
+                                            disabled
                                         />
                                         <span>Auto-Add</span>
                                     </label>
