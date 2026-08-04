@@ -704,6 +704,28 @@ function formatReadableCapturedDate(value) {
     return `${month}/${day}/${year}`
 }
 
+function formatMetricDisplayValue(key, value) {
+    if (value == null) return 'n/a'
+
+    if (key === 'gazeDeviationDirectionCounts' && typeof value === 'object') {
+        const left = Number(value.left) || 0
+        const right = Number(value.right) || 0
+        const up = Number(value.up) || 0
+        const down = Number(value.down) || 0
+        return `L ${left} / R ${right} / U ${up} / D ${down}`
+    }
+
+    if (Array.isArray(value)) {
+        return value.length ? value.join(', ') : 'none'
+    }
+
+    if (typeof value === 'object') {
+        return JSON.stringify(value)
+    }
+
+    return String(value)
+}
+
 function getSummaryFingerprint(entry) {
     return JSON.stringify({
         question: sanitizeDisplayText(entry?.question, '(no question)'),
@@ -850,7 +872,7 @@ function App() {
     )
     const [autoAddCompletedAnswersToSummary, setAutoAddCompletedAnswersToSummary] = useState(() => {
         const saved = getSavedValue(STORAGE_AUTO_ADD_SUMMARY)
-        return saved ? saved === 'true' : false
+        return saved ? saved === 'true' : true
     })
     const [autoSaveMediaToFolder, setAutoSaveMediaToFolder] = useState(() => {
         const saved = getSavedValue(STORAGE_AUTO_SAVE_MEDIA_TO_FOLDER)
@@ -883,6 +905,9 @@ function App() {
     const [isPortraitVideo, setIsPortraitVideo] = useState(false)
     const [isDesktopViewport, setIsDesktopViewport] = useState(() =>
         typeof window !== 'undefined' ? window.innerWidth > 860 : true,
+    )
+    const [isSessionPanelMinimized, setIsSessionPanelMinimized] = useState(
+        () => getImportedQuestionsFromCurrentUrl().length > 0,
     )
     const [questionsDrawerOpen, setQuestionsDrawerOpen] = useState(false)
     const [summaryModalOpen, setSummaryModalOpen] = useState(false)
@@ -3572,7 +3597,9 @@ function App() {
                 </div>
             </header>
 
-            <main className={`layout${centerCameraLayout ? ' center-camera-layout' : ''}`}>
+            <main
+                className={`layout${centerCameraLayout ? ' center-camera-layout' : ''}${isDesktopViewport ? ' session-floating-layout' : ''}`}
+            >
                 <section
                     className={`panel camera-panel${centerCameraLayout ? ' centered-camera-panel' : ''}`}
                 >
@@ -3717,6 +3744,17 @@ function App() {
                                 </div>
                             )
                         )}
+
+                        {questionInput.trim() ? (
+                            <div className="camera-question-overlay" aria-live="polite">
+                                <p>
+                                    {currentQuestionListNumber
+                                        ? `#${currentQuestionListNumber} `
+                                        : ''}
+                                    {questionInput.trim()}
+                                </p>
+                            </div>
+                        ) : null}
                     </div>
 
                     {!debugEnabled && showSelfView && cameraStatus === 'ready' && facesDetected === 0 ? (
@@ -3726,26 +3764,46 @@ function App() {
                     <div className="actions wrap recording-actions camera-recording-actions">
                         {!isRecording ? (
                             <>
-                                <button
-                                    type="button"
-                                    className="btn ghost"
-                                    onClick={() => startRecording('audio')}
-                                    disabled={isTranscribing}
-                                >
-                                    Start Audio Recording
-                                </button>
+                                <div className="camera-recording-primary">
+                                    <button
+                                        type="button"
+                                        className="btn ghost"
+                                        onClick={() => startRecording('audio')}
+                                        disabled={isTranscribing}
+                                    >
+                                        Start Audio Recording
+                                    </button>
+                                    <span
+                                        className={`disabled-tooltip-wrap start-video-wrap${isVideoStartDisabled && videoStartDisabledReason ? ' has-tooltip' : ''}`}
+                                        data-disabled-reason={videoStartDisabledReason}
+                                    >
+                                        <button
+                                            type="button"
+                                            className="btn"
+                                            onClick={() => startRecording('video')}
+                                            disabled={isVideoStartDisabled}
+                                        >
+                                            Start Video Recording
+                                        </button>
+                                    </span>
+                                </div>
                                 <span
-                                    className={`disabled-tooltip-wrap start-video-wrap${isVideoStartDisabled && videoStartDisabledReason ? ' has-tooltip' : ''}`}
-                                    data-disabled-reason={videoStartDisabledReason}
+                                    className={`disabled-tooltip-wrap question-next-tooltip-wrap camera-recording-next-wrap${showNoNextQuestionTooltip ? ' has-tooltip' : ''}`}
                                 >
                                     <button
                                         type="button"
-                                        className="btn"
-                                        onClick={() => startRecording('video')}
-                                        disabled={isVideoStartDisabled}
+                                        className={`btn question-next-btn${showNoNextQuestionTooltip ? ' btn-disabled-look' : ''}`}
+                                        onClick={handleNextQuestionAction}
+                                        disabled={isImportQuestionDisabled}
+                                        title={nextQuestionTitle}
                                     >
-                                        Start Video Recording
+                                        Next Question
                                     </button>
+                                    {showNoNextQuestionTooltip ? (
+                                        <span className="question-next-hover-tooltip" role="tooltip">
+                                            {noNextQuestionTooltipText}
+                                        </span>
+                                    ) : null}
                                 </span>
                             </>
                         ) : (
@@ -3873,184 +3931,208 @@ function App() {
                     ) : null}
                 </section>
 
-                <section className={`panel session${centerCameraLayout ? ' centered-session-panel' : ''}`}>
+                <section
+                    className={`panel session${centerCameraLayout ? ' centered-session-panel' : ''}${isDesktopViewport ? ' floating-session-panel' : ''}${isDesktopViewport && isSessionPanelMinimized ? ' is-minimized' : ''}`}
+                >
+                    {isDesktopViewport && (
+                        <div className="floating-session-head">
+                            <h3>Question, Transcript and Metrics</h3>
+                            <button
+                                type="button"
+                                className="btn ghost floating-session-toggle"
+                                onClick={() => setIsSessionPanelMinimized((prev) => !prev)}
+                                aria-expanded={!isSessionPanelMinimized}
+                                aria-label={isSessionPanelMinimized ? 'Expand session panel' : 'Minimize session panel'}
+                                title={isSessionPanelMinimized ? 'Expand session panel' : 'Minimize session panel'}
+                            >
+                                <span className="material-symbols-outlined" aria-hidden="true">
+                                    {isSessionPanelMinimized ? 'open_in_full' : 'minimize'}
+                                </span>
+                            </button>
+                        </div>
+                    )}
 
-                    <div className="actions wrap export-actions">
-                        {(isFolderFeatureDisabled || !autoSaveMediaToFolder) && (
-                            <div className="export-download-actions">
-                                <button
-                                    type="button"
-                                    className="btn ghost"
-                                    onClick={downloadSelectedRecording}
-                                    disabled={!recordedAudioBlob && !recordedVideoBlob}
-                                >
-                                    Download Recording
-                                </button>
-                            </div>
-                        )}
-                        <label className="debug-toggle auto-summary-toggle">
-                            <input
-                                type="checkbox"
-                                checked={autoAddCompletedAnswersToSummary}
-                                onChange={(event) => setAutoAddCompletedAnswersToSummary(event.target.checked)}
-                                disabled={isRecording || isTranscribing}
-                            />
-                            <span>Auto-Add</span>
-                        </label>
-                        <button
-                            type="button"
-                            className="btn"
-                            onClick={addCurrentAnswerToSummary}
-                            disabled={
-                                !transcript ||
-                                !latestInterviewMetrics ||
-                                isRecording ||
-                                isTranscribing ||
-                                isCurrentAnswerAlreadyInSummary
-                            }
-                            title={
-                                isCurrentAnswerAlreadyInSummary
-                                    ? 'This answer is already in summary.'
-                                    : 'Add this answer to summary'
-                            }
-                        >
-                            {isCurrentAnswerAlreadyInSummary ? 'Already in Summary' : 'Add to Summary'}
-                        </button>
-                    </div>
+                    {(!isDesktopViewport || !isSessionPanelMinimized) && (
+                        <div className="floating-session-body">
 
-                    <div className="label question-row">
-                        <p className="question-main-label">
-                            Interview question
-                            {currentQuestionListNumber
-                                ? ` (#${currentQuestionListNumber})`
-                                : ''}
-                        </p>
-                        <div className="question-row-actions">
-                            {isDesktopViewport ? (
-                                <div
-                                    className={`disabled-tooltip-wrap question-next-tooltip-wrap${showNoNextQuestionTooltip ? ' has-tooltip' : ''}`}
-                                >
-                                    <button
-                                        type="button"
-                                        className={`btn question-next-btn${showNoNextQuestionTooltip ? ' btn-disabled-look' : ''}`}
-                                        onClick={handleNextQuestionAction}
-                                        disabled={isImportQuestionDisabled}
-                                        title={nextQuestionTitle}
-                                    >
-                                        Next Question
-                                    </button>
-                                    {showNoNextQuestionTooltip ? (
-                                        <span className="question-next-hover-tooltip" role="tooltip">
-                                            {noNextQuestionTooltipText}
-                                        </span>
-                                    ) : null}
-                                </div>
-                            ) : (
-                                <div className="question-bank-actions">
-                                    <button
-                                        type="button"
-                                        className="btn ghost question-bank-btn"
-                                        onClick={() => {
-                                            closeSummaryModal()
-                                            setQuestionsDrawerOpen(true)
-                                        }}
-                                    >
-                                        Questions List
-                                    </button>
-                                    <div
-                                        className={`disabled-tooltip-wrap question-next-tooltip-wrap${showNoNextQuestionTooltip ? ' has-tooltip' : ''}`}
-                                    >
+                            <div className="actions wrap export-actions">
+                                {(isFolderFeatureDisabled || !autoSaveMediaToFolder) && (
+                                    <div className="export-download-actions">
                                         <button
                                             type="button"
-                                            className={`btn question-next-btn${showNoNextQuestionTooltip ? ' btn-disabled-look' : ''}`}
-                                            onClick={handleNextQuestionAction}
-                                            disabled={isImportQuestionDisabled}
-                                            title={nextQuestionTitle}
+                                            className="btn ghost"
+                                            onClick={downloadSelectedRecording}
+                                            disabled={!recordedAudioBlob && !recordedVideoBlob}
                                         >
-                                            Next Question
+                                            Download Recording
                                         </button>
-                                        {showNoNextQuestionTooltip ? (
-                                            <span className="question-next-hover-tooltip" role="tooltip">
-                                                {noNextQuestionTooltipText}
-                                            </span>
-                                        ) : null}
                                     </div>
-                                </div>
-                            )}
-                        </div>
-                    </div>
-                    <textarea
-                        id="interview-question"
-                        className="field question-field"
-                        aria-label="Interview question"
-                        value={questionInput}
-                        onChange={(event) => setQuestionInput(event.target.value)}
-                        autoComplete="off"
-                        rows={2}
-                        placeholder="Type your question here, or import from the questions tab"
-                    />
-                    {needsRevalidation && (
-                        <p className="warning">
-                            Revalidation recommended. Your key was last checked over 30 days ago.
-                        </p>
-                    )}
-                    {!hasTtsProvider && readQuestionWithTts && (
-                        <p className="muted">
-                            Question TTS uses your system voice and is unavailable in this browser.
-                        </p>
-                    )}
-                    {banner && <p className="banner">{banner}</p>}
-                    {deepgramDebugEnabled && transcriptionProviderStatus && (
-                        <p className="muted">{transcriptionProviderStatus}</p>
-                    )}
-                    {deepgramDebugEnabled && questionTtsProviderStatus && (
-                        <p className="muted">{questionTtsProviderStatus}</p>
-                    )}
+                                )}
+                                <label className="debug-toggle auto-summary-toggle">
+                                    <input
+                                        type="checkbox"
+                                        checked={autoAddCompletedAnswersToSummary}
+                                        onChange={(event) => setAutoAddCompletedAnswersToSummary(event.target.checked)}
+                                        disabled={isRecording || isTranscribing}
+                                    />
+                                    <span>Auto-Add</span>
+                                </label>
+                                <button
+                                    type="button"
+                                    className="btn"
+                                    onClick={addCurrentAnswerToSummary}
+                                    disabled={
+                                        !transcript ||
+                                        !latestInterviewMetrics ||
+                                        isRecording ||
+                                        isTranscribing ||
+                                        isCurrentAnswerAlreadyInSummary
+                                    }
+                                    title={
+                                        isCurrentAnswerAlreadyInSummary
+                                            ? 'This answer is already in summary.'
+                                            : 'Add this answer to summary'
+                                    }
+                                >
+                                    {isCurrentAnswerAlreadyInSummary ? 'Already in Summary' : 'Add to Summary'}
+                                </button>
+                            </div>
 
-                    <div
-                        className="transcript-box session-output-box"
-                    >
-                        <h3>Transcript</h3>
-                        <p className="output-text">{transcriptDisplayText}</p>
-                    </div>
-
-                    <div className="transcript-metrics-compact" aria-live="polite">
-                        <p className="transcript-metrics-title">Interview Metrics</p>
-                        {!isRecording && latestInterviewMetrics ? (
-                            <div className="transcript-metrics-grid">
-                                <div className="transcript-metric-chip">
-                                    <span className="label">Length</span>
-                                    <span className="value">{latestInterviewMetrics.answerLengthSec}s</span>
-                                </div>
-                                <div className="transcript-metric-chip">
-                                    <span className="label">WPM</span>
-                                    <span className="value">{latestInterviewMetrics.wpm}</span>
-                                </div>
-                                <div className="transcript-metric-chip">
-                                    <span className="label">Hesitations</span>
-                                    <span className="value">{latestInterviewMetrics.hesitationsCount}</span>
-                                </div>
-                                <div className="transcript-metric-chip">
-                                    <span className="label">Gaze center</span>
-                                    <span className="value">{latestInterviewMetrics.gazeCenterPct}%</span>
-                                </div>
-                                <div className="transcript-metric-chip">
-                                    <span className="label">Gaze deviations</span>
-                                    <span className="value">{latestInterviewMetrics.gazeDeviationCount}</span>
-                                </div>
-                                <div className="transcript-metric-chip">
-                                    <span className="label">Shoulder shift</span>
-                                    <span className="value">{latestInterviewMetrics.shoulderShiftPeakPct}%</span>
+                            <div className="label question-row">
+                                <p className="question-main-label">
+                                    Interview question
+                                    {currentQuestionListNumber
+                                        ? ` (#${currentQuestionListNumber})`
+                                        : ''}
+                                </p>
+                                <div className="question-row-actions">
+                                    {isDesktopViewport ? (
+                                        <div
+                                            className={`disabled-tooltip-wrap question-next-tooltip-wrap${showNoNextQuestionTooltip ? ' has-tooltip' : ''}`}
+                                        >
+                                            <button
+                                                type="button"
+                                                className={`btn question-next-btn${showNoNextQuestionTooltip ? ' btn-disabled-look' : ''}`}
+                                                onClick={handleNextQuestionAction}
+                                                disabled={isImportQuestionDisabled}
+                                                title={nextQuestionTitle}
+                                            >
+                                                Next Question
+                                            </button>
+                                            {showNoNextQuestionTooltip ? (
+                                                <span className="question-next-hover-tooltip" role="tooltip">
+                                                    {noNextQuestionTooltipText}
+                                                </span>
+                                            ) : null}
+                                        </div>
+                                    ) : (
+                                        <div className="question-bank-actions">
+                                            <button
+                                                type="button"
+                                                className="btn ghost question-bank-btn"
+                                                onClick={() => {
+                                                    closeSummaryModal()
+                                                    setQuestionsDrawerOpen(true)
+                                                }}
+                                            >
+                                                Questions List
+                                            </button>
+                                            <div
+                                                className={`disabled-tooltip-wrap question-next-tooltip-wrap${showNoNextQuestionTooltip ? ' has-tooltip' : ''}`}
+                                            >
+                                                <button
+                                                    type="button"
+                                                    className={`btn question-next-btn${showNoNextQuestionTooltip ? ' btn-disabled-look' : ''}`}
+                                                    onClick={handleNextQuestionAction}
+                                                    disabled={isImportQuestionDisabled}
+                                                    title={nextQuestionTitle}
+                                                >
+                                                    Next Question
+                                                </button>
+                                                {showNoNextQuestionTooltip ? (
+                                                    <span className="question-next-hover-tooltip" role="tooltip">
+                                                        {noNextQuestionTooltipText}
+                                                    </span>
+                                                ) : null}
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
-                        ) : (
-                            <p className="muted transcript-metrics-empty">
-                                Values appear here after you stop and transcribe a recording.
-                            </p>
-                        )}
-                    </div>
+                            <textarea
+                                id="interview-question"
+                                className="field question-field"
+                                aria-label="Interview question"
+                                value={questionInput}
+                                onChange={(event) => setQuestionInput(event.target.value)}
+                                autoComplete="off"
+                                rows={2}
+                                placeholder="Type your question here, or import from the questions tab"
+                            />
+                            {needsRevalidation && (
+                                <p className="warning">
+                                    Revalidation recommended. Your key was last checked over 30 days ago.
+                                </p>
+                            )}
+                            {!hasTtsProvider && readQuestionWithTts && (
+                                <p className="muted">
+                                    Question TTS uses your system voice and is unavailable in this browser.
+                                </p>
+                            )}
+                            {banner && <p className="banner">{banner}</p>}
+                            {deepgramDebugEnabled && transcriptionProviderStatus && (
+                                <p className="muted">{transcriptionProviderStatus}</p>
+                            )}
+                            {deepgramDebugEnabled && questionTtsProviderStatus && (
+                                <p className="muted">{questionTtsProviderStatus}</p>
+                            )}
 
-                    {isDesktopViewport && previousAnswersError && <p className="warning">{previousAnswersError}</p>}
+                            <div
+                                className="transcript-box session-output-box"
+                            >
+                                <h3>Transcript</h3>
+                                <p className="output-text">{transcriptDisplayText}</p>
+                            </div>
+
+                            <div className="transcript-metrics-compact" aria-live="polite">
+                                <p className="transcript-metrics-title">Interview Metrics</p>
+                                {!isRecording && latestInterviewMetrics ? (
+                                    <div className="transcript-metrics-grid">
+                                        <div className="transcript-metric-chip">
+                                            <span className="label">Length</span>
+                                            <span className="value">{latestInterviewMetrics.answerLengthSec}s</span>
+                                        </div>
+                                        <div className="transcript-metric-chip">
+                                            <span className="label">WPM</span>
+                                            <span className="value">{latestInterviewMetrics.wpm}</span>
+                                        </div>
+                                        <div className="transcript-metric-chip">
+                                            <span className="label">Hesitations</span>
+                                            <span className="value">{latestInterviewMetrics.hesitationsCount}</span>
+                                        </div>
+                                        <div className="transcript-metric-chip">
+                                            <span className="label">Gaze center</span>
+                                            <span className="value">{latestInterviewMetrics.gazeCenterPct}%</span>
+                                        </div>
+                                        <div className="transcript-metric-chip">
+                                            <span className="label">Gaze deviations</span>
+                                            <span className="value">{latestInterviewMetrics.gazeDeviationCount}</span>
+                                        </div>
+                                        <div className="transcript-metric-chip">
+                                            <span className="label">Shoulder shift</span>
+                                            <span className="value">{latestInterviewMetrics.shoulderShiftPeakPct}%</span>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <p className="muted transcript-metrics-empty">
+                                        Values appear here after you stop and transcribe a recording.
+                                    </p>
+                                )}
+                            </div>
+
+                            {isDesktopViewport && previousAnswersError && <p className="warning">{previousAnswersError}</p>}
+                        </div>
+                    )}
                 </section>
             </main>
 
@@ -4260,7 +4342,7 @@ function App() {
                                                             ([key, value]) => (
                                                                 <div key={key} className="history-metric-row">
                                                                     <span className="metric-label">{key}</span>
-                                                                    <span>{String(value ?? 'n/a')}</span>
+                                                                    <span>{formatMetricDisplayValue(key, value)}</span>
                                                                 </div>
                                                             ),
                                                         )}
@@ -4431,7 +4513,7 @@ function App() {
                                                         {Object.entries(selectedSummary.metrics || {}).map(([key, value]) => (
                                                             <div key={key} className="history-metric-row">
                                                                 <span className="metric-label">{key}</span>
-                                                                <span>{String(value ?? 'n/a')}</span>
+                                                                <span>{formatMetricDisplayValue(key, value)}</span>
                                                             </div>
                                                         ))}
                                                     </div>
