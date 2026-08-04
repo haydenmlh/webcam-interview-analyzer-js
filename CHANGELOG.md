@@ -19,6 +19,64 @@ Use this template for future releases:
 -
 ```
 
+## [1.7.29] - 2026-08-04
+
+### Added
+- Added a left-side recording-row Deepgram key status link that shows `Deepgram Key Missing` or `Deepgram Key Invalid` when applicable.
+
+### Changed
+- Clicking the Deepgram key status link now opens Settings and focuses/selects the Deepgram API key input for faster correction.
+
+### Fixed
+- When video is disabled, the webcam overlay video toggle icon now renders in red for clearer disabled-state feedback.
+
+## [1.7.28] - 2026-08-04
+
+### Changed
+- Reworked camera display controls into three explicit modes: `Show both`, `Show self only`, and `Show interviewer only`, replacing conflicting independent toggle combinations.
+- Updated interviewer customization copy in Settings: `Upload Interviewer Image` is now `Choose Custom Interviewer` with matching helper text.
+- Reduced quick webcam-settings row density by lowering option text size and per-row height.
+
+### Fixed
+- Corrected camera layering so self-view always renders beneath the meeting overlay image.
+- Improved caret/menu responsiveness by reducing analysis workload and batching camera metric UI updates.
+- Removed hand and shoulder detection pipelines (and related metrics) to reduce runtime overhead and improve interactivity.
+
+## [1.7.27] - 2026-08-04
+
+### Added
+- Added webcam quick-settings mode controls and interviewer/overlay composition improvements, including persistent meeting overlay support.
+
+### Changed
+- Refined webcam quick-settings menu visuals and interactions (icon colors, hover hierarchy, compact spacing, and menu width/alignment).
+- Updated camera display behavior so interviewer imagery remains behind the fixed meeting overlay while preserving easter-egg interviewer selection behavior.
+- Improved quick-settings option labeling and ordering for clearer display-state selection.
+
+### Fixed
+- Prevented invalid camera-display combinations that could result in unintuitive blank/contradictory states.
+- Kept quick-settings popup open while toggling options, closing only on outside click.
+
+## [1.7.26] - 2026-08-04
+
+### Changed
+- Removed the footer version display and moved app version text into the Settings modal header next to the title.
+- Refined topbar button styling consistency by consolidating button-specific selectors and spacing/padding alignment.
+
+### Fixed
+- Restored proper icon/text centering for the `Open Gemini` topbar button after selector cleanup.
+- `No face detected` is now shown only when Camera Debug Overlay (`Debug`) is enabled.
+
+## [1.7.25] - 2026-08-04
+
+### Added
+- Added manual build and deployment instructions in `README.md` for non-GitHub-Actions workflows.
+
+### Changed
+- Removed the notification popup for the easter egg.
+
+### Fixed
+- `Next Question` now advances on the first click instead of occasionally re-selecting the current first question.
+
 ## [1.7.24] - 2026-08-04
 
 ### Changed

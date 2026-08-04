@@ -2,7 +2,7 @@
 
 Mock Interviewer is a React + Vite web app for practicing interview answers with live camera posture cues, audio/video recording, and Deepgram-powered transcription.
 
-Current app version: 1.7.3
+Current app version: 1.7.29
 
 ## Highlights
 
@@ -58,6 +58,47 @@ npm run lint
 npm run test
 npm run build
 ```
+
+## Manual build and deploy (no GitHub Actions)
+
+Use this when you want to publish manually to any static host.
+
+1. Build the site locally:
+
+```bash
+npm install
+npm run build
+```
+
+2. Confirm the production output exists in `dist/`.
+
+3. Optional local validation of the built site:
+
+```bash
+npm run preview
+```
+
+4. Deploy the `dist/` folder using one of these approaches:
+
+- Generic static host (Netlify, Vercel static, Cloudflare Pages, S3+CloudFront): upload `dist/` as the site root/output directory.
+- Manual GitHub Pages publish to a `gh-pages` branch:
+
+```bash
+git checkout --orphan gh-pages
+git rm -rf .
+cp -r dist/* .
+git add .
+git commit -m "Manual deploy"
+git push -f origin gh-pages
+```
+
+If you use Windows PowerShell for the manual GitHub Pages publish, replace the copy step with:
+
+```powershell
+Copy-Item -Recurse -Force dist\* .
+```
+
+5. If using a custom domain, make sure your deployed output includes `public/CNAME` content (or configure the domain directly in your host).
 
 ## Notes
 
