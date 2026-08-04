@@ -19,6 +19,15 @@ Use this template for future releases:
 -
 ```
 
+## [1.7.19] - 2026-08-04
+
+### Changed
+- Reduced top bar height for a slimmer header appearance.
+- Reduced topbar button sizing and global button vertical padding for a more compact UI.
+
+### Fixed
+- Updated camera placeholder copy to show `Camera disabled` when camera is not enabled.
+
 ## [1.7.18] - 2026-08-03
 
 ### Added

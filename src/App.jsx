@@ -3701,7 +3701,7 @@ function App() {
                                         <p>
                                             {cameraStatus === 'loading'
                                                 ? 'Starting camera...'
-                                                : 'Camera preview will appear here after Camera is enabled'}
+                                                : 'Camera disabled'}
                                         </p>
                                     </div>
                                 )}
@@ -3712,7 +3712,7 @@ function App() {
                                     <p>
                                         {cameraStatus === 'loading'
                                             ? 'Starting camera...'
-                                            : 'Camera preview will appear here after Camera is enabled'}
+                                            : 'Camera disabled'}
                                     </p>
                                 </div>
                             )
