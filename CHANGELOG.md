@@ -19,6 +19,113 @@ Use this template for future releases:
 -
 ```
 
+## [1.8.13] - 2026-08-05
+
+### Changed
+- Updated default LLM model fallbacks to use `google/gemma-4-26b-a4b-it:free` for OpenRouter and `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning` for NVIDIA NIM when no saved or environment override model is present.
+
+## [1.8.12] - 2026-08-05
+
+### Changed
+- Updated question navigation controls to hide `Next Question` and `Previous Question` actions when no imported/generated question list exists.
+- Added context-aware empty-state actions: show `Add JD and CV information` (opens CV/JD modal) when CV/JD is missing, otherwise show `Generate Questions`.
+- `Generate Questions` from the empty-state action now runs in the background without opening the Questions modal and shows a background-generation notification.
+
+## [1.8.11] - 2026-08-05
+
+### Changed
+- Updated repository release prompts so `/patch` and `/minor` skip `npm run lint` and `npm run build` by default, running validation only when explicitly requested.
+
+## [1.8.10] - 2026-08-05
+
+### Changed
+- Updated AM feedback PDF output to include only the generated AM feedback section and removed the Source Answer Summary section from exported documents.
+
+## [1.8.9] - 2026-08-05
+
+### Changed
+- Hardened AM PDF text normalization by mapping unicode punctuation and whitespace variants to safe plain-text equivalents before jsPDF layout.
+
+### Fixed
+- Removed additional hidden C1/control-byte artifacts from AM feedback text rendering, preventing misplaced characters and warped spacing in some copied/generated PDF output lines.
+
+## [1.8.8] - 2026-08-05
+
+### Changed
+- Restored standard top padding for the AM PDF preview modal and aligned the History modal to equal padding on all four sides.
+- Added bottom padding beneath the shared modal history header to improve spacing between the header row and body content.
+
+### Fixed
+- AM feedback PDF rendering now strips hidden ASCII control characters from generated text before layout, resolving warped word spacing in some LLM output lines.
+
+## [1.8.7] - 2026-08-05
+
+### Added
+- Added an in-app AM feedback PDF preview modal that opens immediately after report generation, with a top action bar for icon-only download and close controls.
+- Added an exit-confirmation popup for the AM PDF preview, including outside-click and close-button flows that require explicit confirmation before dismissing.
+
+### Changed
+- Updated AM report modal spacing with 5px top padding for both streaming and PDF preview variants.
+- Updated PDF-exit warning copy to clearly state that undownloaded output will be discarded on exit.
+
+### Fixed
+- Improved AM feedback PDF text rendering by normalizing/sanitizing invisible Unicode spacing and control characters that caused warped line layout in some LLM-generated sections.
+- Restored webcam-toggle persistence on refresh by removing permission-watcher logic that force-enabled camera state when permission was granted.
+
+## [1.8.4] - 2026-08-05
+
+### Added
+- Added a left-side `Generate AM Report` tab between `Answer Summary` and `Previous Answers` to generate account-manager feedback from summary data and CV/JD context.
+- Added AM report streaming preview modal with real-time LLM output, automatic scroll-to-latest behavior, and non-selectable preview text while generation is in progress.
+- Added an explicit `Cancel` action in the AM report streaming modal that aborts the active provider request.
+
+### Changed
+- AM report prompt/guideline wording was updated to target consulting-firm account-manager feedback with concise aggregate sections and no per-question feedback.
+- `Answer Summary` overview entries now show the question title in the top line and no longer show `Q1`/`Q2` numbering.
+- `Invert camera` now defaults to enabled for first-time users, and its Settings popup toggle was moved to the top of Camera Display options.
+
+### Fixed
+- Replaced the AM PDF HTML rendering path with a deterministic markdown-token renderer to prevent blank/empty PDF output.
+- AM PDF export now renders inline markdown emphasis (`**bold**`, `*italic*`) as styled text instead of literal markdown markers.
+- AM PDF export now renders markdown tables as grid tables with wrapped cells, header styling, and repeated headers across page breaks.
+
+## [1.8.2] - 2026-08-05
+
+### Added
+- Added an `Invert camera` toggle inside the webcam quick-settings menu using Material icon toggles.
+- Added a browser unload warning when questions or answer summaries exist to prevent accidental refresh/close loss.
+
+### Changed
+- Answer summaries are now session-only and no longer persist in local storage across page refreshes.
+- Added generation guidelines to the LLM question-generation context payload and prompt context block.
+
+### Fixed
+- Removed the light/dark mode toggle icon offset so the theme icon aligns without vertical nudge.
+
+## [1.8.1] - 2026-08-05
+
+### Changed
+- Moved LLM provider routing control into Settings with `Auto`, `OpenRouter only`, and `NVIDIA NIM only` modes.
+- `Auto` provider mode now attempts OpenRouter first and retries with NVIDIA NIM if OpenRouter fails during question generation.
+- Restored `Questions List` to the original left-side tab trigger and removed the bottom-left questions dock flow.
+
+### Fixed
+- Removed the right-side `AI Feedback` panel/button and all related chat-rail artifacts/logic from the main UI.
+
+## [1.8.0] - 2026-08-05
+
+### Added
+- Added a left-side `Generate Questions` tab between `Input CV/JD` and `Questions List` that opens the questions modal and generates interview questions from CV/JD/company context.
+- Added streaming AI question generation into the Questions Import modal with in-place progress text while responses are received.
+
+### Changed
+- Updated the CV/JD modal actions: renamed the copy action to `Copy` and added `Generate Questions` with a context-generation tooltip.
+- AI Feedback assistant responses now render with Markdown formatting for headings, lists, code blocks, and links.
+
+### Fixed
+- Generated questions now immediately update the webcam question overlay to the first generated question.
+- NVIDIA NIM chat requests now use a dev proxy path to avoid local browser CORS preflight failures.
+
 ## [1.7.29] - 2026-08-04
 
 ### Added

@@ -9,8 +9,8 @@ const DEFAULT_BASE_URLS = {
 }
 
 const DEFAULT_MODELS = {
-    openrouter: '',
-    nim: 'meta/llama-3.1-8b-instruct',
+    openrouter: 'google/gemma-4-26b-a4b-it:free',
+    nim: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning',
 }
 
 function providerLabel(providerId) {
@@ -39,6 +39,81 @@ function normalizeResponseText(content) {
     }
 
     return ''
+}
+
+function normalizeStreamingChunkText(content) {
+    if (typeof content === 'string') return content
+
+    if (Array.isArray(content)) {
+        const textParts = content
+            .map((item) => {
+                if (typeof item === 'string') return item
+                if (item && typeof item.text === 'string') return item.text
+                return ''
+            })
+            .filter(Boolean)
+
+        return textParts.join('')
+    }
+
+    return ''
+}
+
+function extractStreamingChunk(payload) {
+    const firstChoice = payload?.choices?.[0]
+    return normalizeStreamingChunkText(firstChoice?.delta?.content || firstChoice?.message?.content)
+}
+
+async function readStreamingChatResponse(body, onChunk) {
+    const reader = body.getReader()
+    const decoder = new TextDecoder()
+    let pending = ''
+    let fullText = ''
+
+    while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        pending += decoder.decode(value, { stream: true })
+
+        let newlineIndex = pending.indexOf('\n')
+        while (newlineIndex !== -1) {
+            const rawLine = pending.slice(0, newlineIndex)
+            pending = pending.slice(newlineIndex + 1)
+
+            const line = rawLine.trim()
+            if (!line.startsWith('data:')) {
+                newlineIndex = pending.indexOf('\n')
+                continue
+            }
+
+            const data = line.slice(5).trim()
+            if (!data || data === '[DONE]') {
+                newlineIndex = pending.indexOf('\n')
+                continue
+            }
+
+            try {
+                const payload = JSON.parse(data)
+                const chunk = extractStreamingChunk(payload)
+                if (!chunk) {
+                    newlineIndex = pending.indexOf('\n')
+                    continue
+                }
+
+                fullText += chunk
+                if (typeof onChunk === 'function') {
+                    onChunk(fullText, chunk)
+                }
+            } catch {
+                // Ignore malformed stream lines and continue.
+            }
+
+            newlineIndex = pending.indexOf('\n')
+        }
+    }
+
+    return fullText.trim()
 }
 
 function toErrorMessage(providerId, message) {
@@ -84,8 +159,12 @@ function mapProviderError(providerId, status, fallbackMessage = '') {
 function buildContextBlock(context = {}) {
     const question = context.question || '(no question)'
     const answer = context.answer || '(no transcript yet)'
+    const generationGuidelines =
+        context.generationGuidelines || 'No additional generation guidelines provided.'
     const metricSummary = context.metricSummary || 'No interview metrics yet'
     const companyName = context.companyName || '(not provided)'
+    const consultantFullName = context.consultantFullName || '(not provided)'
+    const jobTitle = context.jobTitle || '(not provided)'
     const cv = context.cv || '(not provided)'
     const jobDescription = context.jobDescription || '(not provided)'
 
@@ -93,8 +172,12 @@ function buildContextBlock(context = {}) {
         'Interview context:',
         `- Question: ${question}`,
         `- Answer transcript: ${answer}`,
+        '- Generation guidelines:',
+        generationGuidelines,
         `- Metrics summary: ${metricSummary}`,
         `- Company: ${companyName}`,
+        `- Consultant Full Name: ${consultantFullName}`,
+        `- Job Title: ${jobTitle}`,
         '- CV:',
         cv,
         '- Job Description:',
@@ -131,6 +214,10 @@ export function validateLlmProviderSettings({ providerId, apiKey, model, baseUrl
         return toErrorMessage(providerId, 'Base URL is required in Settings.')
     }
 
+    if (normalizedBase.startsWith('/')) {
+        return ''
+    }
+
     try {
         const parsed = new URL(normalizedBase)
         if (!/^https?:$/.test(parsed.protocol)) {
@@ -150,6 +237,9 @@ export async function sendInterviewChatMessage({
     baseUrl,
     userMessage,
     context,
+    stream = false,
+    onChunk,
+    signal,
     fetchImpl = fetch,
 }) {
     const settingsError = validateLlmProviderSettings({
@@ -177,6 +267,7 @@ export async function sendInterviewChatMessage({
     const requestBody = {
         model: String(model || '').trim(),
         temperature: 0.3,
+        stream: Boolean(stream),
         messages: [
             {
                 role: 'system',
@@ -196,11 +287,48 @@ export async function sendInterviewChatMessage({
             method: 'POST',
             headers: buildProviderHeaders(providerId, apiKey),
             body: JSON.stringify(requestBody),
+            signal,
         })
-    } catch {
+    } catch (fetchError) {
+        if (fetchError?.name === 'AbortError' || signal?.aborted) {
+            const error = new Error(toErrorMessage(providerId, 'Request canceled.'))
+            error.code = 'request-aborted'
+            throw error
+        }
+
         const error = new Error(toErrorMessage(providerId, 'Network error. Check your connection and retry.'))
         error.code = 'network-error'
         throw error
+    }
+
+    if (!response.ok) {
+        let payload
+        try {
+            payload = await response.json()
+        } catch {
+            // Some providers can return non-JSON error bodies.
+        }
+
+        const details = payload?.error?.message || payload?.error || payload?.message || ''
+        const error = new Error(mapProviderError(providerId, response.status, String(details || '')))
+        error.code = 'provider-http-error'
+        error.status = response.status
+        throw error
+    }
+
+    if (stream && response.body) {
+        const text = await readStreamingChatResponse(response.body, onChunk)
+        if (!text) {
+            const error = new Error(toErrorMessage(providerId, 'Returned an empty response.'))
+            error.code = 'provider-empty-response'
+            throw error
+        }
+
+        return {
+            text,
+            providerId,
+            model: String(model || '').trim(),
+        }
     }
 
     let payload
@@ -208,14 +336,6 @@ export async function sendInterviewChatMessage({
         payload = await response.json()
     } catch {
         // Some providers can return non-JSON error bodies.
-    }
-
-    if (!response.ok) {
-        const details = payload?.error?.message || payload?.error || payload?.message || ''
-        const error = new Error(mapProviderError(providerId, response.status, String(details || '')))
-        error.code = 'provider-http-error'
-        error.status = response.status
-        throw error
     }
 
     const firstChoice = payload?.choices?.[0]

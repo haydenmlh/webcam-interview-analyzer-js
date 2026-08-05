@@ -12,6 +12,23 @@ function jsonResponse(payload, status = 200) {
     })
 }
 
+function streamResponse(lines, status = 200) {
+    const encoder = new TextEncoder()
+    const body = new ReadableStream({
+        start(controller) {
+            lines.forEach((line) => {
+                controller.enqueue(encoder.encode(`${line}\n`))
+            })
+            controller.close()
+        },
+    })
+
+    return new Response(body, {
+        status,
+        headers: { 'content-type': 'text/event-stream' },
+    })
+}
+
 describe('llm providers', () => {
     it('returns default base URLs from env config helper', () => {
         const config = getLlmProviderConfig({})
@@ -99,5 +116,33 @@ describe('llm providers', () => {
             message: expect.stringContaining('empty response'),
             code: 'provider-empty-response',
         })
+    })
+
+    it('streams response chunks and returns full text', async () => {
+        const onChunk = vi.fn()
+        const fetchImpl = vi.fn(async () =>
+            streamResponse([
+                'data: {"choices":[{"delta":{"content":"Use "}}]}',
+                'data: {"choices":[{"delta":{"content":"specific examples"}}]}',
+                'data: {"choices":[{"delta":{"content":"."}}]}',
+                'data: [DONE]',
+            ]),
+        )
+
+        const result = await sendInterviewChatMessage({
+            providerId: 'nim',
+            apiKey: 'nim-key',
+            model: 'meta/llama-3.1-8b-instruct',
+            baseUrl: '/api/nim',
+            userMessage: 'How can I improve?',
+            context: {},
+            stream: true,
+            onChunk,
+            fetchImpl,
+        })
+
+        expect(result.text).toBe('Use specific examples.')
+        expect(onChunk).toHaveBeenCalled()
+        expect(onChunk).toHaveBeenLastCalledWith('Use specific examples.', '.')
     })
 })
