@@ -230,6 +230,87 @@ export function validateLlmProviderSettings({ providerId, apiKey, model, baseUrl
     return ''
 }
 
+export async function validateLlmProviderApiKey({
+    providerId,
+    apiKey,
+    baseUrl,
+    signal,
+    fetchImpl = fetch,
+}) {
+    if (!providerId) {
+        const error = new Error('Select a provider.')
+        error.code = 'settings-invalid'
+        throw error
+    }
+
+    const trimmedKey = String(apiKey || '').trim()
+    if (!trimmedKey) {
+        const error = new Error(toErrorMessage(providerId, 'API key is required in Settings.'))
+        error.code = 'settings-invalid'
+        throw error
+    }
+
+    const normalizedBase = normalizeBaseUrl(baseUrl)
+    if (!normalizedBase) {
+        const error = new Error(toErrorMessage(providerId, 'Base URL is required in Settings.'))
+        error.code = 'settings-invalid'
+        throw error
+    }
+
+    if (!normalizedBase.startsWith('/')) {
+        try {
+            const parsed = new URL(normalizedBase)
+            if (!/^https?:$/.test(parsed.protocol)) {
+                const error = new Error(toErrorMessage(providerId, 'Base URL must use http or https.'))
+                error.code = 'settings-invalid'
+                throw error
+            }
+        } catch {
+            const error = new Error(toErrorMessage(providerId, 'Base URL must be a valid URL.'))
+            error.code = 'settings-invalid'
+            throw error
+        }
+    }
+
+    const endpoint = `${normalizedBase}/models`
+
+    let response
+    try {
+        response = await fetchImpl(endpoint, {
+            method: 'GET',
+            headers: buildProviderHeaders(providerId, trimmedKey),
+            signal,
+        })
+    } catch (fetchError) {
+        if (fetchError?.name === 'AbortError' || signal?.aborted) {
+            const error = new Error(toErrorMessage(providerId, 'Request canceled.'))
+            error.code = 'request-aborted'
+            throw error
+        }
+
+        const error = new Error(toErrorMessage(providerId, 'Network error. Check your connection and retry.'))
+        error.code = 'network-error'
+        throw error
+    }
+
+    if (!response.ok) {
+        let payload
+        try {
+            payload = await response.json()
+        } catch {
+            // Some providers can return non-JSON error bodies.
+        }
+
+        const details = payload?.error?.message || payload?.error || payload?.message || ''
+        const error = new Error(mapProviderError(providerId, response.status, String(details || '')))
+        error.code = 'provider-http-error'
+        error.status = response.status
+        throw error
+    }
+
+    return { ok: true }
+}
+
 export async function sendInterviewChatMessage({
     providerId,
     apiKey,

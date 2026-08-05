@@ -15,6 +15,7 @@ import changelogMarkdown from '../CHANGELOG.md?raw'
 import {
     getLlmProviderConfig,
     sendInterviewChatMessage,
+    validateLlmProviderApiKey,
 } from './llm/providers'
 import { jsPDF } from 'jspdf'
 import { marked } from 'marked'
@@ -67,6 +68,58 @@ const HARDCODED_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1'
 const HARDCODED_NIM_BASE_URL = import.meta.env.DEV ? '/api/nim' : 'https://integrate.api.nvidia.com/v1'
 const UNSAVED_QA_WARNING_MESSAGE =
     'Questions and Answer Summaries will not be saved. Please download the reports as needed.'
+const CUSTOM_MODEL_OPTION_VALUE = '__custom__'
+const OPENROUTER_MODEL_PRESETS = [
+    {
+        value: LLM_PROVIDER_ENV_CONFIG.openrouter.model,
+        label: `Default Model [${LLM_PROVIDER_ENV_CONFIG.openrouter.model}]`,
+    },
+    {
+        value: 'nvidia/nemotron-3-ultra-550b-a55b:free',
+        label: 'NVIDIA Nemotron 3 Ultra 550B A55B [nvidia/nemotron-3-ultra-550b-a55b:free]',
+    },
+    {
+        value: 'cohere/north-mini-code:free',
+        label: 'Cohere North Mini Code [cohere/north-mini-code:free]',
+    },
+]
+const NIM_MODEL_PRESETS = [
+    {
+        value: LLM_PROVIDER_ENV_CONFIG.nim.model,
+        label: `Default Model [${LLM_PROVIDER_ENV_CONFIG.nim.model}]`,
+    },
+    {
+        value: 'openai/gpt-oss-120b',
+        label: 'OpenAI GPT OSS 120B [openai/gpt-oss-120b]',
+    },
+    {
+        value: 'openai/gpt-oss-20b',
+        label: 'OpenAI GPT OSS 20B [openai/gpt-oss-20b]',
+    },
+]
+
+function buildModelOptionsWithCurrent(presets) {
+    const uniquePresets = presets.filter(
+        (preset, index) =>
+            preset?.value && presets.findIndex((entry) => entry.value === preset.value) === index,
+    )
+
+    const options = [...uniquePresets]
+    options.push({
+        value: CUSTOM_MODEL_OPTION_VALUE,
+        label: 'Custom model...',
+    })
+    return options
+}
+
+function getModelSelectValue(currentModel, presets) {
+    const normalizedCurrent = String(currentModel || '').trim()
+    if (!normalizedCurrent) return CUSTOM_MODEL_OPTION_VALUE
+    if (presets.some((preset) => preset.value === normalizedCurrent)) {
+        return normalizedCurrent
+    }
+    return CUSTOM_MODEL_OPTION_VALUE
+}
 
 function normalizeLlmProviderMode(value) {
     if (
@@ -1820,10 +1873,24 @@ function App() {
     )
     const [openrouterApiKeyInput, setOpenrouterApiKeyInput] = useState(openrouterApiKey)
     const [openrouterModelInput, setOpenrouterModelInput] = useState(openrouterModel)
+    const [openrouterCustomModelInput, setOpenrouterCustomModelInput] = useState(() => {
+        const normalized = String(openrouterModel || '').trim()
+        return OPENROUTER_MODEL_PRESETS.some((preset) => preset.value === normalized)
+            ? ''
+            : normalized
+    })
     const [nimApiKeyInput, setNimApiKeyInput] = useState(nimApiKey)
     const [nimModelInput, setNimModelInput] = useState(nimModel)
+    const [nimCustomModelInput, setNimCustomModelInput] = useState(() => {
+        const normalized = String(nimModel || '').trim()
+        return NIM_MODEL_PRESETS.some((preset) => preset.value === normalized)
+            ? ''
+            : normalized
+    })
     const [llmProviderModeInput, setLlmProviderModeInput] = useState(llmProviderMode)
     const [llmSettingsError, setLlmSettingsError] = useState('')
+    const [isSavingOpenrouterKey, setIsSavingOpenrouterKey] = useState(false)
+    const [isSavingNimKey, setIsSavingNimKey] = useState(false)
     const [historyPlaybackRate, setHistoryPlaybackRate] = useState(1)
     const [selectedPreviousAnswerFileSizes, setSelectedPreviousAnswerFileSizes] = useState({
         report: '',
@@ -1879,6 +1946,26 @@ function App() {
         return matchedBuiltIn?.src || defaultInterviewerImage
     }, [customInterviewerImageDataUrl, interviewerImageId])
 
+    const openrouterModelOptions = useMemo(
+        () => buildModelOptionsWithCurrent(OPENROUTER_MODEL_PRESETS),
+        [],
+    )
+
+    const nimModelOptions = useMemo(
+        () => buildModelOptionsWithCurrent(NIM_MODEL_PRESETS),
+        [],
+    )
+
+    const openrouterModelSelectValue = useMemo(
+        () => getModelSelectValue(openrouterModelInput, OPENROUTER_MODEL_PRESETS),
+        [openrouterModelInput],
+    )
+
+    const nimModelSelectValue = useMemo(
+        () => getModelSelectValue(nimModelInput, NIM_MODEL_PRESETS),
+        [nimModelInput],
+    )
+
     const needsRevalidation = useMemo(() => {
         if (!lastValidatedAt) return false
 
@@ -1912,8 +1999,8 @@ function App() {
         const providerUsageToastPrefixC = 'Generating Detailed Report, LLM API used:'
         const timeoutMs =
             toast.startsWith(providerUsageToastPrefixA) ||
-            toast.startsWith(providerUsageToastPrefixB) ||
-            toast.startsWith(providerUsageToastPrefixC)
+                toast.startsWith(providerUsageToastPrefixB) ||
+                toast.startsWith(providerUsageToastPrefixC)
                 ? 5000
                 : 3500
         const timerId = window.setTimeout(() => setToast(''), timeoutMs)
@@ -3855,8 +3942,18 @@ function App() {
         setLlmProviderModeInput(llmProviderMode)
         setOpenrouterApiKeyInput(openrouterApiKey)
         setOpenrouterModelInput(openrouterModel)
+        setOpenrouterCustomModelInput(
+            OPENROUTER_MODEL_PRESETS.some((preset) => preset.value === openrouterModel)
+                ? ''
+                : openrouterModel,
+        )
         setNimApiKeyInput(nimApiKey)
         setNimModelInput(nimModel)
+        setNimCustomModelInput(
+            NIM_MODEL_PRESETS.some((preset) => preset.value === nimModel)
+                ? ''
+                : nimModel,
+        )
         setLlmSettingsError('')
     }
 
@@ -3882,6 +3979,11 @@ function App() {
         const trimmedOpenrouterKey = openrouterApiKeyInput.trim()
         const trimmedNimKey = nimApiKeyInput.trim()
 
+        if (!trimmedOpenrouterModel || !trimmedNimModel) {
+            setLlmSettingsError('Model is required. Select a model or enter a custom model name.')
+            return
+        }
+
         setLlmProviderMode(normalizedProviderMode)
         setOpenrouterApiKey(trimmedOpenrouterKey)
         setOpenrouterModel(trimmedOpenrouterModel)
@@ -3898,6 +4000,78 @@ function App() {
         setSavedValue(STORAGE_NIM_API_KEY, trimmedNimKey)
 
         setToast('LLM settings saved.')
+    }
+
+    function saveOpenrouterKeyOnly() {
+        const trimmedOpenrouterKey = openrouterApiKeyInput.trim()
+        if (!trimmedOpenrouterKey) {
+            setToast('OpenRouter API key is required.')
+            return
+        }
+
+        setIsSavingOpenrouterKey(true)
+        setOpenrouterApiKey(trimmedOpenrouterKey)
+        setSavedValue(STORAGE_OPENROUTER_API_KEY, trimmedOpenrouterKey)
+
+        void validateLlmProviderApiKey({
+            providerId: 'openrouter',
+            apiKey: trimmedOpenrouterKey,
+            baseUrl: HARDCODED_OPENROUTER_BASE_URL,
+        })
+            .then(() => {
+                setToast('OpenRouter API key saved and validated.')
+            })
+            .catch((error) => {
+                setToast(`OpenRouter API key saved, but validation failed: ${error?.message || 'Unknown error.'}`)
+            })
+            .finally(() => {
+                setIsSavingOpenrouterKey(false)
+            })
+    }
+
+    function saveNimKeyOnly() {
+        const trimmedNimKey = nimApiKeyInput.trim()
+        if (!trimmedNimKey) {
+            setToast('NVIDIA NIM API key is required.')
+            return
+        }
+
+        setIsSavingNimKey(true)
+        setNimApiKey(trimmedNimKey)
+        setSavedValue(STORAGE_NIM_API_KEY, trimmedNimKey)
+
+        void validateLlmProviderApiKey({
+            providerId: 'nim',
+            apiKey: trimmedNimKey,
+            baseUrl: HARDCODED_NIM_BASE_URL,
+        })
+            .then(() => {
+                setToast('NVIDIA NIM API key saved and validated.')
+            })
+            .catch((error) => {
+                setToast(`NVIDIA NIM API key saved, but validation failed: ${error?.message || 'Unknown error.'}`)
+            })
+            .finally(() => {
+                setIsSavingNimKey(false)
+            })
+    }
+
+    function handleOpenrouterModelSelection(nextValue) {
+        if (nextValue === CUSTOM_MODEL_OPTION_VALUE) {
+            setOpenrouterModelInput(openrouterCustomModelInput.trim())
+            return
+        }
+
+        setOpenrouterModelInput(nextValue)
+    }
+
+    function handleNimModelSelection(nextValue) {
+        if (nextValue === CUSTOM_MODEL_OPTION_VALUE) {
+            setNimModelInput(nimCustomModelInput.trim())
+            return
+        }
+
+        setNimModelInput(nextValue)
     }
 
     function resetLlmSettingsToDefaults() {
@@ -6872,41 +7046,98 @@ function App() {
                                 </p>
 
                                 <label className="label">OpenRouter API Key</label>
-                                <input
-                                    className="field"
-                                    type="password"
-                                    value={openrouterApiKeyInput}
-                                    onChange={(event) => setOpenrouterApiKeyInput(event.target.value)}
-                                    autoComplete="off"
-                                />
+                                <div className="key-input-row">
+                                    <input
+                                        className="field"
+                                        type="password"
+                                        value={openrouterApiKeyInput}
+                                        onChange={(event) => setOpenrouterApiKeyInput(event.target.value)}
+                                        autoComplete="off"
+                                    />
+                                    <button
+                                        type="button"
+                                        className="btn key-save-btn"
+                                        onMouseDown={(event) => event.preventDefault()}
+                                        onClick={saveOpenrouterKeyOnly}
+                                        disabled={isSavingOpenrouterKey}
+                                    >
+                                        {isSavingOpenrouterKey ? 'Saving...' : 'Save key'}
+                                    </button>
+                                </div>
 
                                 <label className="label">OpenRouter Model</label>
-                                <input
+                                <select
                                     className="field"
-                                    type="text"
-                                    value={openrouterModelInput}
-                                    onChange={(event) => setOpenrouterModelInput(event.target.value)}
-                                    placeholder="e.g. openai/gpt-oss-20b:free"
-                                />
+                                    value={openrouterModelSelectValue}
+                                    onChange={(event) => handleOpenrouterModelSelection(event.target.value)}
+                                >
+                                    {openrouterModelOptions.map((option) => (
+                                        <option key={option.value} value={option.value}>
+                                            {option.label}
+                                        </option>
+                                    ))}
+                                </select>
+                                {openrouterModelSelectValue === CUSTOM_MODEL_OPTION_VALUE && (
+                                    <input
+                                        className="field"
+                                        type="text"
+                                        value={openrouterCustomModelInput}
+                                        onChange={(event) => {
+                                            const nextValue = event.target.value
+                                            setOpenrouterCustomModelInput(nextValue)
+                                            setOpenrouterModelInput(nextValue)
+                                        }}
+                                        placeholder="Enter custom OpenRouter model id"
+                                    />
+                                )}
 
                                 <label className="label">NVIDIA NIM API Key</label>
-                                <input
-                                    className="field"
-                                    type="password"
-                                    value={nimApiKeyInput}
-                                    onChange={(event) => setNimApiKeyInput(event.target.value)}
-                                    autoComplete="off"
-                                />
+                                <div className="key-input-row">
+                                    <input
+                                        className="field"
+                                        type="password"
+                                        value={nimApiKeyInput}
+                                        onChange={(event) => setNimApiKeyInput(event.target.value)}
+                                        autoComplete="off"
+                                    />
+                                    <button
+                                        type="button"
+                                        className="btn key-save-btn"
+                                        onMouseDown={(event) => event.preventDefault()}
+                                        onClick={saveNimKeyOnly}
+                                        disabled={isSavingNimKey}
+                                    >
+                                        {isSavingNimKey ? 'Saving...' : 'Save key'}
+                                    </button>
+                                </div>
 
                                 <label className="label">NVIDIA NIM Model</label>
-                                <input
+                                <select
                                     className="field"
-                                    type="text"
-                                    value={nimModelInput}
-                                    onChange={(event) => setNimModelInput(event.target.value)}
-                                />
+                                    value={nimModelSelectValue}
+                                    onChange={(event) => handleNimModelSelection(event.target.value)}
+                                >
+                                    {nimModelOptions.map((option) => (
+                                        <option key={option.value} value={option.value}>
+                                            {option.label}
+                                        </option>
+                                    ))}
+                                </select>
+                                {nimModelSelectValue === CUSTOM_MODEL_OPTION_VALUE && (
+                                    <input
+                                        className="field"
+                                        type="text"
+                                        value={nimCustomModelInput}
+                                        onChange={(event) => {
+                                            const nextValue = event.target.value
+                                            setNimCustomModelInput(nextValue)
+                                            setNimModelInput(nextValue)
+                                        }}
+                                        placeholder="Enter custom NVIDIA NIM model id"
+                                    />
+                                )}
 
-                                <div className="actions wrap">
+                                <div className="actions wrap llm-settings-actions">
                                     <button
                                         type="button"
                                         className="btn"
