@@ -258,6 +258,10 @@ h3 {
     flex-wrap: wrap;
 }
 
+.llm-settings-actions {
+    padding-top: 0.35rem;
+}
+
 .camera-recording-actions {
     margin-top: 0.65rem;
     display: grid;

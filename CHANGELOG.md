@@ -19,6 +19,13 @@ Use this template for future releases:
 -
 ```
 
+## [1.8.17] - 2026-08-05
+
+### Changed
+- Updated LLM model dropdown labels to include the model path in square brackets after the model name for clearer endpoint visibility.
+- Refreshed OpenRouter preset options to `google/gemma-4-26b-a4b-it:free`, `nvidia/nemotron-3-ultra-550b-a55b:free`, and `cohere/north-mini-code:free`.
+- Refreshed NVIDIA NIM preset options to `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning`, `openai/gpt-oss-120b`, and `openai/gpt-oss-20b`.
+
 ## [1.8.16] - 2026-08-05
 
 ### Changed
