@@ -23,9 +23,8 @@ Required workflow:
 4. Update README.md to match the new version.
 5. Add a new top changelog entry using today's date and concise bullets under Added/Changed/Fixed as applicable.
 6. Base the changelog summary on recent implemented code changes (prefer current working changes and recent edits in this session).
-7. Run validation commands:
-   - npm run lint
-   - npm run build
+7. Skip validation commands by default for `/patch`.
+   - Only run `npm run lint` and `npm run build` if explicitly requested by the user.
 8. Report exactly what was changed, including updated version number and files touched.
 
 Constraints:

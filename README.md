@@ -2,18 +2,21 @@
 
 Mock Interviewer is a React + Vite web app for practicing interview answers with live camera posture cues, audio/video recording, and Deepgram-powered transcription.
 
-Current app version: 1.7.29
+Current app version: 1.8.13
 
 ## Highlights
 
 - Deepgram BYOK settings with local key persistence and optional server-side validation endpoint
-- Live MediaPipe analysis (face, hand, and pose) with feedback metrics
+- Live MediaPipe face analysis with eye-contact and gaze feedback metrics
 - Start Video Recording and Start Audio Recording workflows
 - Stop and Transcribe flow with transcript and interview metrics
 - Add to Summary action for current answer/transcript
 - Copy Summary for Gem export in Gemini-friendly markdown format
 - Open Gemini topbar action that launches Gemini in a right-side popup panel for quick paste-and-iterate workflow
-- CV/JD modal for storing company name, CV, and job description with Gemini-ready copy action
+- CV/JD modal for storing company name, consultant details, CV, and job description
+- Generate Questions flow from CV/JD/company/job-title context with streaming output
+- Generate AM Report flow with streaming preview, cancel support, and in-app PDF preview modal
+- AM feedback PDF preview with download icon action and exit-confirmation discard warning
 - URL-based multi-question import on page load
 - Interviewer mock image mode with optional self-view PiP
 - Camera controls in Settings: Enable Camera, Show Interviewer, Show Self View
@@ -101,9 +104,24 @@ Copy-Item -Recurse -Force dist\* .
 ## Notes
 
 - Deepgram transcription requests are performed from the browser using the user-provided key.
+- LLM generation requests (question generation + AM feedback report generation) are performed from the browser using user-provided OpenRouter or NVIDIA NIM API keys.
+- LLM keys are memory-only unless "Persist LLM API keys in this browser" is enabled in Settings.
 - Interview question playback uses OS/system text-to-speech in the browser.
 - If no Deepgram key is present and missing-key fallback is enabled, transcription falls back to local Whisper (in-browser) and question playback uses OS/system TTS.
 - Folder-based save/history features rely on the browser File System Access API and permission grants.
+
+## LLM generation setup
+
+1. Open Settings.
+2. Under "LLM Chat Providers", enter at least one provider API key.
+3. Configure model and base URL for the provider you want to use.
+4. Save LLM settings.
+5. Use `Generate Questions` or `Generate AM Report` from the left-side tabs.
+
+Behavior:
+- If provider settings are missing or invalid, generation returns an actionable error toast.
+- Auto provider mode tries OpenRouter first, then retries with NVIDIA NIM if OpenRouter fails.
+- Generation context can include current question, transcript, interview metrics summary, and optional CV/JD/company/job-title fields.
 
 ## URL question import
 
