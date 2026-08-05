@@ -19,6 +19,40 @@ Use this template for future releases:
 -
 ```
 
+## [1.8.16] - 2026-08-05
+
+### Changed
+- Updated detailed-report PDF pagination so `Detailed Per-Question Analysis` starts on a new page, and each `Question N` section after Question 1 starts on its own new page.
+- Updated the summary modal action label from `Copy Summary for Gem` to icon + `Copy All`.
+- Removed the AM/Detailed PDF `Original LLM Output` panel and related report-preview artifacts to restore a single-pane PDF preview.
+
+### Fixed
+- PDF text normalization now keeps degree symbols (`°`) while still sanitizing unsupported glyphs.
+- PDF text normalization now removes spacing between numbers and `%`/`°` so units remain attached (for example, `4%`, `19°`).
+
+## [1.8.15] - 2026-08-05
+
+### Changed
+- Updated AM/Detailed report diagnostic panel (`Original LLM Output`) to display the raw unsanitized LLM response for easier problematic-character debugging.
+- Extended LLM provider response handling to return both normalized text (used for generation pipelines) and raw text (used for diagnostics).
+
+### Fixed
+- Preserved leading/trailing raw response characters in streaming provider output by removing implicit trim from the raw streaming return path.
+
+## [1.8.14] - 2026-08-05
+
+### Added
+- Added a `Generate Detailed Report` flow with streaming preview, PDF generation, and in-app PDF preview, including per-question analysis and suggested improved answers grounded in transcript/metrics/CV/JD context.
+- Added an `Original LLM Output` section below AM/Detailed PDF previews for side-by-side raw-text inspection.
+
+### Changed
+- LLM API key persistence is now always enabled for browser storage; removed the Settings toggle and added `Clear keys and reset to defaults` next to `Save LLM settings`.
+- Repositioned the `Previous Answers` side tab to the bottom of the camera panel.
+- Updated multi-line recording/navigation controls with +3px top padding, and restored equal horizontal padding specifically for the `Generate Questions` button while keeping uneven `Next Question` horizontal padding.
+
+### Fixed
+- Hardened PDF text normalization for additional unsupported Unicode symbols (e.g., approximation/math variants), reducing garbled characters in exported report text.
+
 ## [1.8.13] - 2026-08-05
 
 ### Changed

@@ -40,7 +40,6 @@ const STORAGE_JD_TEXT = 'mia.jdText'
 const STORAGE_COMPANY_NAME = 'mia.companyName'
 const STORAGE_CONSULTANT_FULL_NAME = 'mia.consultantFullName'
 const STORAGE_JOB_TITLE = 'mia.jobTitle'
-const STORAGE_LLM_KEYS_PERSIST = 'mia.llm.persistKeys'
 const STORAGE_LLM_PROVIDER_MODE = 'mia.llm.providerMode'
 const STORAGE_OPENROUTER_API_KEY = 'mia.llm.openrouter.apiKey'
 const STORAGE_OPENROUTER_MODEL = 'mia.llm.openrouter.model'
@@ -61,6 +60,8 @@ const DEFAULT_QUESTION_GENERATION_GUIDELINES =
     'Generate concise, role-relevant interview questions. Cover technical depth, behavioral examples, and company alignment. Avoid duplicates. Return one question per line.'
 const DEFAULT_AM_REPORT_GENERATION_GUIDELINES =
     'Generate a report for an account-manager at a consulting firm regarding the Answers provided in context, which were answered by a consultant. Provide feedback grounded in the interview answer transcript, answer metrics, JD and CV. Be specific, concise, and evidence-based. Do not generate per question feedback.'
+const DEFAULT_DETAILED_REPORT_GENERATION_GUIDELINES =
+    'Generate an in-depth report with an executive summary first, then detailed per-question analysis. For each question include strengths, weaknesses, metric interpretation, and a suggested improved answer. Tailor suggested answers to CV/JD/company/job title when relevant, and explicitly state when profile context is not relevant to that specific question.'
 const LLM_PROVIDER_ENV_CONFIG = getLlmProviderConfig(import.meta.env)
 const HARDCODED_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1'
 const HARDCODED_NIM_BASE_URL = import.meta.env.DEV ? '/api/nim' : 'https://integrate.api.nvidia.com/v1'
@@ -994,11 +995,14 @@ function buildAnswerSummaryMarkdown(interviewSummaries, overallInterviewSummary)
     return sections.join('\n')
 }
 
-async function downloadAmReportPdf({
+async function downloadInterviewReportPdf({
     companyName,
     consultantFullName,
     jobTitle,
     feedbackText,
+    reportTitle = 'Account Manager Interview Feedback Report',
+    feedbackSectionTitle = 'AM Feedback Output',
+    fileNamePrefix = 'interview-report',
 }) {
     const doc = new jsPDF({ unit: 'pt', format: 'a4' })
     const margin = 36
@@ -1015,6 +1019,14 @@ async function downloadAmReportPdf({
         [/\u2018|\u2019|\u201A|\u201B/g, "'"],
         [/\u201C|\u201D|\u201E|\u201F/g, '"'],
         [/\u2026/g, '...'],
+        [/\u2248|\u223C|\u02DC/g, '~'],
+        [/\u2264/g, '<='],
+        [/\u2265/g, '>='],
+        [/\u2260/g, '!='],
+        [/\u00B1/g, '+/-'],
+        [/\u00D7/g, 'x'],
+        [/\u00F7/g, '/'],
+        [/\u2022/g, '- '],
     ]
 
     function normalizePdfTypography(value) {
@@ -1022,6 +1034,17 @@ async function downloadAmReportPdf({
         PDF_SAFE_REPLACEMENTS.forEach(([pattern, replacement]) => {
             output = output.replace(pattern, replacement)
         })
+
+        // jsPDF core Helvetica rendering can garble unsupported Unicode glyphs.
+        // Keep printable ASCII plus tabs/newlines to ensure stable output.
+        output = output
+            .normalize('NFKD')
+            .replace(/[\u0300-\u036F]/g, '')
+            // Keep degree symbol for angle/temperature metrics while removing other unsupported glyphs.
+            .replace(/[^\x09\x0A\x20-\x7E\u00B0]/g, '')
+            // Keep unit symbols attached to numeric values (e.g. 4%, 19°).
+            .replace(/(\d)\s+([%°])/g, '$1$2')
+
         return output
     }
 
@@ -1392,6 +1415,11 @@ async function downloadAmReportPdf({
         cursorY += 8
     }
 
+    const detailedPdfPaginationState = {
+        inDetailedSection: false,
+        questionHeadingCount: 0,
+    }
+
     function renderTokens(tokens, indent = 0) {
         if (!Array.isArray(tokens)) return
 
@@ -1406,6 +1434,27 @@ async function downloadAmReportPdf({
             if (token.type === 'heading') {
                 const headingLevel = Number(token.depth) || 2
                 const headingSize = headingLevel <= 1 ? 17 : headingLevel === 2 ? 15 : 13
+                const headingText = flattenTokenText(token).replace(/\s+/g, ' ').trim()
+
+                if (headingLevel === 2 && /^Detailed Per-Question Analysis$/i.test(headingText)) {
+                    detailedPdfPaginationState.inDetailedSection = true
+                    detailedPdfPaginationState.questionHeadingCount = 0
+                    if (cursorY > margin) {
+                        doc.addPage()
+                        cursorY = margin
+                    }
+                } else if (
+                    detailedPdfPaginationState.inDetailedSection &&
+                    headingLevel >= 3 &&
+                    /^Question\s+\d+\b/i.test(headingText)
+                ) {
+                    if (detailedPdfPaginationState.questionHeadingCount >= 1) {
+                        doc.addPage()
+                        cursorY = margin
+                    }
+                    detailedPdfPaginationState.questionHeadingCount += 1
+                }
+
                 const headingRuns = tokenizeInlineRuns(token.tokens || [
                     { type: 'text', text: flattenTokenText(token) },
                 ])
@@ -1505,7 +1554,7 @@ async function downloadAmReportPdf({
         String(feedbackText || '(no feedback output)').replace(/<[^>]*>/g, ''),
     )
 
-    writeTextBlock('Account Manager Interview Feedback Report', {
+    writeTextBlock(reportTitle, {
         fontSize: 18,
         fontStyle: 'bold',
         spacingAfter: 4,
@@ -1527,7 +1576,7 @@ async function downloadAmReportPdf({
         spacingAfter: 10,
     })
 
-    writeTextBlock('AM Feedback Output', {
+    writeTextBlock(feedbackSectionTitle, {
         fontSize: 14,
         fontStyle: 'bold',
         spacingAfter: 4,
@@ -1535,7 +1584,7 @@ async function downloadAmReportPdf({
     renderTokens(marked.lexer(safeFeedbackMarkdown), 0)
 
     const fileDateStamp = stamp.replace(/[:.]/g, '-').replace('T', '_').replace('Z', '')
-    const fileName = `am-feedback-report-${fileDateStamp}.pdf`
+    const fileName = `${fileNamePrefix}-${fileDateStamp}.pdf`
     const blob = doc.output('blob')
     return { blob, fileName }
 }
@@ -1576,6 +1625,7 @@ function App() {
     const prolongedClosureTimestampsSecRef = useRef([])
     const deepgramKeyInputRef = useRef(null)
     const amReportAbortControllerRef = useRef(null)
+    const detailedReportAbortControllerRef = useRef(null)
 
     const blinkTrackerRef = useRef({
         closed: false,
@@ -1738,31 +1788,32 @@ function App() {
     })
     const [isGeneratingQuestions, setIsGeneratingQuestions] = useState(false)
     const [isGeneratingAmReport, setIsGeneratingAmReport] = useState(false)
+    const [isGeneratingDetailedReport, setIsGeneratingDetailedReport] = useState(false)
     const [amReportModalOpen, setAmReportModalOpen] = useState(false)
     const [amReportMarkdownPreview, setAmReportMarkdownPreview] = useState('')
+    const [detailedReportModalOpen, setDetailedReportModalOpen] = useState(false)
+    const [detailedReportMarkdownPreview, setDetailedReportMarkdownPreview] = useState('')
     const [amReportPdfPreviewOpen, setAmReportPdfPreviewOpen] = useState(false)
     const [amReportPdfPreviewUrl, setAmReportPdfPreviewUrl] = useState('')
     const [amReportPdfBlob, setAmReportPdfBlob] = useState(null)
     const [amReportPdfFileName, setAmReportPdfFileName] = useState('')
+    const [detailedReportPdfPreviewOpen, setDetailedReportPdfPreviewOpen] = useState(false)
+    const [detailedReportPdfPreviewUrl, setDetailedReportPdfPreviewUrl] = useState('')
+    const [detailedReportPdfBlob, setDetailedReportPdfBlob] = useState(null)
+    const [detailedReportPdfFileName, setDetailedReportPdfFileName] = useState('')
     const [confirmCloseAmReportPdfOpen, setConfirmCloseAmReportPdfOpen] = useState(false)
-    const [persistLlmKeys, setPersistLlmKeys] = useState(() =>
-        getSavedBoolean(STORAGE_LLM_KEYS_PERSIST),
-    )
+    const [confirmCloseDetailedReportPdfOpen, setConfirmCloseDetailedReportPdfOpen] = useState(false)
     const [llmProviderMode, setLlmProviderMode] = useState(() =>
         normalizeLlmProviderMode(getSavedValue(STORAGE_LLM_PROVIDER_MODE)),
     )
     const [openrouterApiKey, setOpenrouterApiKey] = useState(() =>
-        getSavedBoolean(STORAGE_LLM_KEYS_PERSIST)
-            ? getSavedValue(STORAGE_OPENROUTER_API_KEY)
-            : '',
+        getSavedValue(STORAGE_OPENROUTER_API_KEY),
     )
     const [openrouterModel, setOpenrouterModel] = useState(() =>
         getSavedValue(STORAGE_OPENROUTER_MODEL) || LLM_PROVIDER_ENV_CONFIG.openrouter.model,
     )
     const [nimApiKey, setNimApiKey] = useState(() =>
-        getSavedBoolean(STORAGE_LLM_KEYS_PERSIST)
-            ? getSavedValue(STORAGE_NIM_API_KEY)
-            : '',
+        getSavedValue(STORAGE_NIM_API_KEY),
     )
     const [nimModel, setNimModel] = useState(() =>
         getSavedValue(STORAGE_NIM_MODEL) || LLM_PROVIDER_ENV_CONFIG.nim.model,
@@ -1858,8 +1909,11 @@ function App() {
         if (!toast) return undefined
         const providerUsageToastPrefixA = 'Generating Questions, LLM API used:'
         const providerUsageToastPrefixB = 'Generating AM Report, LLM API used:'
+        const providerUsageToastPrefixC = 'Generating Detailed Report, LLM API used:'
         const timeoutMs =
-            toast.startsWith(providerUsageToastPrefixA) || toast.startsWith(providerUsageToastPrefixB)
+            toast.startsWith(providerUsageToastPrefixA) ||
+            toast.startsWith(providerUsageToastPrefixB) ||
+            toast.startsWith(providerUsageToastPrefixC)
                 ? 5000
                 : 3500
         const timerId = window.setTimeout(() => setToast(''), timeoutMs)
@@ -2300,6 +2354,7 @@ function App() {
             : 'n/a'
     }, [selectedPreviousAnswer, selectedPreviousAnswerTotalSizeBytes])
     const amReportPreviewScrollRef = useRef(null)
+    const detailedReportPreviewScrollRef = useRef(null)
 
     const isVideoStartDisabled =
         isTranscribing || isPreparingRecording || cameraStatus !== 'ready'
@@ -2472,12 +2527,27 @@ function App() {
     }, [amReportMarkdownPreview, amReportModalOpen])
 
     useEffect(() => {
+        if (!detailedReportModalOpen) return
+        const container = detailedReportPreviewScrollRef.current
+        if (!container) return
+        container.scrollTop = container.scrollHeight
+    }, [detailedReportMarkdownPreview, detailedReportModalOpen])
+
+    useEffect(() => {
         return () => {
             if (amReportPdfPreviewUrl) {
                 URL.revokeObjectURL(amReportPdfPreviewUrl)
             }
         }
     }, [amReportPdfPreviewUrl])
+
+    useEffect(() => {
+        return () => {
+            if (detailedReportPdfPreviewUrl) {
+                URL.revokeObjectURL(detailedReportPdfPreviewUrl)
+            }
+        }
+    }, [detailedReportPdfPreviewUrl])
 
     const overallInterviewSummary = useMemo(() => {
         if (!interviewSummaries.length) {
@@ -2794,7 +2864,7 @@ function App() {
     }
 
     async function generateAmFeedbackReport() {
-        if (isGeneratingAmReport) return
+        if (isGeneratingAmReport || isGeneratingDetailedReport) return
 
         if (!interviewSummaries.length) {
             setToast('Add at least one answer to Answer Summary before generating AM report.')
@@ -2895,11 +2965,14 @@ function App() {
                 throw lastError || new Error('Could not generate AM report.')
             }
 
-            const pdfDocument = await downloadAmReportPdf({
+            const pdfDocument = await downloadInterviewReportPdf({
                 companyName,
                 consultantFullName,
                 jobTitle,
                 feedbackText: result.text,
+                reportTitle: 'Account Manager Interview Feedback Report',
+                feedbackSectionTitle: 'AM Feedback Output',
+                fileNamePrefix: 'am-feedback-report',
             })
 
             if (!pdfDocument?.blob) {
@@ -2926,8 +2999,151 @@ function App() {
         }
     }
 
+    async function generateDetailedInterviewReport() {
+        if (isGeneratingDetailedReport || isGeneratingAmReport) return
+
+        if (!interviewSummaries.length) {
+            setToast('Add at least one answer to Answer Summary before generating a detailed report.')
+            return
+        }
+
+        const cv = cvText.trim()
+        const jobDescription = jdText.trim()
+        const companyName = companyNameInput.trim()
+        const consultantFullName = consultantFullNameInput.trim()
+        const jobTitle = jobTitleInput.trim()
+        if (!cv && !jobDescription && !companyName) {
+            setToast('Add CV, JD, or company name before generating a detailed report.')
+            return
+        }
+
+        const providerCandidates = getLlmProviderCandidatesForCurrentMode()
+        if (!providerCandidates.length) {
+            showLlmProviderMissingKeyToast()
+            return
+        }
+
+        const summaryMarkdown = buildAnswerSummaryMarkdown(
+            interviewSummaries,
+            overallInterviewSummary,
+        )
+
+        const metricSummary = [
+            `Total answers: ${overallInterviewSummary.totalAnswers}`,
+            `Average WPM: ${overallInterviewSummary.averageWpm}`,
+            `Average answer length (sec): ${overallInterviewSummary.averageAnswerLengthSec}`,
+            `Average hesitations: ${overallInterviewSummary.averageHesitations}`,
+            `Average gaze center (%): ${overallInterviewSummary.averageGazeCenterPct}`,
+        ].join(', ')
+
+        setIsGeneratingDetailedReport(true)
+        setDetailedReportModalOpen(true)
+        setDetailedReportMarkdownPreview('Generating detailed report...')
+        setConfirmCloseDetailedReportPdfOpen(false)
+        setToast('Generating detailed interview report...')
+
+        try {
+            let result = null
+            let lastError = null
+            const controller = new AbortController()
+            detailedReportAbortControllerRef.current = controller
+
+            for (let index = 0; index < providerCandidates.length; index += 1) {
+                const providerConfig = providerCandidates[index]
+                setDetailedReportMarkdownPreview('')
+
+                if (controller.signal.aborted) {
+                    const abortError = new Error('Detailed report generation canceled.')
+                    abortError.code = 'request-aborted'
+                    throw abortError
+                }
+
+                const providerLabel = getLlmProviderUsageLabel(providerConfig.providerId)
+                const providerUsageMessage = `Generating Detailed Report, LLM API used: ${providerLabel}`
+                console.info(providerUsageMessage)
+                setToast(providerUsageMessage)
+
+                try {
+                    result = await sendInterviewChatMessage({
+                        providerId: providerConfig.providerId,
+                        apiKey: providerConfig.apiKey,
+                        model: providerConfig.model,
+                        baseUrl: providerConfig.baseUrl,
+                        userMessage:
+                            'You are an Interview Expert for a Consulting Firm. Using the provided interview context, return markdown with these exact top-level sections in order: 1) Initial Feedback, 2) Overall Rating, 3) Answer Strengths, 4) Answer Weaknesses, 5) Future Directions For Improvement, 6) Detailed Per-Question Analysis. In section 6, create one subsection per answer using heading format "### Question N: <question>" and include: Candidate Answer Snapshot, Strengths, Weaknesses, Metric Interpretation, Suggested Improved Answer. The Suggested Improved Answer must describe an ideal answer and tailor it to CV/JD/company/job title context when relevant; if not relevant, explicitly state that no CV/JD tailoring applies. Keep feedback specific, concise, and evidence-based using transcript and metrics.',
+                        context: {
+                            question: 'Generate a detailed mock interview report with both overall summary and per-question analysis.',
+                            answer: summaryMarkdown,
+                            generationGuidelines: DEFAULT_DETAILED_REPORT_GENERATION_GUIDELINES,
+                            metricSummary,
+                            companyName,
+                            consultantFullName,
+                            jobTitle,
+                            jobDescription,
+                            cv,
+                        },
+                        stream: true,
+                        onChunk: (fullText) => {
+                            setDetailedReportMarkdownPreview(fullText || '')
+                        },
+                        signal: controller.signal,
+                    })
+                    break
+                } catch (error) {
+                    if (error?.code === 'request-aborted') {
+                        throw error
+                    }
+                    lastError = error
+                }
+            }
+
+            if (!result?.text) {
+                throw lastError || new Error('Could not generate detailed report.')
+            }
+
+            const pdfDocument = await downloadInterviewReportPdf({
+                companyName,
+                consultantFullName,
+                jobTitle,
+                feedbackText: result.text,
+                reportTitle: 'Detailed Interview Report',
+                feedbackSectionTitle: 'Detailed Feedback Output',
+                fileNamePrefix: 'detailed-interview-report',
+            })
+
+            if (!pdfDocument?.blob) {
+                throw new Error('Could not prepare detailed report PDF.')
+            }
+
+            const previewUrl = URL.createObjectURL(pdfDocument.blob)
+            setDetailedReportPdfPreviewUrl(previewUrl)
+            setDetailedReportPdfBlob(pdfDocument.blob)
+            setDetailedReportPdfFileName(pdfDocument.fileName || 'detailed-interview-report.pdf')
+            setDetailedReportPdfPreviewOpen(true)
+            setDetailedReportModalOpen(false)
+            setToast('Detailed report PDF ready. Review or download.')
+        } catch (error) {
+            setDetailedReportModalOpen(false)
+            if (error?.code === 'request-aborted') {
+                setToast('Detailed report generation canceled.')
+            } else {
+                setToast(error?.message || 'Could not generate detailed report.')
+            }
+        } finally {
+            detailedReportAbortControllerRef.current = null
+            setIsGeneratingDetailedReport(false)
+        }
+    }
+
     function cancelAmReportGeneration() {
         const controller = amReportAbortControllerRef.current
+        if (controller) {
+            controller.abort()
+        }
+    }
+
+    function cancelDetailedReportGeneration() {
+        const controller = detailedReportAbortControllerRef.current
         if (controller) {
             controller.abort()
         }
@@ -2943,8 +3159,22 @@ function App() {
         setToast('AM feedback PDF downloaded.')
     }
 
+    function downloadCurrentDetailedReportPdf() {
+        if (!detailedReportPdfBlob) {
+            setToast('No detailed report PDF is available to download.')
+            return
+        }
+
+        downloadBlob(detailedReportPdfBlob, detailedReportPdfFileName || 'detailed-interview-report.pdf')
+        setToast('Detailed report PDF downloaded.')
+    }
+
     function requestCloseAmReportPdfPreview() {
         setConfirmCloseAmReportPdfOpen(true)
+    }
+
+    function requestCloseDetailedReportPdfPreview() {
+        setConfirmCloseDetailedReportPdfOpen(true)
     }
 
     function closeAmReportPdfPreviewConfirmed() {
@@ -2953,6 +3183,14 @@ function App() {
         setAmReportPdfBlob(null)
         setAmReportPdfFileName('')
         setAmReportPdfPreviewUrl('')
+    }
+
+    function closeDetailedReportPdfPreviewConfirmed() {
+        setConfirmCloseDetailedReportPdfOpen(false)
+        setDetailedReportPdfPreviewOpen(false)
+        setDetailedReportPdfBlob(null)
+        setDetailedReportPdfFileName('')
+        setDetailedReportPdfPreviewUrl('')
     }
 
     function importQuestion(questionText, options = {}) {
@@ -3651,20 +3889,43 @@ function App() {
         setNimModel(trimmedNimModel)
         setLlmSettingsError('')
 
-        setSavedValue(STORAGE_LLM_KEYS_PERSIST, persistLlmKeys ? 'true' : 'false')
+        clearSavedValue('mia.llm.persistKeys')
         setSavedValue(STORAGE_LLM_PROVIDER_MODE, normalizedProviderMode)
         setSavedValue(STORAGE_OPENROUTER_MODEL, trimmedOpenrouterModel)
         setSavedValue(STORAGE_NIM_MODEL, trimmedNimModel)
 
-        if (persistLlmKeys) {
-            setSavedValue(STORAGE_OPENROUTER_API_KEY, trimmedOpenrouterKey)
-            setSavedValue(STORAGE_NIM_API_KEY, trimmedNimKey)
-        } else {
-            clearSavedValue(STORAGE_OPENROUTER_API_KEY)
-            clearSavedValue(STORAGE_NIM_API_KEY)
-        }
+        setSavedValue(STORAGE_OPENROUTER_API_KEY, trimmedOpenrouterKey)
+        setSavedValue(STORAGE_NIM_API_KEY, trimmedNimKey)
 
         setToast('LLM settings saved.')
+    }
+
+    function resetLlmSettingsToDefaults() {
+        const defaultProviderMode = LLM_PROVIDER_MODE_AUTO
+        const defaultOpenrouterModel = LLM_PROVIDER_ENV_CONFIG.openrouter.model
+        const defaultNimModel = LLM_PROVIDER_ENV_CONFIG.nim.model
+
+        setLlmProviderMode(defaultProviderMode)
+        setOpenrouterApiKey('')
+        setOpenrouterModel(defaultOpenrouterModel)
+        setNimApiKey('')
+        setNimModel(defaultNimModel)
+
+        setLlmProviderModeInput(defaultProviderMode)
+        setOpenrouterApiKeyInput('')
+        setOpenrouterModelInput(defaultOpenrouterModel)
+        setNimApiKeyInput('')
+        setNimModelInput(defaultNimModel)
+        setLlmSettingsError('')
+
+        clearSavedValue('mia.llm.persistKeys')
+        clearSavedValue(STORAGE_OPENROUTER_API_KEY)
+        clearSavedValue(STORAGE_NIM_API_KEY)
+        setSavedValue(STORAGE_LLM_PROVIDER_MODE, defaultProviderMode)
+        setSavedValue(STORAGE_OPENROUTER_MODEL, defaultOpenrouterModel)
+        setSavedValue(STORAGE_NIM_MODEL, defaultNimModel)
+
+        setToast('LLM settings reset to defaults.')
     }
 
     function openSelectRecordingsFolderModal() {
@@ -5070,7 +5331,7 @@ function App() {
                                 onClick={() => {
                                     void generateAmFeedbackReport()
                                 }}
-                                disabled={isGeneratingAmReport || !interviewSummaries.length}
+                                disabled={isGeneratingAmReport || isGeneratingDetailedReport || !interviewSummaries.length}
                                 title={
                                     interviewSummaries.length
                                         ? 'Generate AM feedback report PDF from summary and CV/JD'
@@ -5078,6 +5339,23 @@ function App() {
                                 }
                             >
                                 {isGeneratingAmReport ? 'Generating...' : 'Generate AM Report'}
+                            </button>
+                        )}
+                        {isDesktopViewport && (
+                            <button
+                                type="button"
+                                className="detailed-report-peek-tab"
+                                onClick={() => {
+                                    void generateDetailedInterviewReport()
+                                }}
+                                disabled={isGeneratingDetailedReport || isGeneratingAmReport || !interviewSummaries.length}
+                                title={
+                                    interviewSummaries.length
+                                        ? 'Generate detailed per-question report with suggested improved answers'
+                                        : 'Answer a question first to generate a detailed report.'
+                                }
+                            >
+                                {isGeneratingDetailedReport ? 'Generating...' : 'Generate Detailed Report'}
                             </button>
                         )}
                         {isDesktopViewport && (
@@ -5367,7 +5645,7 @@ function App() {
                                         ) : isGeneratingQuestions ? null : canPromptGenerateQuestionsFromCvJd ? (
                                             <button
                                                 type="button"
-                                                className="btn question-next-btn two-line-btn"
+                                                className="btn question-next-btn question-generate-btn two-line-btn"
                                                 onClick={generateQuestionsInBackground}
                                                 disabled={isImportQuestionDisabled}
                                                 title="Generate questions in the background"
@@ -6058,8 +6336,13 @@ function App() {
                                     className="btn ghost"
                                     onClick={copySummaryToClipboard}
                                     disabled={!interviewSummaries.length}
+                                    aria-label="Copy All"
+                                    title="Copy All"
                                 >
-                                    Copy Answer Summary for Gem
+                                    <span className="material-symbols-outlined topbar-icon" aria-hidden="true">
+                                        content_copy
+                                    </span>
+                                    <span>Copy All</span>
                                 </button>
                                 <button
                                     type="button"
@@ -6569,14 +6852,6 @@ function App() {
                                 <p className="muted">
                                     Configure OpenRouter or NVIDIA NIM for question generation.
                                 </p>
-                                <label className="debug-toggle">
-                                    <input
-                                        type="checkbox"
-                                        checked={persistLlmKeys}
-                                        onChange={(event) => setPersistLlmKeys(event.target.checked)}
-                                    />
-                                    <span>Persist LLM API keys in this browser</span>
-                                </label>
 
                                 <label className="label">Select Provider</label>
                                 <select
@@ -6638,6 +6913,14 @@ function App() {
                                         onClick={saveLlmSettings}
                                     >
                                         Save LLM settings
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn ghost"
+                                        onClick={resetLlmSettingsToDefaults}
+                                        title="Clear keys and reset provider/model defaults"
+                                    >
+                                        Clear keys and reset to defaults
                                     </button>
                                 </div>
 
@@ -6952,6 +7235,95 @@ function App() {
                 </div>
             )}
 
+            {detailedReportModalOpen && (
+                <div className="overlay" role="presentation">
+                    <div
+                        className="modal question-modal am-report-stream-modal"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="detailed-report-stream-title"
+                    >
+                        <div className="history-modal-header">
+                            <h2 id="detailed-report-stream-title">Generating Detailed Report</h2>
+                            <div className="summary-header-actions">
+                                <button
+                                    type="button"
+                                    className="btn danger"
+                                    onClick={cancelDetailedReportGeneration}
+                                    disabled={!isGeneratingDetailedReport}
+                                >
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                        <div className="question-modal-body am-report-stream-body" ref={detailedReportPreviewScrollRef}>
+                            <div className="question-modal-inner am-report-stream-inner" aria-live="polite">
+                                <div className="am-report-stream-content no-select">
+                                    <ReactMarkdown>{detailedReportMarkdownPreview || 'Generating detailed report...'}</ReactMarkdown>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {detailedReportPdfPreviewOpen && (
+                <div
+                    className="overlay"
+                    role="presentation"
+                    onPointerDown={(event) => {
+                        if (event.target === event.currentTarget) {
+                            requestCloseDetailedReportPdfPreview()
+                        }
+                    }}
+                >
+                    <div
+                        className="modal question-modal am-report-pdf-modal"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="detailed-report-pdf-title"
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        <div className="history-modal-header">
+                            <h2 id="detailed-report-pdf-title">Detailed Interview Report PDF</h2>
+                            <div className="summary-header-actions">
+                                <button
+                                    type="button"
+                                    className="btn ghost history-close-btn icon-only-btn"
+                                    onClick={downloadCurrentDetailedReportPdf}
+                                    aria-label="Download PDF"
+                                    title="Download PDF"
+                                >
+                                    <span className="material-symbols-outlined" aria-hidden="true">
+                                        download
+                                    </span>
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn ghost history-close-btn"
+                                    onClick={requestCloseDetailedReportPdfPreview}
+                                    aria-label="Close"
+                                    title="Close"
+                                >
+                                    X
+                                </button>
+                            </div>
+                        </div>
+                        <div className="am-report-pdf-body">
+                            {detailedReportPdfPreviewUrl ? (
+                                <iframe
+                                    title="Detailed Interview Report PDF Preview"
+                                    src={detailedReportPdfPreviewUrl}
+                                    className="am-report-pdf-iframe"
+                                />
+                            ) : (
+                                <p className="muted">Could not render PDF preview.</p>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {confirmCloseAmReportPdfOpen && (
                 <div className="overlay" role="presentation">
                     <div
@@ -6976,6 +7348,38 @@ function App() {
                                 type="button"
                                 className="btn ghost"
                                 onClick={() => setConfirmCloseAmReportPdfOpen(false)}
+                            >
+                                Stay
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {confirmCloseDetailedReportPdfOpen && (
+                <div className="overlay" role="presentation">
+                    <div
+                        className="modal compact"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="detailed-pdf-close-title"
+                    >
+                        <h2 id="detailed-pdf-close-title">Exit PDF preview?</h2>
+                        <p className="muted">
+                            If you exit now, the generated PDF will not be saved and will be discarded.
+                        </p>
+                        <div className="actions">
+                            <button
+                                type="button"
+                                className="btn danger"
+                                onClick={closeDetailedReportPdfPreviewConfirmed}
+                            >
+                                Exit
+                            </button>
+                            <button
+                                type="button"
+                                className="btn ghost"
+                                onClick={() => setConfirmCloseDetailedReportPdfOpen(false)}
                             >
                                 Stay
                             </button>
