@@ -1717,11 +1717,17 @@ h3 {
     padding-right: 0.4rem;
 }
 
+.btn.question-next-btn.question-generate-btn {
+    padding-left: 0.9rem;
+    padding-right: 0.9rem;
+}
+
 .btn.question-prev-btn {
     padding-left: 0.4rem;
 }
 
 .two-line-btn {
+    padding-top: calc(0.52rem + 3px);
     white-space: normal;
     line-height: 1.12;
     text-align: center;
@@ -1981,10 +1987,37 @@ h3 {
     transition: transform 180ms ease, box-shadow 180ms ease, left 180ms ease;
 }
 
-.previous-peek-tab-wrap {
+.detailed-report-peek-tab {
     position: absolute;
     left: calc(-1 * var(--peek-tab-width));
     top: calc(var(--peek-tab-top) + (var(--peek-tab-step) * 5) + (var(--peek-tab-tall-extra) * 5));
+    border: 1px solid var(--line);
+    border-right: none;
+    border-radius: 10px 0 0 10px;
+    background: color-mix(in srgb, var(--card-bg), white 4%);
+    color: var(--ink-900);
+    font-weight: 700;
+    width: var(--peek-tab-width);
+    height: calc(var(--peek-tab-height) + var(--peek-tab-tall-extra));
+    padding: 0.6rem 0.8rem;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    white-space: normal;
+    line-height: 1.1;
+    cursor: pointer;
+    box-shadow: -6px 8px 18px var(--shadow-soft);
+    z-index: 1;
+    transition: transform 180ms ease, box-shadow 180ms ease, left 180ms ease;
+}
+
+.previous-peek-tab-wrap {
+    position: absolute;
+    left: calc(-1 * var(--peek-tab-width));
+    top: auto;
+    bottom: 0.7rem;
     z-index: 1;
 }
 
@@ -2099,6 +2132,11 @@ h3 {
     box-shadow: -8px 12px 24px var(--shadow-soft);
 }
 
+.detailed-report-peek-tab:hover {
+    transform: translateY(-1px);
+    box-shadow: -8px 12px 24px var(--shadow-soft);
+}
+
 .cvjd-peek-tab:hover {
     transform: translateY(-1px);
     box-shadow: -8px 12px 24px var(--shadow-soft);
@@ -2131,7 +2169,19 @@ h3 {
     outline-offset: 2px;
 }
 
+.detailed-report-peek-tab:focus-visible {
+    outline: 3px solid var(--focus);
+    outline-offset: 2px;
+}
+
 .am-report-peek-tab:disabled {
+    opacity: 0.65;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+}
+
+.detailed-report-peek-tab:disabled {
     opacity: 0.65;
     cursor: not-allowed;
     transform: none;
@@ -2518,6 +2568,7 @@ h3 {
     .question-peek-tab,
     .summary-peek-tab,
     .am-report-peek-tab,
+    .detailed-report-peek-tab,
     .previous-peek-tab-wrap,
     .summary-drawer,
     .question-drawer {
