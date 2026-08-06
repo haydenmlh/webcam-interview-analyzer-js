@@ -68,13 +68,13 @@ const DEFAULT_GENERATED_QUESTION_COUNT = 10
 const DEFAULT_QUESTION_GENERATION_GUIDELINES =
     'Generate concise, role-relevant interview questions. Cover technical depth, behavioral examples, and company alignment. Avoid duplicates. Return one question per line.'
 const DEFAULT_AM_REPORT_GENERATION_GUIDELINES =
-    'Generate a report for an account-manager at a consulting firm regarding the Answers provided in context, which were answered by a consultant. Provide feedback grounded in the interview answer transcript, answer metrics, JD and CV. Be specific, concise, and evidence-based. Do not generate per-question feedback. Use markdown only (no HTML) and follow this structure: ## Summary, ## Key Strengths, ## Key Development Areas, ## Domain Knowledge Assessment, ## Interview Progression, ## Primary Interview Risks, ## Recommended Coach Actions, ## Final Recommendation.'
+    'Generate a report for an account-manager at a consulting firm regarding the Answers provided in context, which were answered by a consultant. Provide feedback grounded in the interview answer transcript, answer metrics, JD and CV. Be specific, concise, and evidence-based. Do not generate per-question feedback. Use markdown only (no HTML) and follow this structure: ## Summary, ## Overall Score (out of 10), ## Key Strengths, ## Key Development Areas, ## Domain Knowledge Assessment, ## Interview Progression, ## Primary Interview Risks, ## Recommended Coach Actions, ## Final Recommendation.'
 const DEFAULT_DETAILED_REPORT_GENERATION_GUIDELINES =
     'Generate an in-depth report with an executive summary first, then detailed per-question analysis. For each question include strengths, weaknesses, metric interpretation, and a suggested improved answer. Tailor suggested answers to CV/JD/company/job title when relevant, and explicitly state when profile context is not relevant to that specific question.'
 const QUESTION_GENERATION_USER_MESSAGE = (questionCount, jdOnlyQuestionCount) =>
     `Generate ${questionCount} concise mock interview questions based on the provided CV, job description, and company. If a job description is provided, include at least ${jdOnlyQuestionCount} questions that are derived only from the job description requirements and are not based on the CV. Return only the questions, one per line, no intro or explanation.`
 const AM_REPORT_USER_MESSAGE =
-    'You are an Interview Expert for a Consulting Firm. You are writing feedback for mock interview answers. Using interview Job Title, Q&A transcript, Q&A metrics, JD and CV, return concise, evidence-based markdown in this exact section order: 1) ## Overall Verdict, 2) ## Key Strengths, 3) ## Key Development Areas, 4) ## Domain Knowledge Assessment, 5) ## Interview Progression, 6) ## Primary Interview Risks, 7) ## Recommended Coach Actions, 8) ## Final Recommendation. Keep it account-manager friendly and do not include per-question analysis.'
+    'You are an Interview Expert for a Consulting Firm. You are writing feedback for mock interview answers. Using interview Job Title, Q&A transcript, Q&A metrics, JD and CV, return concise, evidence-based markdown in this exact section order: 1) ## Overall Verdict, 2) ## Overall Score (out of 10) 3) ## Key Strengths, 4) ## Key Development Areas, 5) ## Domain Knowledge Assessment, 6) ## Interview Progression, 7) ## Primary Interview Risks, 8) ## Recommended Coach Actions, 9) ## Final Recommendation. Keep it account-manager friendly and do not include per-question analysis.'
 const DETAILED_REPORT_USER_MESSAGE =
     'You are an Interview Expert for a Consulting Firm. Using the provided interview context, return markdown with these exact top-level sections in order: 1) Initial Feedback, 2) Overall Rating (out of 10), 3) Answer Strengths, 4) Answer Weaknesses, 5) Future Directions For Improvement, 6) Detailed Per-Question Analysis. In section 6, create one subsection per answer using heading format "### Question N: <question>" and include: Candidate Answer Snapshot, Strengths, Weaknesses, Metric Interpretation, Suggested Improved Answer. The Suggested Improved Answer must describe an ideal answer and tailor it to CV/JD/company/job title context when relevant; if not relevant, explicitly state that no CV/JD tailoring applies. Keep feedback specific, concise, and evidence-based using transcript and metrics.'
 const LLM_PROVIDER_ENV_CONFIG = getLlmProviderConfig(import.meta.env)
@@ -1817,6 +1817,7 @@ function App() {
     const [confirmRemoveOpen, setConfirmRemoveOpen] = useState(false)
     const [confirmFolderSelectOpen, setConfirmFolderSelectOpen] = useState(false)
     const [confirmRegenerateQuestionsOpen, setConfirmRegenerateQuestionsOpen] = useState(false)
+    const [confirmStartNewMockInterviewOpen, setConfirmStartNewMockInterviewOpen] = useState(false)
     const [confirmCloseSettingsUnsavedLlmOpen, setConfirmCloseSettingsUnsavedLlmOpen] = useState(false)
     const [generateQuestionsCountModalOpen, setGenerateQuestionsCountModalOpen] = useState(false)
     const [generateQuestionsCountInput, setGenerateQuestionsCountInput] = useState(
@@ -4095,7 +4096,24 @@ function App() {
     }
 
     function handleStartMockInterview() {
+        if (!isMockInterviewStarted && hasMockInterviewStartedOnce && interviewSummaries.length) {
+            setConfirmStartNewMockInterviewOpen(true)
+            return
+        }
+
         void runMockStartOrDoneAction()
+    }
+
+    function confirmStartNewMockInterview() {
+        setConfirmStartNewMockInterviewOpen(false)
+        setInterviewSummaries([])
+        setSelectedSummaryId('')
+        closeSummaryModal()
+        void runMockStartOrDoneAction()
+    }
+
+    function cancelStartNewMockInterview() {
+        setConfirmStartNewMockInterviewOpen(false)
     }
 
     async function handleEndQuestionInterviewAndGenerateReports() {
@@ -4305,6 +4323,10 @@ function App() {
                 setConfirmRegenerateQuestionsOpen(false)
                 return
             }
+            if (confirmStartNewMockInterviewOpen) {
+                setConfirmStartNewMockInterviewOpen(false)
+                return
+            }
             if (confirmCloseSettingsUnsavedLlmOpen) {
                 setConfirmCloseSettingsUnsavedLlmOpen(false)
                 return
@@ -4332,6 +4354,7 @@ function App() {
         confirmRemoveOpen,
         confirmFolderSelectOpen,
         confirmRegenerateQuestionsOpen,
+        confirmStartNewMockInterviewOpen,
         confirmCloseSettingsUnsavedLlmOpen,
         generateQuestionsCountModalOpen,
         closeGenerateQuestionsCountModal,
@@ -8955,6 +8978,38 @@ function App() {
                                 type="button"
                                 className="btn ghost"
                                 onClick={() => setConfirmRegenerateQuestionsOpen(false)}
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {confirmStartNewMockInterviewOpen && (
+                <div className="overlay" role="presentation">
+                    <div
+                        className="modal compact"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="restart-mock-title"
+                    >
+                        <h2 id="restart-mock-title">Start a new mock interview?</h2>
+                        <p className="muted">
+                            Starting a new mock interview will clear the current Answer Summary.
+                        </p>
+                        <div className="actions">
+                            <button
+                                type="button"
+                                className="btn danger"
+                                onClick={confirmStartNewMockInterview}
+                            >
+                                Start New Interview
+                            </button>
+                            <button
+                                type="button"
+                                className="btn ghost"
+                                onClick={cancelStartNewMockInterview}
                             >
                                 Cancel
                             </button>

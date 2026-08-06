@@ -19,6 +19,14 @@ Use this template for future releases:
 -
 ```
 
+## [1.9.2] - 2026-08-06
+
+### Added
+- Added a confirmation warning before starting a new mock interview after an ended session when an Answer Summary already exists.
+
+### Changed
+- Starting a confirmed new mock interview now clears the existing Answer Summary so the next run starts with a clean summary state.
+
 ## [1.9.1] - 2026-08-06
 
 ### Changed
