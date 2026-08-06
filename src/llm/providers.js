@@ -302,9 +302,12 @@ export async function validateLlmProviderApiKey({
         }
 
         const details = payload?.error?.message || payload?.error || payload?.message || ''
-        const error = new Error(mapProviderError(providerId, response.status, String(details || '')))
+        const detailMessage = String(details || '').trim()
+        const error = new Error(mapProviderError(providerId, response.status, detailMessage))
         error.code = 'provider-http-error'
+        error.providerId = providerId
         error.status = response.status
+        error.providerMessage = detailMessage
         throw error
     }
 
@@ -391,9 +394,12 @@ export async function sendInterviewChatMessage({
         }
 
         const details = payload?.error?.message || payload?.error || payload?.message || ''
-        const error = new Error(mapProviderError(providerId, response.status, String(details || '')))
+        const detailMessage = String(details || '').trim()
+        const error = new Error(mapProviderError(providerId, response.status, detailMessage))
         error.code = 'provider-http-error'
+        error.providerId = providerId
         error.status = response.status
+        error.providerMessage = detailMessage
         throw error
     }
 

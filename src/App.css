@@ -2022,7 +2022,12 @@ h3 {
     left: calc(-1 * var(--peek-tab-width));
     top: auto;
     bottom: 0.7rem;
-    z-index: 1;
+    z-index: 3;
+}
+
+.previous-peek-tab-wrap.has-tooltip:hover,
+.previous-peek-tab-wrap.has-tooltip:focus-within {
+    z-index: 40;
 }
 
 .generate-questions-peek-tab {
