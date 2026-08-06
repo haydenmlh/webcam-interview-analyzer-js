@@ -2,7 +2,7 @@
 
 Mock Interviewer is a React + Vite web app for practicing interview answers with live camera posture cues, audio/video recording, and Deepgram-powered transcription.
 
-Current app version: 1.8.21
+Current app version: 1.8.27
 
 ## Highlights
 
@@ -19,6 +19,8 @@ Current app version: 1.8.21
 - CV/JD modal for storing company name, consultant details, CV, and job description
 - Generate Questions flow from CV/JD/company/job-title context with streaming output
 - Generate Questions now prompts for question count (default 10) before generating
+- Question-count normalization now reliably enforces the supported `3-40` range across browsers
+- Question-count modal now enforces `3-40` directly in UI validation and input bounds
 - Re-generating questions now warns before overwriting existing questions
 - Generate AM Report flow with streaming preview, cancel support, and in-app PDF preview modal
 - Generate Detailed Report flow with per-question analysis, suggested improved answers, and PDF preview
@@ -38,6 +40,12 @@ Current app version: 1.8.21
 - Key-saved status shown as a bottom-right popup notification
 - Save session files to a selected folder when File System Access is supported
 - Previous Answers modal with recorded media and metrics history
+- Previous Answers source toggle (`Source: Local Storage | Folder`) in the history header
+- Previous Answers `Folder` source option is disabled when browser folder access is unavailable, with automatic fallback to `Local Storage`
+- Completed recording transcript + metrics now persist to browser local storage (latest 20 entries, no media files)
+- Previous Answers local-storage detail view now hides file/media sections (`Total file size`, `Files`, `Recording`) that only apply to folder-backed entries
+- Previous Answers `Delete Answer` now works for local-storage history entries
+- Previous Answers `Copy Transcript and Metrics` now works for local-storage history entries
 - Previous Answers disabled tooltip now layers above webcam imagery and overlay
 - Interview question text-to-speech option
 - Theme toggle and responsive mobile layout improvements

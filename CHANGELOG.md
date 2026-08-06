@@ -19,6 +19,50 @@ Use this template for future releases:
 -
 ```
 
+## [1.8.27] - 2026-08-06
+
+### Changed
+- Updated `Previous Answers` local-storage detail view to hide file/media-only sections that do not apply to local storage entries.
+- Removed `Total file size`, `Files`, and `Recording` sections from local-storage answer detail panels while preserving them for folder-based entries.
+
+## [1.8.26] - 2026-08-06
+
+### Changed
+- Disabled the `Folder` source option in `Previous Answers` when browser folder access is unavailable.
+- Added automatic fallback from persisted `Folder` source to `Local Storage` in unsupported browsers to prevent invalid history mode state.
+
+## [1.8.25] - 2026-08-06
+
+### Added
+- Enabled `Delete Answer` for `Previous Answers` entries loaded from local storage.
+
+### Changed
+- Enabled `Copy Transcript and Metrics` for local-storage history entries by falling back to stored transcript/metrics content when no folder text file handle exists.
+- Updated `Previous Answers` delete confirmation messaging to reflect local-storage deletion behavior.
+
+## [1.8.24] - 2026-08-06
+
+### Changed
+- Updated the question-count modal UI validation and numeric input bounds to match generation rules, enforcing `3-40` in the user-facing prompt.
+
+## [1.8.23] - 2026-08-06
+
+### Fixed
+- Corrected generated-question count normalization to avoid using `Math.clamp` (not available in browser JavaScript runtime), and safely clamp values to the supported `3-40` range.
+
+## [1.8.22] - 2026-08-06
+
+### Added
+- Added a `Previous Answers` source toggle in the history modal header with `Local Storage` and `Folder` options, including a `Source:` label.
+- Added automatic local-storage persistence of completed recording transcript + metrics entries (no media blobs), retaining the most recent 20 entries.
+
+### Changed
+- Updated `Previous Answers` button behavior to always open the history modal directly instead of prompting for folder selection first.
+- Refactored the three LLM `userMessage` payloads into top-level constants near the generation guideline constants for easier manual prompt editing.
+
+### Fixed
+- Restricted `Delete Answer` in `Previous Answers` to folder-backed entries, preventing invalid delete actions for local-storage-only history.
+
 ## [1.8.21] - 2026-08-06
 
 ### Added
