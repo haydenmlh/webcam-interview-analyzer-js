@@ -57,6 +57,7 @@ const OVERALL_SUMMARY_VIEW_ID = '__overall__'
 const LLM_PROVIDER_MODE_AUTO = 'auto'
 const LLM_PROVIDER_MODE_OPENROUTER_ONLY = 'openrouter-only'
 const LLM_PROVIDER_MODE_NIM_ONLY = 'nim-only'
+const DEFAULT_GENERATED_QUESTION_COUNT = 10
 const DEFAULT_QUESTION_GENERATION_GUIDELINES =
     'Generate concise, role-relevant interview questions. Cover technical depth, behavioral examples, and company alignment. Avoid duplicates. Return one question per line.'
 const DEFAULT_AM_REPORT_GENERATION_GUIDELINES =
@@ -1700,6 +1701,12 @@ function App() {
     const [settingsOpen, setSettingsOpen] = useState(false)
     const [confirmRemoveOpen, setConfirmRemoveOpen] = useState(false)
     const [confirmFolderSelectOpen, setConfirmFolderSelectOpen] = useState(false)
+    const [confirmRegenerateQuestionsOpen, setConfirmRegenerateQuestionsOpen] = useState(false)
+    const [generateQuestionsCountModalOpen, setGenerateQuestionsCountModalOpen] = useState(false)
+    const [generateQuestionsCountInput, setGenerateQuestionsCountInput] = useState(
+        String(DEFAULT_GENERATED_QUESTION_COUNT),
+    )
+    const [pendingGenerateQuestionsOptions, setPendingGenerateQuestionsOptions] = useState(null)
     const [pendingDeleteAction, setPendingDeleteAction] = useState(null)
     const [savedKey, setSavedKey] = useState(() => getSavedValue(STORAGE_KEY))
     const [lastValidatedAt, setLastValidatedAt] = useState(() =>
@@ -2879,8 +2886,15 @@ function App() {
             closeCvJd = false,
             openQuestionsDrawer = true,
             runInBackground = false,
+            questionCount = DEFAULT_GENERATED_QUESTION_COUNT,
         } = options
         if (isGeneratingQuestions) return
+
+        const normalizedQuestionCount = Math.max(
+            1,
+            Math.min(100, Number.parseInt(questionCount, 10) || DEFAULT_GENERATED_QUESTION_COUNT),
+        )
+        const jdOnlyQuestionCount = Math.min(3, normalizedQuestionCount)
 
         const cv = cvText.trim()
         const jobDescription = jdText.trim()
@@ -2939,7 +2953,7 @@ function App() {
                         model: providerConfig.model,
                         baseUrl: providerConfig.baseUrl,
                         userMessage:
-                            'Generate 10 concise mock interview questions based on the provided CV, job description, and company. If a job description is provided, include at least 3 questions that are derived only from the job description requirements and are not based on the CV. Return only the questions, one per line, no intro or explanation.',
+                            `Generate ${normalizedQuestionCount} concise mock interview questions based on the provided CV, job description, and company. If a job description is provided, include at least ${jdOnlyQuestionCount} questions that are derived only from the job description requirements and are not based on the CV. Return only the questions, one per line, no intro or explanation.`,
                         stream: true,
                         onChunk: (fullText) => {
                             setQuestionsBulkInput(fullText || 'Generating questions...')
@@ -3347,10 +3361,38 @@ function App() {
         return Boolean(cvText.trim()) && Boolean(jdText.trim())
     }
 
+    function openGenerateQuestionsCountModal(options = {}) {
+        if (isGeneratingQuestions) return
+        setPendingGenerateQuestionsOptions(options)
+        setGenerateQuestionsCountInput(String(DEFAULT_GENERATED_QUESTION_COUNT))
+        setGenerateQuestionsCountModalOpen(true)
+    }
+
+    function confirmGenerateQuestionsCountSelection() {
+        const parsedCount = Number.parseInt(generateQuestionsCountInput, 10)
+        if (!Number.isInteger(parsedCount) || parsedCount < 1 || parsedCount > 100) {
+            setToast('Enter a question count between 1 and 100.')
+            return
+        }
+
+        const options = pendingGenerateQuestionsOptions || {}
+        setGenerateQuestionsCountModalOpen(false)
+        setPendingGenerateQuestionsOptions(null)
+        void generateQuestionsFromCvJd({
+            ...options,
+            questionCount: parsedCount,
+        })
+    }
+
+    function closeGenerateQuestionsCountModal() {
+        setGenerateQuestionsCountModalOpen(false)
+        setPendingGenerateQuestionsOptions(null)
+    }
+
     function generateQuestionsInBackground() {
         if (isGeneratingQuestions) return
         setToast('Generating questions in background...')
-        void generateQuestionsFromCvJd({
+        openGenerateQuestionsCountModal({
             openQuestionsDrawer: false,
             runInBackground: true,
         })
@@ -3384,6 +3426,22 @@ function App() {
         setActiveQuestionListIndex(null)
         setNextQuestionCursor(0)
         setToast('Questions list cleared.')
+    }
+
+    function requestGenerateQuestionsFromQuestionsModal() {
+        if (isGeneratingQuestions) return
+
+        if (parsedDrawerQuestions.length) {
+            setConfirmRegenerateQuestionsOpen(true)
+            return
+        }
+
+        openGenerateQuestionsCountModal()
+    }
+
+    function confirmRegenerateQuestions() {
+        setConfirmRegenerateQuestionsOpen(false)
+        openGenerateQuestionsCountModal()
     }
 
     function performRemoveParsedQuestionAt(index) {
@@ -3532,6 +3590,14 @@ function App() {
                 setConfirmFolderSelectOpen(false)
                 return
             }
+            if (confirmRegenerateQuestionsOpen) {
+                setConfirmRegenerateQuestionsOpen(false)
+                return
+            }
+            if (generateQuestionsCountModalOpen) {
+                closeGenerateQuestionsCountModal()
+                return
+            }
             if (pendingDeleteAction) {
                 setPendingDeleteAction(null)
                 return
@@ -3550,6 +3616,9 @@ function App() {
     }, [
         confirmRemoveOpen,
         confirmFolderSelectOpen,
+        confirmRegenerateQuestionsOpen,
+        generateQuestionsCountModalOpen,
+        closeGenerateQuestionsCountModal,
         pendingDeleteAction,
         settingsOpen,
         historyModalOpen,
@@ -5351,17 +5420,7 @@ function App() {
             ? CAMERA_DISPLAY_MODE_INTERVIEWER_PLUS_SELF_PIP
             : CAMERA_DISPLAY_MODE_INTERVIEWER_ONLY
         : CAMERA_DISPLAY_MODE_SELF_ONLY
-    const cameraActionButton =
-        !hasCameraAccess && cameraPermissionState !== 'granted' ? (
-            <button
-                type="button"
-                className="btn"
-                onClick={startCamera}
-                disabled={cameraStatus === 'loading'}
-            >
-                {cameraStatus === 'loading' ? 'Starting Camera...' : 'Allow Camera Access'}
-            </button>
-        ) : null
+    const isCameraAccessAllowed = hasCameraAccess || cameraPermissionState === 'granted'
 
     function handleThemeModeToggle() {
         setDarkMode((prev) => !prev)
@@ -5474,7 +5533,7 @@ function App() {
                                 type="button"
                                 className="generate-questions-peek-tab"
                                 onClick={() => {
-                                    void generateQuestionsFromCvJd()
+                                    openGenerateQuestionsCountModal()
                                 }}
                                 disabled={isGeneratingQuestions}
                                 title="Generates questions based on CV/JD/Company Name"
@@ -5625,12 +5684,6 @@ function App() {
                             </button>
                         )}
 
-                        {cameraActionButton && (
-                            <div className="actions wrap camera-access-actions">
-                                {cameraActionButton}
-                            </div>
-                        )}
-
                         <div className={`camera-frame${!showInterviewer && isPortraitVideo ? ' portrait' : ''}${invertCamera ? ' inverted' : ''}`}>
                             {showInterviewer && (
                                 <img
@@ -5665,7 +5718,9 @@ function App() {
                                             <p>
                                                 {cameraStatus === 'loading'
                                                     ? 'Starting camera...'
-                                                    : 'Camera disabled'}
+                                                    : !isCameraAccessAllowed
+                                                        ? 'No Camera Access'
+                                                        : 'Camera disabled'}
                                             </p>
                                         </div>
                                     )}
@@ -5675,7 +5730,7 @@ function App() {
                             <div className="camera-toggle-overlay-wrap" ref={cameraOverlayControlsRef}>
                                 <button
                                     type="button"
-                                    className={`camera-toggle-overlay-btn${enableCamera ? '' : ' is-disabled'}`}
+                                    className={`camera-toggle-overlay-btn${enableCamera && isCameraAccessAllowed ? '' : ' is-disabled'}`}
                                     onClick={handleCameraOverlayToggle}
                                     aria-label={enableCamera ? 'Disable camera' : 'Enable camera'}
                                     title={enableCamera ? 'Disable camera' : 'Enable camera'}
@@ -6737,7 +6792,7 @@ function App() {
                                     type="button"
                                     className="btn ghost"
                                     onClick={() => {
-                                        void generateQuestionsFromCvJd({ closeCvJd: true })
+                                        openGenerateQuestionsCountModal({ closeCvJd: true })
                                     }}
                                     disabled={isGeneratingQuestions}
                                     title="Generates questions based on CV/JD/Company Name"
@@ -6847,7 +6902,7 @@ function App() {
                         onClick={(event) => event.stopPropagation()}
                     >
                         <div className="history-modal-header">
-                            <h2 id="questions-modal-title">Questions Import</h2>
+                            <h2 id="questions-modal-title">Questions LIst</h2>
                             <div className="summary-header-actions">
                                 <button
                                     type="button"
@@ -6856,6 +6911,19 @@ function App() {
                                     disabled={!parsedDrawerQuestions.length}
                                 >
                                     Clear Questions List
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn"
+                                    onClick={requestGenerateQuestionsFromQuestionsModal}
+                                    disabled={isGeneratingQuestions}
+                                    title="Generates questions based on CV/JD/Company Name"
+                                >
+                                    {isGeneratingQuestions
+                                        ? 'Generating...'
+                                        : parsedDrawerQuestions.length
+                                            ? 'Re-generate Questions'
+                                            : 'Generate Questions'}
                                 </button>
                                 <button
                                     type="button"
@@ -7712,6 +7780,84 @@ function App() {
                                 type="button"
                                 className="btn ghost"
                                 onClick={() => setConfirmFolderSelectOpen(false)}
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {confirmRegenerateQuestionsOpen && (
+                <div className="overlay" role="presentation">
+                    <div
+                        className="modal compact"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="regenerate-questions-title"
+                    >
+                        <h2 id="regenerate-questions-title">Re-generate questions?</h2>
+                        <p className="muted">
+                            Existing questions in this list will be overwritten.
+                        </p>
+                        <div className="actions">
+                            <button
+                                type="button"
+                                className="btn danger"
+                                onClick={confirmRegenerateQuestions}
+                            >
+                                Re-generate
+                            </button>
+                            <button
+                                type="button"
+                                className="btn ghost"
+                                onClick={() => setConfirmRegenerateQuestionsOpen(false)}
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {generateQuestionsCountModalOpen && (
+                <div className="overlay" role="presentation">
+                    <div
+                        className="modal compact"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="question-count-title"
+                    >
+                        <h2 id="question-count-title">How many questions?</h2>
+                        <p className="muted">
+                            Enter how many interview questions to generate.
+                        </p>
+                        <label htmlFor="question-count-input" className="label">
+                            Question count
+                        </label>
+                        <input
+                            id="question-count-input"
+                            type="number"
+                            className="field"
+                            min={1}
+                            max={100}
+                            step={1}
+                            value={generateQuestionsCountInput}
+                            onChange={(event) => setGenerateQuestionsCountInput(event.target.value)}
+                            autoFocus
+                        />
+                        <div className="actions">
+                            <button
+                                type="button"
+                                className="btn"
+                                onClick={confirmGenerateQuestionsCountSelection}
+                            >
+                                Generate Questions
+                            </button>
+                            <button
+                                type="button"
+                                className="btn ghost"
+                                onClick={closeGenerateQuestionsCountModal}
                             >
                                 Cancel
                             </button>

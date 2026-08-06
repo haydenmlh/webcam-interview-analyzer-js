@@ -2,7 +2,7 @@
 
 Mock Interviewer is a React + Vite web app for practicing interview answers with live camera posture cues, audio/video recording, and Deepgram-powered transcription.
 
-Current app version: 1.8.18
+Current app version: 1.8.20
 
 ## Highlights
 
@@ -18,6 +18,8 @@ Current app version: 1.8.18
 - Open Gemini topbar action that launches Gemini in a right-side popup panel for quick paste-and-iterate workflow
 - CV/JD modal for storing company name, consultant details, CV, and job description
 - Generate Questions flow from CV/JD/company/job-title context with streaming output
+- Generate Questions now prompts for question count (default 10) before generating
+- Re-generating questions now warns before overwriting existing questions
 - Generate AM Report flow with streaming preview, cancel support, and in-app PDF preview modal
 - Generate Detailed Report flow with per-question analysis, suggested improved answers, and PDF preview
 - Detailed report PDFs now start `Detailed Per-Question Analysis` on a new page and place each question after Question 1 on its own page
@@ -26,7 +28,9 @@ Current app version: 1.8.18
 - URL-based multi-question import on page load
 - Interviewer mock image mode with optional self-view PiP
 - Camera controls in Settings: Enable Camera, Show Interviewer, Show Self View
-- Allow Camera Access button now hides after first successful permission grant
+- Allow Camera Access button has been removed from the camera panel
+- Camera video toggle defaults to disabled/red when camera access is unavailable
+- Camera empty state now shows `No Camera Access` when permission is not allowed
 - Camera/session panel spacing refined to better use available vertical space
 - Session action controls are placed above the interview question field for faster access
 - Select Save Folder prompt now includes a dismiss (X) control

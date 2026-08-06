@@ -19,6 +19,23 @@ Use this template for future releases:
 -
 ```
 
+## [1.8.20] - 2026-08-06
+
+### Changed
+- Removed the `Allow Camera Access` action button from the camera panel.
+- Updated camera empty-state messaging to show `No Camera Access` when camera permission is unavailable.
+
+### Fixed
+- Camera video toggle now defaults to the disabled/red state when camera access is not allowed.
+
+## [1.8.19] - 2026-08-06
+
+### Changed
+- Updated the Questions modal title to `Questions List` and moved the `Generate Questions` action beside `Clear Questions List` in the header actions row.
+- Added conditional Questions modal action labeling: `Generate Questions` when empty and `Re-generate Questions` when existing questions are present.
+- Added an overwrite warning modal before re-generating questions when a question list already exists.
+- Added a question-count prompt modal to the generate-questions flow with default value `10`, editable numeric input, and increment/decrement controls.
+
 ## [1.8.18] - 2026-08-06
 
 ### Changed
