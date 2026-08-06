@@ -33,7 +33,7 @@ describe('llm providers', () => {
     it('returns default base URLs from env config helper', () => {
         const config = getLlmProviderConfig({})
         expect(config.openrouter.baseUrl).toBe('https://openrouter.ai/api/v1')
-        expect(config.nim.baseUrl).toBe('https://integrate.api.nvidia.com/v1')
+        expect(config.nim.baseUrl).toBe('/api/nim')
     })
 
     it('validates missing settings', () => {

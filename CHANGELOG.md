@@ -19,6 +19,18 @@ Use this template for future releases:
 -
 ```
 
+## [1.8.21] - 2026-08-06
+
+### Added
+- Added a configurable `NVIDIA NIM Base URL` field in Settings so deployed environments can point to a CORS-safe proxy endpoint and save it locally.
+
+### Changed
+- Updated default NVIDIA NIM base URL behavior to prefer proxy-style routing (`/api/nim`) instead of direct browser calls to `integrate.api.nvidia.com`.
+- Updated GitHub Pages build workflows (`main` and `dev`) to inject `VITE_NIM_BASE_URL` from repository secrets.
+
+### Fixed
+- Added clearer NVIDIA NIM error messaging when browser CORS blocks direct endpoint calls, including proxy configuration guidance.
+
 ## [1.8.20] - 2026-08-06
 
 ### Changed

@@ -30,6 +30,8 @@ jobs:
 
       - name: Build
         run: npm run build
+        env:
+          VITE_NIM_BASE_URL: ${{ secrets.VITE_NIM_BASE_URL }}
 
       - name: Include GPL-3.0 license in published site
         run: cp LICENSE dist/LICENSE

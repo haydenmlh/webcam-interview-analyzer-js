@@ -5,7 +5,7 @@ const PROVIDER_LABELS = {
 
 const DEFAULT_BASE_URLS = {
     openrouter: 'https://openrouter.ai/api/v1',
-    nim: 'https://integrate.api.nvidia.com/v1',
+    nim: '/api/nim',
 }
 
 const DEFAULT_MODELS = {
@@ -156,6 +156,13 @@ function mapProviderError(providerId, status, fallbackMessage = '') {
     return toErrorMessage(providerId, `Request failed with HTTP ${status}.`)
 }
 
+function isLikelyNimCorsBlock(providerId, normalizedBaseUrl, fetchError) {
+    if (providerId !== 'nim') return false
+    if (!(fetchError instanceof TypeError)) return false
+    if (!/integrate\.api\.nvidia\.com/i.test(String(normalizedBaseUrl || ''))) return false
+    return typeof window !== 'undefined'
+}
+
 function buildContextBlock(context = {}) {
     const question = context.question || '(no question)'
     const answer = context.answer || '(no transcript yet)'
@@ -288,6 +295,17 @@ export async function validateLlmProviderApiKey({
             throw error
         }
 
+        if (isLikelyNimCorsBlock(providerId, normalizedBase, fetchError)) {
+            const error = new Error(
+                toErrorMessage(
+                    providerId,
+                    'Direct NVIDIA endpoint is blocked by browser CORS. Set NVIDIA NIM Base URL to a same-origin proxy (for example /api/nim) and retry.',
+                ),
+            )
+            error.code = 'provider-cors-blocked'
+            throw error
+        }
+
         const error = new Error(toErrorMessage(providerId, 'Network error. Check your connection and retry.'))
         error.code = 'network-error'
         throw error
@@ -377,6 +395,17 @@ export async function sendInterviewChatMessage({
         if (fetchError?.name === 'AbortError' || signal?.aborted) {
             const error = new Error(toErrorMessage(providerId, 'Request canceled.'))
             error.code = 'request-aborted'
+            throw error
+        }
+
+        if (isLikelyNimCorsBlock(providerId, normalizedBase, fetchError)) {
+            const error = new Error(
+                toErrorMessage(
+                    providerId,
+                    'Direct NVIDIA endpoint is blocked by browser CORS. Set NVIDIA NIM Base URL to a same-origin proxy (for example /api/nim) and retry.',
+                ),
+            )
+            error.code = 'provider-cors-blocked'
             throw error
         }
 

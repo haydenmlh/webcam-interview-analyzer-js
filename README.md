@@ -2,7 +2,7 @@
 
 Mock Interviewer is a React + Vite web app for practicing interview answers with live camera posture cues, audio/video recording, and Deepgram-powered transcription.
 
-Current app version: 1.8.20
+Current app version: 1.8.21
 
 ## Highlights
 
@@ -116,6 +116,7 @@ Copy-Item -Recurse -Force dist\* .
 
 - Deepgram transcription requests are performed from the browser using the user-provided key.
 - LLM generation requests (question generation + AM/detailed report generation) are performed from the browser using user-provided OpenRouter or NVIDIA NIM API keys.
+- NVIDIA NIM direct browser calls can be blocked by CORS. In deployed environments, set `VITE_NIM_BASE_URL` to a proxy endpoint (or use the in-app `NVIDIA NIM Base URL` setting).
 - LLM keys are stored in browser local storage by default; use `Clear keys and reset to defaults` in Settings to remove saved keys and reset provider settings.
 - Interview question playback uses OS/system text-to-speech in the browser.
 - If no Deepgram key is present and missing-key fallback is enabled, transcription falls back to local Whisper (in-browser) and question playback uses OS/system TTS.
@@ -133,6 +134,14 @@ Behavior:
 - If provider settings are missing or invalid, generation returns an actionable error toast.
 - Auto provider mode tries OpenRouter first, then retries with NVIDIA NIM if OpenRouter fails.
 - Generation context can include current question, transcript, interview metrics summary, and optional CV/JD/company/job-title fields.
+
+### NVIDIA NIM on deployed sites
+
+If you see a browser CORS error for `integrate.api.nvidia.com`, configure a proxy URL:
+
+1. In repository secrets, add `VITE_NIM_BASE_URL` with your proxy URL base (for example `https://<your-proxy-domain>/v1`).
+2. Re-run the deploy workflow (`main` or `dev`).
+3. Optionally override at runtime in Settings using `NVIDIA NIM Base URL`.
 
 ## URL question import
 
@@ -174,6 +183,7 @@ Behavior:
 ### Required secret in source repository
 
 - PAGES_DEPLOY_TOKEN: Personal Access Token with write access to haydenmlh/webcam-interview-analyzer-page
+- VITE_NIM_BASE_URL: NVIDIA NIM proxy base URL used at build time for deployed pages (for example `https://<your-proxy-domain>/v1`)
 
 After first deploy, enable GitHub Pages on haydenmlh/webcam-interview-analyzer-page with source branch gh-pages, then set your DNS CNAME record for interview.haydenmlh.com to haydenmlh.github.io.
 

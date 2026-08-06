@@ -46,6 +46,7 @@ const STORAGE_OPENROUTER_API_KEY = 'mia.llm.openrouter.apiKey'
 const STORAGE_OPENROUTER_MODEL = 'mia.llm.openrouter.model'
 const STORAGE_NIM_API_KEY = 'mia.llm.nim.apiKey'
 const STORAGE_NIM_MODEL = 'mia.llm.nim.model'
+const STORAGE_NIM_BASE_URL = 'mia.llm.nim.baseUrl'
 const HANDLE_DB_NAME = 'mia-handle-db'
 const HANDLE_STORE_NAME = 'handles'
 const RECORDINGS_FOLDER_KEY = 'recordings-folder'
@@ -65,8 +66,8 @@ const DEFAULT_AM_REPORT_GENERATION_GUIDELINES =
 const DEFAULT_DETAILED_REPORT_GENERATION_GUIDELINES =
     'Generate an in-depth report with an executive summary first, then detailed per-question analysis. For each question include strengths, weaknesses, metric interpretation, and a suggested improved answer. Tailor suggested answers to CV/JD/company/job title when relevant, and explicitly state when profile context is not relevant to that specific question.'
 const LLM_PROVIDER_ENV_CONFIG = getLlmProviderConfig(import.meta.env)
-const HARDCODED_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1'
-const HARDCODED_NIM_BASE_URL = import.meta.env.DEV ? '/api/nim' : 'https://integrate.api.nvidia.com/v1'
+const OPENROUTER_BASE_URL = LLM_PROVIDER_ENV_CONFIG.openrouter.baseUrl
+const DEFAULT_NIM_BASE_URL = LLM_PROVIDER_ENV_CONFIG.nim.baseUrl
 const LLM_HTTP_ERROR_TOAST_PREFIX = 'LLM API HTTP error:'
 const LLM_HTTP_ERROR_TOAST_TIMEOUT_MS = 10000
 const LLM_HTTP_ERROR_MESSAGE_MAX_LENGTH = 180
@@ -1888,6 +1889,9 @@ function App() {
     const [nimModel, setNimModel] = useState(() =>
         getSavedValue(STORAGE_NIM_MODEL) || LLM_PROVIDER_ENV_CONFIG.nim.model,
     )
+    const [nimBaseUrl, setNimBaseUrl] = useState(() =>
+        getSavedValue(STORAGE_NIM_BASE_URL) || DEFAULT_NIM_BASE_URL,
+    )
     const [openrouterApiKeyInput, setOpenrouterApiKeyInput] = useState(openrouterApiKey)
     const [openrouterModelInput, setOpenrouterModelInput] = useState(openrouterModel)
     const [openrouterCustomModelInput, setOpenrouterCustomModelInput] = useState(() => {
@@ -1898,6 +1902,7 @@ function App() {
     })
     const [nimApiKeyInput, setNimApiKeyInput] = useState(nimApiKey)
     const [nimModelInput, setNimModelInput] = useState(nimModel)
+    const [nimBaseUrlInput, setNimBaseUrlInput] = useState(nimBaseUrl)
     const [nimCustomModelInput, setNimCustomModelInput] = useState(() => {
         const normalized = String(nimModel || '').trim()
         return NIM_MODEL_PRESETS.some((preset) => preset.value === normalized)
@@ -2803,7 +2808,7 @@ function App() {
                     providerId: 'openrouter',
                     apiKey: openrouterApiKey,
                     model: openrouterModel,
-                    baseUrl: HARDCODED_OPENROUTER_BASE_URL,
+                    baseUrl: OPENROUTER_BASE_URL,
                 })
             }
             return providerCandidates
@@ -2815,7 +2820,7 @@ function App() {
                     providerId: 'nim',
                     apiKey: nimApiKey,
                     model: nimModel,
-                    baseUrl: HARDCODED_NIM_BASE_URL,
+                    baseUrl: nimBaseUrl,
                 })
             }
             return providerCandidates
@@ -2826,7 +2831,7 @@ function App() {
                 providerId: 'openrouter',
                 apiKey: openrouterApiKey,
                 model: openrouterModel,
-                baseUrl: HARDCODED_OPENROUTER_BASE_URL,
+                baseUrl: OPENROUTER_BASE_URL,
             })
         }
         if (nimApiKey.trim()) {
@@ -2834,7 +2839,7 @@ function App() {
                 providerId: 'nim',
                 apiKey: nimApiKey,
                 model: nimModel,
-                baseUrl: HARDCODED_NIM_BASE_URL,
+                baseUrl: nimBaseUrl,
             })
         }
 
@@ -4061,6 +4066,7 @@ function App() {
         )
         setNimApiKeyInput(nimApiKey)
         setNimModelInput(nimModel)
+        setNimBaseUrlInput(nimBaseUrl)
         setNimCustomModelInput(
             NIM_MODEL_PRESETS.some((preset) => preset.value === nimModel)
                 ? ''
@@ -4088,6 +4094,7 @@ function App() {
         const normalizedProviderMode = normalizeLlmProviderMode(llmProviderModeInput)
         const trimmedOpenrouterModel = openrouterModelInput.trim()
         const trimmedNimModel = nimModelInput.trim()
+        const trimmedNimBaseUrl = nimBaseUrlInput.trim()
         const trimmedOpenrouterKey = openrouterApiKeyInput.trim()
         const trimmedNimKey = nimApiKeyInput.trim()
 
@@ -4096,17 +4103,30 @@ function App() {
             return
         }
 
+        if (!trimmedNimBaseUrl) {
+            setLlmSettingsError('NVIDIA NIM Base URL is required.')
+            return
+        }
+
+        const nimBaseUrlValidationError = validateLlmProviderApiBaseUrl(trimmedNimBaseUrl)
+        if (nimBaseUrlValidationError) {
+            setLlmSettingsError(nimBaseUrlValidationError)
+            return
+        }
+
         setLlmProviderMode(normalizedProviderMode)
         setOpenrouterApiKey(trimmedOpenrouterKey)
         setOpenrouterModel(trimmedOpenrouterModel)
         setNimApiKey(trimmedNimKey)
         setNimModel(trimmedNimModel)
+        setNimBaseUrl(trimmedNimBaseUrl)
         setLlmSettingsError('')
 
         clearSavedValue('mia.llm.persistKeys')
         setSavedValue(STORAGE_LLM_PROVIDER_MODE, normalizedProviderMode)
         setSavedValue(STORAGE_OPENROUTER_MODEL, trimmedOpenrouterModel)
         setSavedValue(STORAGE_NIM_MODEL, trimmedNimModel)
+        setSavedValue(STORAGE_NIM_BASE_URL, trimmedNimBaseUrl)
 
         setSavedValue(STORAGE_OPENROUTER_API_KEY, trimmedOpenrouterKey)
         setSavedValue(STORAGE_NIM_API_KEY, trimmedNimKey)
@@ -4128,7 +4148,7 @@ function App() {
         void validateLlmProviderApiKey({
             providerId: 'openrouter',
             apiKey: trimmedOpenrouterKey,
-            baseUrl: HARDCODED_OPENROUTER_BASE_URL,
+            baseUrl: OPENROUTER_BASE_URL,
         })
             .then(() => {
                 setToast('OpenRouter API key saved and validated.')
@@ -4145,8 +4165,15 @@ function App() {
 
     function saveNimKeyOnly() {
         const trimmedNimKey = nimApiKeyInput.trim()
+        const trimmedNimBaseUrl = nimBaseUrlInput.trim()
         if (!trimmedNimKey) {
             setToast('NVIDIA NIM API key is required.')
+            return
+        }
+
+        const nimBaseUrlValidationError = validateLlmProviderApiBaseUrl(trimmedNimBaseUrl)
+        if (nimBaseUrlValidationError) {
+            setToast(nimBaseUrlValidationError)
             return
         }
 
@@ -4157,7 +4184,7 @@ function App() {
         void validateLlmProviderApiKey({
             providerId: 'nim',
             apiKey: trimmedNimKey,
-            baseUrl: HARDCODED_NIM_BASE_URL,
+            baseUrl: trimmedNimBaseUrl,
         })
             .then(() => {
                 setToast('NVIDIA NIM API key saved and validated.')
@@ -4194,18 +4221,21 @@ function App() {
         const defaultProviderMode = LLM_PROVIDER_MODE_AUTO
         const defaultOpenrouterModel = LLM_PROVIDER_ENV_CONFIG.openrouter.model
         const defaultNimModel = LLM_PROVIDER_ENV_CONFIG.nim.model
+        const defaultNimBaseUrl = DEFAULT_NIM_BASE_URL
 
         setLlmProviderMode(defaultProviderMode)
         setOpenrouterApiKey('')
         setOpenrouterModel(defaultOpenrouterModel)
         setNimApiKey('')
         setNimModel(defaultNimModel)
+        setNimBaseUrl(defaultNimBaseUrl)
 
         setLlmProviderModeInput(defaultProviderMode)
         setOpenrouterApiKeyInput('')
         setOpenrouterModelInput(defaultOpenrouterModel)
         setNimApiKeyInput('')
         setNimModelInput(defaultNimModel)
+        setNimBaseUrlInput(defaultNimBaseUrl)
         setLlmSettingsError('')
 
         clearSavedValue('mia.llm.persistKeys')
@@ -4214,6 +4244,7 @@ function App() {
         setSavedValue(STORAGE_LLM_PROVIDER_MODE, defaultProviderMode)
         setSavedValue(STORAGE_OPENROUTER_MODEL, defaultOpenrouterModel)
         setSavedValue(STORAGE_NIM_MODEL, defaultNimModel)
+        setSavedValue(STORAGE_NIM_BASE_URL, defaultNimBaseUrl)
 
         setToast('LLM settings reset to defaults.')
     }
@@ -4985,6 +5016,28 @@ function App() {
             fallbackConfig: speechFallbackConfig,
         })
         return result
+    }
+
+    function validateLlmProviderApiBaseUrl(baseUrl) {
+        const normalizedBaseUrl = String(baseUrl || '').trim()
+        if (!normalizedBaseUrl) {
+            return 'NVIDIA NIM Base URL is required.'
+        }
+
+        if (normalizedBaseUrl.startsWith('/')) {
+            return ''
+        }
+
+        try {
+            const parsed = new URL(normalizedBaseUrl)
+            if (!/^https?:$/.test(parsed.protocol)) {
+                return 'NVIDIA NIM Base URL must use http or https.'
+            }
+        } catch {
+            return 'NVIDIA NIM Base URL must be a valid URL or a relative path like /api/nim.'
+        }
+
+        return ''
     }
 
     async function speakQuestionIfEnabled(questionText = questionInput) {
@@ -7251,6 +7304,18 @@ function App() {
                                         placeholder="Enter custom NVIDIA NIM model id"
                                     />
                                 )}
+
+                                <label className="label">NVIDIA NIM Base URL</label>
+                                <input
+                                    className="field"
+                                    type="text"
+                                    value={nimBaseUrlInput}
+                                    onChange={(event) => setNimBaseUrlInput(event.target.value)}
+                                    placeholder="/api/nim"
+                                />
+                                <p className="muted">
+                                    Use a same-origin proxy endpoint in deployed environments to avoid browser CORS blocks (example: /api/nim).
+                                </p>
 
                                 <div className="actions wrap llm-settings-actions">
                                     <button
