@@ -19,6 +19,15 @@ Use this template for future releases:
 -
 ```
 
+## [1.9.3] - 2026-08-06
+
+### Added
+- Added a confirmation warning before generating mock-interview questions when existing Answer Summary entries are present.
+
+### Changed
+- Confirmed question generation now clears existing Answer Summary entries before starting the new generation flow.
+- Updated Generate Questions minimum count from `4` to `2` while keeping the maximum at `25`.
+
 ## [1.9.2] - 2026-08-06
 
 ### Added

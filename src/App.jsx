@@ -1817,6 +1817,7 @@ function App() {
     const [confirmRemoveOpen, setConfirmRemoveOpen] = useState(false)
     const [confirmFolderSelectOpen, setConfirmFolderSelectOpen] = useState(false)
     const [confirmRegenerateQuestionsOpen, setConfirmRegenerateQuestionsOpen] = useState(false)
+    const [confirmGenerateQuestionsClearSummaryOpen, setConfirmGenerateQuestionsClearSummaryOpen] = useState(false)
     const [confirmStartNewMockInterviewOpen, setConfirmStartNewMockInterviewOpen] = useState(false)
     const [confirmCloseSettingsUnsavedLlmOpen, setConfirmCloseSettingsUnsavedLlmOpen] = useState(false)
     const [generateQuestionsCountModalOpen, setGenerateQuestionsCountModalOpen] = useState(false)
@@ -1824,6 +1825,8 @@ function App() {
         String(DEFAULT_GENERATED_QUESTION_COUNT),
     )
     const [pendingGenerateQuestionsOptions, setPendingGenerateQuestionsOptions] = useState(null)
+    const [pendingRegenerateQuestionsOptions, setPendingRegenerateQuestionsOptions] = useState(null)
+    const [pendingGenerateQuestionsClearSummaryOptions, setPendingGenerateQuestionsClearSummaryOptions] = useState(null)
     const [pendingDeleteAction, setPendingDeleteAction] = useState(null)
     const [savedKey, setSavedKey] = useState(() => getSavedValue(STORAGE_KEY))
     const [lastValidatedAt, setLastValidatedAt] = useState(() =>
@@ -3162,7 +3165,7 @@ function App() {
         if (isGeneratingQuestions) return
 
         const normalizedQuestionCount = Math.max(
-            4,
+            2,
             Math.min(25, Number.parseInt(questionCount, 10) || DEFAULT_GENERATED_QUESTION_COUNT),
         )
         const shouldOpenQuestionsDrawer =
@@ -3933,18 +3936,53 @@ function App() {
         setGenerateQuestionsCountModalOpen(true)
     }
 
+    function requestGenerateQuestionsFlow(options = {}) {
+        if (isGeneratingQuestions) return
+
+        if (interviewSummaries.length) {
+            setPendingGenerateQuestionsClearSummaryOptions(options)
+            setConfirmGenerateQuestionsClearSummaryOpen(true)
+            return
+        }
+
+        openGenerateQuestionsCountModal(options)
+    }
+
+    function confirmGenerateQuestionsClearSummary() {
+        const options = pendingGenerateQuestionsClearSummaryOptions || {}
+        setConfirmGenerateQuestionsClearSummaryOpen(false)
+        setPendingGenerateQuestionsClearSummaryOptions(null)
+        openGenerateQuestionsCountModal({
+            ...options,
+            clearSummaryOnGenerate: true,
+        })
+    }
+
+    function cancelGenerateQuestionsClearSummary() {
+        setConfirmGenerateQuestionsClearSummaryOpen(false)
+        setPendingGenerateQuestionsClearSummaryOptions(null)
+    }
+
     function confirmGenerateQuestionsCountSelection() {
         const parsedCount = Number.parseInt(generateQuestionsCountInput, 10)
-        if (!Number.isInteger(parsedCount) || parsedCount < 4 || parsedCount > 25) {
-            setToast('Enter a question count between 4 and 25.')
+        if (!Number.isInteger(parsedCount) || parsedCount < 2 || parsedCount > 25) {
+            setToast('Enter a question count between 2 and 25.')
             return
         }
 
         const options = pendingGenerateQuestionsOptions || {}
+        const { clearSummaryOnGenerate = false, ...generateOptions } = options
+
+        if (clearSummaryOnGenerate) {
+            setInterviewSummaries([])
+            setSelectedSummaryId('')
+            closeSummaryModal()
+        }
+
         setGenerateQuestionsCountModalOpen(false)
         setPendingGenerateQuestionsOptions(null)
         void generateQuestionsFromCvJd({
-            ...options,
+            ...generateOptions,
             questionCount: parsedCount,
         })
     }
@@ -3957,7 +3995,7 @@ function App() {
     function generateQuestionsInBackground() {
         if (isGeneratingQuestions) return
         setToast('Generating questions in background...')
-        openGenerateQuestionsCountModal({
+        requestGenerateQuestionsFlow({
             openQuestionsDrawer: false,
             runInBackground: true,
         })
@@ -4000,16 +4038,24 @@ function App() {
         if (isGeneratingQuestions) return
 
         if (parsedDrawerQuestions.length) {
+            setPendingRegenerateQuestionsOptions(options)
             setConfirmRegenerateQuestionsOpen(true)
             return
         }
 
-        openGenerateQuestionsCountModal(options)
+        requestGenerateQuestionsFlow(options)
     }
 
     function confirmRegenerateQuestions() {
+        const options = pendingRegenerateQuestionsOptions || {}
         setConfirmRegenerateQuestionsOpen(false)
-        openGenerateQuestionsCountModal()
+        setPendingRegenerateQuestionsOptions(null)
+        requestGenerateQuestionsFlow(options)
+    }
+
+    function cancelRegenerateQuestions() {
+        setConfirmRegenerateQuestionsOpen(false)
+        setPendingRegenerateQuestionsOptions(null)
     }
 
     function getCurrentMockQuestionIndex() {
@@ -4321,6 +4367,12 @@ function App() {
             }
             if (confirmRegenerateQuestionsOpen) {
                 setConfirmRegenerateQuestionsOpen(false)
+                setPendingRegenerateQuestionsOptions(null)
+                return
+            }
+            if (confirmGenerateQuestionsClearSummaryOpen) {
+                setConfirmGenerateQuestionsClearSummaryOpen(false)
+                setPendingGenerateQuestionsClearSummaryOptions(null)
                 return
             }
             if (confirmStartNewMockInterviewOpen) {
@@ -4354,6 +4406,7 @@ function App() {
         confirmRemoveOpen,
         confirmFolderSelectOpen,
         confirmRegenerateQuestionsOpen,
+        confirmGenerateQuestionsClearSummaryOpen,
         confirmStartNewMockInterviewOpen,
         confirmCloseSettingsUnsavedLlmOpen,
         generateQuestionsCountModalOpen,
@@ -6448,7 +6501,7 @@ function App() {
                                 type="button"
                                 className="generate-questions-peek-tab"
                                 onClick={() => {
-                                    openGenerateQuestionsCountModal()
+                                    requestGenerateQuestionsFromQuestionsModal()
                                 }}
                                 disabled={isGeneratingQuestions || !hasMockCvJdInput}
                                 title={
@@ -7973,7 +8026,7 @@ function App() {
                                     type="button"
                                     className="btn ghost"
                                     onClick={() => {
-                                        openGenerateQuestionsCountModal({ closeCvJd: true })
+                                        requestGenerateQuestionsFromQuestionsModal({ closeCvJd: true })
                                     }}
                                     disabled={isGeneratingQuestions || (!cvText.trim() && !jdText.trim())}
                                     title={
@@ -8977,7 +9030,39 @@ function App() {
                             <button
                                 type="button"
                                 className="btn ghost"
-                                onClick={() => setConfirmRegenerateQuestionsOpen(false)}
+                                onClick={cancelRegenerateQuestions}
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {confirmGenerateQuestionsClearSummaryOpen && (
+                <div className="overlay" role="presentation">
+                    <div
+                        className="modal compact"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="generate-questions-clear-summary-title"
+                    >
+                        <h2 id="generate-questions-clear-summary-title">Generate new questions?</h2>
+                        <p className="muted">
+                            Generating new questions will clear the current Answer Summary.
+                        </p>
+                        <div className="actions">
+                            <button
+                                type="button"
+                                className="btn danger"
+                                onClick={confirmGenerateQuestionsClearSummary}
+                            >
+                                Continue
+                            </button>
+                            <button
+                                type="button"
+                                className="btn ghost"
+                                onClick={cancelGenerateQuestionsClearSummary}
                             >
                                 Cancel
                             </button>
@@ -9041,7 +9126,7 @@ function App() {
                             type="number"
                             className="field"
                             aria-label="Number of interview questions to generate"
-                            min={4}
+                            min={2}
                             max={25}
                             step={1}
                             value={generateQuestionsCountInput}
