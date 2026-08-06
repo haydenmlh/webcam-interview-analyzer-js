@@ -374,7 +374,7 @@ export async function sendInterviewChatMessage({
             {
                 role: 'system',
                 content:
-                    'You are an interview coach. Give practical, concise feedback using the supplied interview context. Reference measurable metrics when relevant and suggest actionable improvements.',
+                    'You are an expert interview coach, hiring specialist, and answer strategist. Your objective is to assist candidates by generating realistic, high-signal, JD-calibrated interview questions. Reference measurable metrics when relevant and suggest actionable improvements.',
             },
             {
                 role: 'user',

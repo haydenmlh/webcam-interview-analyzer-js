@@ -1068,6 +1068,30 @@ h3 {
     min-width: 0;
 }
 
+.history-source-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+
+.history-source-label {
+    font-size: 0.8rem;
+    color: var(--ink-700);
+    white-space: nowrap;
+}
+
+.history-source-btn {
+    padding: 0.25rem 0.55rem;
+    font-size: 0.78rem;
+    line-height: 1.1;
+}
+
+.history-source-btn.active {
+    border-color: var(--action);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--action), white 20%);
+    background: color-mix(in srgb, var(--action), transparent 88%);
+}
+
 .history-title-row h2 {
     margin: 0;
 }
