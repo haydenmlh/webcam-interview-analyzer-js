@@ -47,6 +47,8 @@ const STORAGE_OPENROUTER_MODEL = 'mia.llm.openrouter.model'
 const STORAGE_NIM_API_KEY = 'mia.llm.nim.apiKey'
 const STORAGE_NIM_MODEL = 'mia.llm.nim.model'
 const STORAGE_NIM_BASE_URL = 'mia.llm.nim.baseUrl'
+const STORAGE_PREVIOUS_ANSWERS_SOURCE = 'mia.previousAnswers.source'
+const STORAGE_PREVIOUS_ANSWERS_LOCAL = 'mia.previousAnswers.local'
 const HANDLE_DB_NAME = 'mia-handle-db'
 const HANDLE_STORE_NAME = 'handles'
 const RECORDINGS_FOLDER_KEY = 'recordings-folder'
@@ -58,6 +60,8 @@ const OVERALL_SUMMARY_VIEW_ID = '__overall__'
 const LLM_PROVIDER_MODE_AUTO = 'auto'
 const LLM_PROVIDER_MODE_OPENROUTER_ONLY = 'openrouter-only'
 const LLM_PROVIDER_MODE_NIM_ONLY = 'nim-only'
+const PREVIOUS_ANSWERS_SOURCE_FOLDER = 'folder'
+const PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE = 'local-storage'
 const DEFAULT_GENERATED_QUESTION_COUNT = 10
 const DEFAULT_QUESTION_GENERATION_GUIDELINES =
     'Generate concise, role-relevant interview questions. Cover technical depth, behavioral examples, and company alignment. Avoid duplicates. Return one question per line.'
@@ -65,6 +69,12 @@ const DEFAULT_AM_REPORT_GENERATION_GUIDELINES =
     'Generate a report for an account-manager at a consulting firm regarding the Answers provided in context, which were answered by a consultant. Provide feedback grounded in the interview answer transcript, answer metrics, JD and CV. Be specific, concise, and evidence-based. Do not generate per question feedback.'
 const DEFAULT_DETAILED_REPORT_GENERATION_GUIDELINES =
     'Generate an in-depth report with an executive summary first, then detailed per-question analysis. For each question include strengths, weaknesses, metric interpretation, and a suggested improved answer. Tailor suggested answers to CV/JD/company/job title when relevant, and explicitly state when profile context is not relevant to that specific question.'
+const QUESTION_GENERATION_USER_MESSAGE = (questionCount, jdOnlyQuestionCount) =>
+    `Generate ${questionCount} concise mock interview questions based on the provided CV, job description, and company. If a job description is provided, include at least ${jdOnlyQuestionCount} questions that are derived only from the job description requirements and are not based on the CV. Return only the questions, one per line, no intro or explanation.`
+const AM_REPORT_USER_MESSAGE =
+    'You are an Interview Expert for a Consulting Firm. You are writing feedback for the mock interview answers. Using the provided interview Job Title, Q&A transcript, Q&A metrics, JD and CV, return markdown with sections: 1) Initial Feedback, 2) Overall Rating (out of 10), 3) Answer Strengths, 4) Answer Weaknesses, 5) Future Directions For Improvement. Keep it concise and evidence-based.'
+const DETAILED_REPORT_USER_MESSAGE =
+    'You are an Interview Expert for a Consulting Firm. Using the provided interview context, return markdown with these exact top-level sections in order: 1) Initial Feedback, 2) Overall Rating (out of 10), 3) Answer Strengths, 4) Answer Weaknesses, 5) Future Directions For Improvement, 6) Detailed Per-Question Analysis. In section 6, create one subsection per answer using heading format "### Question N: <question>" and include: Candidate Answer Snapshot, Strengths, Weaknesses, Metric Interpretation, Suggested Improved Answer. The Suggested Improved Answer must describe an ideal answer and tailor it to CV/JD/company/job title context when relevant; if not relevant, explicitly state that no CV/JD tailoring applies. Keep feedback specific, concise, and evidence-based using transcript and metrics.'
 const LLM_PROVIDER_ENV_CONFIG = getLlmProviderConfig(import.meta.env)
 const OPENROUTER_BASE_URL = LLM_PROVIDER_ENV_CONFIG.openrouter.baseUrl
 const DEFAULT_NIM_BASE_URL = LLM_PROVIDER_ENV_CONFIG.nim.baseUrl
@@ -136,6 +146,14 @@ function normalizeLlmProviderMode(value) {
     }
 
     return LLM_PROVIDER_MODE_AUTO
+}
+
+function normalizePreviousAnswersSource(value) {
+    if (value === PREVIOUS_ANSWERS_SOURCE_FOLDER || value === PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE) {
+        return value
+    }
+
+    return PREVIOUS_ANSWERS_SOURCE_FOLDER
 }
 
 function truncateText(value, maxLength) {
@@ -380,6 +398,55 @@ function clearSavedValue(keyName) {
         localStorage.removeItem(keyName)
     } catch {
         // Local storage can fail in private mode or restrictive policies.
+    }
+}
+
+function appendRecordingToPreviousAnswersLocalStorage(entry) {
+    try {
+        const raw = localStorage.getItem(STORAGE_PREVIOUS_ANSWERS_LOCAL) || ''
+        const parsed = JSON.parse(raw || '[]')
+        const existingEntries = Array.isArray(parsed) ? parsed : []
+
+        const normalizedEntry = {
+            id: sanitizeDisplayText(entry?.id, crypto.randomUUID()),
+            capturedAt: sanitizeDisplayText(entry?.capturedAt, new Date().toISOString()),
+            question: sanitizeDisplayText(entry?.question, '(no question)'),
+            transcript: sanitizeDisplayText(entry?.transcript, '(no transcript captured)'),
+            metrics:
+                entry?.metrics && typeof entry.metrics === 'object'
+                    ? entry.metrics
+                    : null,
+            metricsText: sanitizeDisplayText(entry?.metricsText, ''),
+        }
+
+        const nextEntries = [normalizedEntry, ...existingEntries].slice(0, 20)
+        localStorage.setItem(STORAGE_PREVIOUS_ANSWERS_LOCAL, JSON.stringify(nextEntries))
+    } catch {
+        // Ignore local storage persistence issues.
+    }
+}
+
+function removeRecordingFromPreviousAnswersLocalStorage(answerId) {
+    const normalizedId = sanitizeDisplayText(answerId, '')
+    if (!normalizedId) return false
+
+    try {
+        const raw = localStorage.getItem(STORAGE_PREVIOUS_ANSWERS_LOCAL) || ''
+        const parsed = JSON.parse(raw || '[]')
+        const existingEntries = Array.isArray(parsed) ? parsed : []
+
+        const nextEntries = existingEntries.filter(
+            (entry) => sanitizeDisplayText(entry?.id, '') !== normalizedId,
+        )
+
+        if (nextEntries.length === existingEntries.length) {
+            return false
+        }
+
+        localStorage.setItem(STORAGE_PREVIOUS_ANSWERS_LOCAL, JSON.stringify(nextEntries))
+        return true
+    } catch {
+        return false
     }
 }
 
@@ -1703,6 +1770,7 @@ function App() {
     const [confirmRemoveOpen, setConfirmRemoveOpen] = useState(false)
     const [confirmFolderSelectOpen, setConfirmFolderSelectOpen] = useState(false)
     const [confirmRegenerateQuestionsOpen, setConfirmRegenerateQuestionsOpen] = useState(false)
+    const [confirmCloseSettingsUnsavedLlmOpen, setConfirmCloseSettingsUnsavedLlmOpen] = useState(false)
     const [generateQuestionsCountModalOpen, setGenerateQuestionsCountModalOpen] = useState(false)
     const [generateQuestionsCountInput, setGenerateQuestionsCountInput] = useState(
         String(DEFAULT_GENERATED_QUESTION_COUNT),
@@ -1851,6 +1919,9 @@ function App() {
     const [previousAnswers, setPreviousAnswers] = useState([])
     const [isLoadingPreviousAnswers, setIsLoadingPreviousAnswers] = useState(false)
     const [previousAnswersError, setPreviousAnswersError] = useState('')
+    const [previousAnswersSource, setPreviousAnswersSource] = useState(() =>
+        normalizePreviousAnswersSource(getSavedValue(STORAGE_PREVIOUS_ANSWERS_SOURCE)),
+    )
     const [historyModalOpen, setHistoryModalOpen] = useState(false)
     const [selectedPreviousAnswerId, setSelectedPreviousAnswerId] = useState('')
     const [selectedHistoryMedia, setSelectedHistoryMedia] = useState({
@@ -2014,6 +2085,37 @@ function App() {
         Boolean(questionsBulkInput.trim()) ||
         interviewSummaries.length > 0
 
+    const hasUnsavedLlmSettingsChanges = useMemo(() => {
+        const normalizedProviderModeInput = normalizeLlmProviderMode(llmProviderModeInput)
+        const normalizedOpenrouterApiKeyInput = openrouterApiKeyInput.trim()
+        const normalizedOpenrouterModelInput = openrouterModelInput.trim()
+        const normalizedNimApiKeyInput = nimApiKeyInput.trim()
+        const normalizedNimModelInput = nimModelInput.trim()
+        const normalizedNimBaseUrlInput = nimBaseUrlInput.trim()
+
+        return (
+            normalizedProviderModeInput !== llmProviderMode ||
+            normalizedOpenrouterApiKeyInput !== openrouterApiKey ||
+            normalizedOpenrouterModelInput !== openrouterModel ||
+            normalizedNimApiKeyInput !== nimApiKey ||
+            normalizedNimModelInput !== nimModel ||
+            normalizedNimBaseUrlInput !== nimBaseUrl
+        )
+    }, [
+        llmProviderModeInput,
+        openrouterApiKeyInput,
+        openrouterModelInput,
+        nimApiKeyInput,
+        nimModelInput,
+        nimBaseUrlInput,
+        llmProviderMode,
+        openrouterApiKey,
+        openrouterModel,
+        nimApiKey,
+        nimModel,
+        nimBaseUrl,
+    ])
+
     useEffect(() => {
         if (!toast) return undefined
         const providerUsageToastPrefixA = 'Generating Questions, LLM API used:'
@@ -2141,6 +2243,10 @@ function App() {
         )
     }, [fallbackWithoutDeepgramKey])
 
+    useEffect(() => {
+        setSavedValue(STORAGE_PREVIOUS_ANSWERS_SOURCE, previousAnswersSource)
+    }, [previousAnswersSource])
+
     const revokeHistoryMediaUrls = useCallback((urls) => {
         if (urls.audioUrl) URL.revokeObjectURL(urls.audioUrl)
         if (urls.videoUrl) URL.revokeObjectURL(urls.videoUrl)
@@ -2177,7 +2283,7 @@ function App() {
         replaceHistoryMediaUrls({ audioUrl, videoUrl })
     }
 
-    const loadPreviousAnswers = useCallback(async () => {
+    const loadPreviousAnswersFromFolder = useCallback(async () => {
         if (isIphoneClient) {
             setPreviousAnswers([])
             setPreviousAnswersError('')
@@ -2320,6 +2426,93 @@ function App() {
             setIsLoadingPreviousAnswers(false)
         }
     }, [fileSystemAccessSupported, isIphoneClient])
+
+    const loadPreviousAnswersFromLocalStorage = useCallback(async () => {
+        setIsLoadingPreviousAnswers(true)
+        setPreviousAnswersError('')
+
+        try {
+            const raw = getSavedValue(STORAGE_PREVIOUS_ANSWERS_LOCAL)
+            if (!raw.trim()) {
+                setPreviousAnswers([])
+                return []
+            }
+
+            const parsed = JSON.parse(raw)
+            if (!Array.isArray(parsed)) {
+                setPreviousAnswers([])
+                return []
+            }
+
+            const normalized = parsed
+                .map((entry, index) => {
+                    const capturedAt = sanitizeDisplayText(entry?.capturedAt, '')
+                    const sortTime = Number.isFinite(new Date(capturedAt).getTime())
+                        ? new Date(capturedAt).getTime()
+                        : Date.now() - index
+
+                    return {
+                        id: sanitizeDisplayText(entry?.id, `local-${sortTime}-${index}`),
+                        baseName: '',
+                        source: 'local-storage',
+                        reportFileName: '',
+                        folderPath: '',
+                        capturedAt: capturedAt || new Date(sortTime).toISOString(),
+                        question: sanitizeDisplayText(entry?.question, '(no question)'),
+                        transcript: sanitizeDisplayText(
+                            entry?.transcript,
+                            '(no transcript captured)',
+                        ),
+                        metrics:
+                            entry?.metrics && typeof entry.metrics === 'object'
+                                ? entry.metrics
+                                : null,
+                        metricsText: sanitizeDisplayText(entry?.metricsText, ''),
+                        audioFileName: '',
+                        videoFileName: '',
+                        textFileName: '',
+                        audioHandle: null,
+                        videoHandle: null,
+                        textHandle: null,
+                        reportHandle: null,
+                        sortTime,
+                    }
+                })
+                .sort((a, b) => b.sortTime - a.sortTime)
+                .slice(0, 100)
+
+            setPreviousAnswers(normalized)
+            return normalized
+        } catch {
+            setPreviousAnswers([])
+            setPreviousAnswersError('Could not read previous answers from local storage.')
+            return []
+        } finally {
+            setIsLoadingPreviousAnswers(false)
+        }
+    }, [])
+
+    const loadPreviousAnswers = useCallback(async () => {
+        if (previousAnswersSource === PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE) {
+            return loadPreviousAnswersFromLocalStorage()
+        }
+        return loadPreviousAnswersFromFolder()
+    }, [loadPreviousAnswersFromFolder, loadPreviousAnswersFromLocalStorage, previousAnswersSource])
+
+    useEffect(() => {
+        if (!isFolderFeatureDisabled) return
+        if (previousAnswersSource !== PREVIOUS_ANSWERS_SOURCE_FOLDER) return
+
+        setPreviousAnswersSource(PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE)
+        setSelectedPreviousAnswerId('')
+        replaceHistoryMediaUrls({ audioUrl: '', videoUrl: '' })
+        void loadPreviousAnswersFromLocalStorage()
+    }, [
+        isFolderFeatureDisabled,
+        previousAnswersSource,
+        loadPreviousAnswersFromLocalStorage,
+        replaceHistoryMediaUrls,
+    ])
 
     async function openPreviousAnswersModal() {
         const items = await loadPreviousAnswers()
@@ -2474,18 +2667,11 @@ function App() {
     const isImportQuestionDisabled =
         isRecording || isTranscribing || isSpeakingQuestion || isPreparingRecording
 
-    const shouldPromptFolderFromPreviousAnswers =
-        !isFolderFeatureDisabled && !recordingsFolderName
-    const isPreviousAnswersViewDisabled =
-        isFolderFeatureDisabled || isLoadingPreviousAnswers
+    const isPreviousAnswersViewDisabled = isLoadingPreviousAnswers
     const previousAnswersViewDisabledReason =
-        isIphoneClient
-            ? 'Previous answers are unavailable because folder access is not allowed on iPhone browsers.'
-            : !fileSystemAccessSupported
-                ? 'Previous answers are unavailable because folder access is not allowed in this browser.'
-                : !recordingsFolderName
-                    ? 'No save folder selected. Click Previous Answers to choose a save folder first.'
-                    : ''
+        isLoadingPreviousAnswers
+            ? 'Loading previous answers...'
+            : ''
     const isSummaryViewDisabled = !interviewSummaries.length
     const summaryViewDisabledReason = isSummaryViewDisabled
         ? 'Record and transcribe at least one answer first.'
@@ -2896,10 +3082,10 @@ function App() {
         if (isGeneratingQuestions) return
 
         const normalizedQuestionCount = Math.max(
-            1,
-            Math.min(100, Number.parseInt(questionCount, 10) || DEFAULT_GENERATED_QUESTION_COUNT),
+            3,
+            Math.min(40, Number.parseInt(questionCount, 10) || DEFAULT_GENERATED_QUESTION_COUNT),
         )
-        const jdOnlyQuestionCount = Math.min(3, normalizedQuestionCount)
+        const jdOnlyQuestionCount = Math.floor(0.4 * normalizedQuestionCount)
 
         const cv = cvText.trim()
         const jobDescription = jdText.trim()
@@ -2957,8 +3143,10 @@ function App() {
                         apiKey: providerConfig.apiKey,
                         model: providerConfig.model,
                         baseUrl: providerConfig.baseUrl,
-                        userMessage:
-                            `Generate ${normalizedQuestionCount} concise mock interview questions based on the provided CV, job description, and company. If a job description is provided, include at least ${jdOnlyQuestionCount} questions that are derived only from the job description requirements and are not based on the CV. Return only the questions, one per line, no intro or explanation.`,
+                        userMessage: QUESTION_GENERATION_USER_MESSAGE(
+                            normalizedQuestionCount,
+                            jdOnlyQuestionCount,
+                        ),
                         stream: true,
                         onChunk: (fullText) => {
                             setQuestionsBulkInput(fullText || 'Generating questions...')
@@ -3076,8 +3264,7 @@ function App() {
                         apiKey: providerConfig.apiKey,
                         model: providerConfig.model,
                         baseUrl: providerConfig.baseUrl,
-                        userMessage:
-                            'You are an Interview Expert for a Consulting Firm. You are writing feedback for the mock interview answers. Using the provided interview Job Title, Q&A transcript, Q&A metrics, JD and CV, return markdown with sections: 1) Initial Feedback, 2) Overall Rating, 3) Answer Strengths, 4) Answer Weaknesses, 5) Future Directions For Improvement. Keep it concise and evidence-based.',
+                        userMessage: AM_REPORT_USER_MESSAGE,
                         context: {
                             question: 'Generate concise mock interview feedback and summary for the consultant at consulting firm. Do not include per question feedback.',
                             answer: summaryMarkdown,
@@ -3215,8 +3402,7 @@ function App() {
                         apiKey: providerConfig.apiKey,
                         model: providerConfig.model,
                         baseUrl: providerConfig.baseUrl,
-                        userMessage:
-                            'You are an Interview Expert for a Consulting Firm. Using the provided interview context, return markdown with these exact top-level sections in order: 1) Initial Feedback, 2) Overall Rating, 3) Answer Strengths, 4) Answer Weaknesses, 5) Future Directions For Improvement, 6) Detailed Per-Question Analysis. In section 6, create one subsection per answer using heading format "### Question N: <question>" and include: Candidate Answer Snapshot, Strengths, Weaknesses, Metric Interpretation, Suggested Improved Answer. The Suggested Improved Answer must describe an ideal answer and tailor it to CV/JD/company/job title context when relevant; if not relevant, explicitly state that no CV/JD tailoring applies. Keep feedback specific, concise, and evidence-based using transcript and metrics.',
+                        userMessage: DETAILED_REPORT_USER_MESSAGE,
                         context: {
                             question: 'Generate a detailed mock interview report with both overall summary and per-question analysis.',
                             answer: summaryMarkdown,
@@ -3375,8 +3561,8 @@ function App() {
 
     function confirmGenerateQuestionsCountSelection() {
         const parsedCount = Number.parseInt(generateQuestionsCountInput, 10)
-        if (!Number.isInteger(parsedCount) || parsedCount < 1 || parsedCount > 100) {
-            setToast('Enter a question count between 1 and 100.')
+        if (!Number.isInteger(parsedCount) || parsedCount < 3 || parsedCount > 40) {
+            setToast('Enter a question count between 3 and 40.')
             return
         }
 
@@ -3599,6 +3785,10 @@ function App() {
                 setConfirmRegenerateQuestionsOpen(false)
                 return
             }
+            if (confirmCloseSettingsUnsavedLlmOpen) {
+                setConfirmCloseSettingsUnsavedLlmOpen(false)
+                return
+            }
             if (generateQuestionsCountModalOpen) {
                 closeGenerateQuestionsCountModal()
                 return
@@ -3608,7 +3798,7 @@ function App() {
                 return
             }
             if (settingsOpen) {
-                setSettingsOpen(false)
+                closeSettings()
                 return
             }
             if (historyModalOpen) {
@@ -3622,10 +3812,12 @@ function App() {
         confirmRemoveOpen,
         confirmFolderSelectOpen,
         confirmRegenerateQuestionsOpen,
+        confirmCloseSettingsUnsavedLlmOpen,
         generateQuestionsCountModalOpen,
         closeGenerateQuestionsCountModal,
         pendingDeleteAction,
         settingsOpen,
+        closeSettings,
         historyModalOpen,
         closePreviousAnswersModal,
         questionsDrawerOpen,
@@ -4084,7 +4276,20 @@ function App() {
     }
 
     function closeSettings() {
+        if (hasUnsavedLlmSettingsChanges) {
+            setConfirmCloseSettingsUnsavedLlmOpen(true)
+            return
+        }
+
         setSettingsOpen(false)
+        setFieldError('')
+        setShowKey(false)
+        setLlmSettingsError('')
+    }
+
+    function closeSettingsConfirmed() {
+        setSettingsOpen(false)
+        setConfirmCloseSettingsUnsavedLlmOpen(false)
         setFieldError('')
         setShowKey(false)
         setLlmSettingsError('')
@@ -4100,18 +4305,18 @@ function App() {
 
         if (!trimmedOpenrouterModel || !trimmedNimModel) {
             setLlmSettingsError('Model is required. Select a model or enter a custom model name.')
-            return
+            return false
         }
 
         if (!trimmedNimBaseUrl) {
             setLlmSettingsError('NVIDIA NIM Base URL is required.')
-            return
+            return false
         }
 
         const nimBaseUrlValidationError = validateLlmProviderApiBaseUrl(trimmedNimBaseUrl)
         if (nimBaseUrlValidationError) {
             setLlmSettingsError(nimBaseUrlValidationError)
-            return
+            return false
         }
 
         setLlmProviderMode(normalizedProviderMode)
@@ -4132,6 +4337,17 @@ function App() {
         setSavedValue(STORAGE_NIM_API_KEY, trimmedNimKey)
 
         setToast('LLM settings saved.')
+        return true
+    }
+
+    function saveLlmSettingsAndCloseSettings() {
+        const didSave = saveLlmSettings()
+        if (!didSave) return
+        closeSettingsConfirmed()
+    }
+
+    function discardUnsavedLlmSettingsAndClose() {
+        closeSettingsConfirmed()
     }
 
     function saveOpenrouterKeyOnly() {
@@ -4464,18 +4680,36 @@ function App() {
             return
         }
 
-        if (!selectedPreviousAnswer.textHandle) {
-            setToast('No text file found for this answer.')
-            return
-        }
-
         try {
-            const file = await selectedPreviousAnswer.textHandle.getFile()
-            const textContent = await file.text()
+            let textContent = ''
+
+            if (selectedPreviousAnswer.textHandle) {
+                const file = await selectedPreviousAnswer.textHandle.getFile()
+                textContent = await file.text()
+            } else if (selectedPreviousAnswer.metricsText?.trim()) {
+                textContent = selectedPreviousAnswer.metricsText
+            } else if (
+                selectedPreviousAnswer.transcript?.trim() &&
+                selectedPreviousAnswer.metrics &&
+                typeof selectedPreviousAnswer.metrics === 'object'
+            ) {
+                textContent = buildOutputText({
+                    capturedAt: selectedPreviousAnswer.capturedAt || new Date().toISOString(),
+                    question: selectedPreviousAnswer.question || '(no question)',
+                    answer: selectedPreviousAnswer.transcript,
+                    metrics: selectedPreviousAnswer.metrics,
+                })
+            }
+
+            if (!textContent.trim()) {
+                setToast('No transcript/metrics content found for this answer.')
+                return
+            }
+
             await navigator.clipboard.writeText(textContent)
-            setToast('text output copied to clipboard')
+            setToast('Transcript and metrics copied to clipboard.')
         } catch {
-            setToast('Could not copy text file.')
+            setToast('Could not copy transcript and metrics.')
         }
     }
 
@@ -4536,6 +4770,35 @@ function App() {
     async function performDeleteSelectedPreviousAnswer() {
         if (!selectedPreviousAnswer) {
             setToast('Select an answer first.')
+            return
+        }
+
+        const isLocalStorageAnswer =
+            selectedPreviousAnswer.source === PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE
+
+        if (isLocalStorageAnswer) {
+            const removed = removeRecordingFromPreviousAnswersLocalStorage(selectedPreviousAnswer.id)
+            if (!removed) {
+                setToast('Could not delete this local storage answer.')
+                return
+            }
+
+            const fingerprintToRemove = getSummaryFingerprint(selectedPreviousAnswer)
+            setInterviewSummaries((prev) =>
+                prev.filter((item) => getSummaryFingerprint(item) !== fingerprintToRemove),
+            )
+
+            const refreshedItems = await loadPreviousAnswers()
+            if (refreshedItems.length) {
+                const nextItem = refreshedItems[0]
+                setSelectedPreviousAnswerId(nextItem.id)
+                await loadHistoryMedia(nextItem)
+            } else {
+                setSelectedPreviousAnswerId('')
+                replaceHistoryMediaUrls({ audioUrl: '', videoUrl: '' })
+            }
+
+            setToast('Previous answer removed from local storage.')
             return
         }
 
@@ -5362,6 +5625,15 @@ function App() {
                 metrics: interviewMetrics,
             })
 
+            appendRecordingToPreviousAnswersLocalStorage({
+                id: crypto.randomUUID(),
+                capturedAt: capturedAtIso,
+                question: trimmedQuestion || '(no question)',
+                transcript: normalizedTranscript,
+                metrics: interviewMetrics,
+                metricsText: outputBlock,
+            })
+
             setLatestInterviewMetrics(interviewMetrics)
 
             const sessionReport = {
@@ -5703,10 +5975,6 @@ function App() {
                                     type="button"
                                     className="previous-peek-tab"
                                     onClick={() => {
-                                        if (shouldPromptFolderFromPreviousAnswers) {
-                                            openSelectRecordingsFolderModal()
-                                            return
-                                        }
                                         setQuestionsDrawerOpen(false)
                                         closeCvJdModal()
                                         closeSummaryModal()
@@ -6380,6 +6648,72 @@ function App() {
                         <div className="history-modal-header">
                             <div className="history-title-row">
                                 <h2 id="history-title">Previous Answers</h2>
+                                <div
+                                    className="history-source-toggle"
+                                    role="group"
+                                    aria-label="Previous answers source"
+                                >
+                                    <span className="history-source-label">Source:</span>
+                                    <button
+                                        type="button"
+                                        className={`btn ghost history-source-btn${previousAnswersSource === PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE
+                                            ? ' active'
+                                            : ''
+                                            }`}
+                                        onClick={() => {
+                                            if (
+                                                previousAnswersSource ===
+                                                PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE
+                                            ) {
+                                                return
+                                            }
+
+                                            setPreviousAnswersSource(
+                                                PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE,
+                                            )
+                                            setSelectedPreviousAnswerId('')
+                                            replaceHistoryMediaUrls({
+                                                audioUrl: '',
+                                                videoUrl: '',
+                                            })
+                                            void loadPreviousAnswersFromLocalStorage()
+                                        }}
+                                    >
+                                        Local Storage
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className={`btn ghost history-source-btn${previousAnswersSource === PREVIOUS_ANSWERS_SOURCE_FOLDER
+                                            ? ' active'
+                                            : ''
+                                            }`}
+                                        onClick={() => {
+                                            if (
+                                                previousAnswersSource === PREVIOUS_ANSWERS_SOURCE_FOLDER
+                                            ) {
+                                                return
+                                            }
+
+                                            setPreviousAnswersSource(
+                                                PREVIOUS_ANSWERS_SOURCE_FOLDER,
+                                            )
+                                            setSelectedPreviousAnswerId('')
+                                            replaceHistoryMediaUrls({
+                                                audioUrl: '',
+                                                videoUrl: '',
+                                            })
+                                            void loadPreviousAnswersFromFolder()
+                                        }}
+                                        disabled={isFolderFeatureDisabled}
+                                        title={
+                                            isFolderFeatureDisabled
+                                                ? 'Folder history is unavailable in this browser.'
+                                                : ''
+                                        }
+                                    >
+                                        Folder
+                                    </button>
+                                </div>
                                 <label className="debug-toggle history-autosave-toggle">
                                     <input
                                         type="checkbox"
@@ -6408,14 +6742,16 @@ function App() {
                                 <div className="history-overview-head">
                                     <h3>Overview</h3>
                                     <div className="history-overview-actions">
-                                        <button
-                                            type="button"
-                                            className="btn ghost"
-                                            onClick={openSelectRecordingsFolderModal}
-                                            disabled={isFolderFeatureDisabled}
-                                        >
-                                            Reselect Folder
-                                        </button>
+                                        {previousAnswersSource === PREVIOUS_ANSWERS_SOURCE_FOLDER && (
+                                            <button
+                                                type="button"
+                                                className="btn ghost"
+                                                onClick={openSelectRecordingsFolderModal}
+                                                disabled={isFolderFeatureDisabled}
+                                            >
+                                                Reselect Folder
+                                            </button>
+                                        )}
                                         <button
                                             type="button"
                                             className="btn ghost"
@@ -6448,7 +6784,11 @@ function App() {
                                         </button>
                                     ))}
                                     {!previousAnswers.length && (
-                                        <p className="muted">No previous answers found in the selected folder.</p>
+                                        <p className="muted">
+                                            {previousAnswersSource === PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE
+                                                ? 'No previous answers found in local storage.'
+                                                : 'No previous answers found in the selected folder.'}
+                                        </p>
                                     )}
                                 </div>
                             </aside>
@@ -6464,16 +6804,23 @@ function App() {
                                                     {selectedPreviousAnswer.source} ·{' '}
                                                     {formatReadableCapturedDate(selectedPreviousAnswer.capturedAt)}
                                                 </p>
-                                                <p className="metric-label history-detail-meta">
-                                                    Total file size: {selectedPreviousAnswerTotalSizeLabel}
-                                                </p>
+                                                {selectedPreviousAnswer.source !==
+                                                    PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE && (
+                                                        <p className="metric-label history-detail-meta">
+                                                            Total file size: {selectedPreviousAnswerTotalSizeLabel}
+                                                        </p>
+                                                    )}
                                             </div>
                                             <div className="history-detail-actions">
                                                 <button
                                                     type="button"
                                                     className="btn ghost history-copy-btn"
                                                     onClick={copySelectedAnswerTextFile}
-                                                    disabled={!selectedPreviousAnswer.textHandle}
+                                                    disabled={
+                                                        !selectedPreviousAnswer.textHandle &&
+                                                        !selectedPreviousAnswer.metricsText?.trim() &&
+                                                        !selectedPreviousAnswer.transcript?.trim()
+                                                    }
                                                 >
                                                     Copy Transcript and Metrics
                                                 </button>
@@ -6496,6 +6843,12 @@ function App() {
                                                     type="button"
                                                     className="btn danger"
                                                     onClick={deleteSelectedPreviousAnswer}
+                                                    title={
+                                                        previousAnswersSource ===
+                                                            PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE
+                                                            ? 'Delete this answer from local storage history.'
+                                                            : ''
+                                                    }
                                                 >
                                                     Delete Answer
                                                 </button>
@@ -6503,102 +6856,107 @@ function App() {
                                         </div>
 
                                         <div className="history-detail-scroll">
-                                            <details className="transcript-box history-files">
-                                                <summary>Files</summary>
-                                                <div className="history-files-body">
-                                                    <p className="metric-label history-detail-meta">
-                                                        Report: {selectedPreviousAnswer.reportFileName || 'n/a'}
-                                                        {selectedPreviousAnswerFileSizes.report ? ` (${selectedPreviousAnswerFileSizes.report})` : ''}
-                                                    </p>
-                                                    <p className="metric-label history-detail-meta">
-                                                        Transcript: {selectedPreviousAnswer.textFileName || 'n/a'}
-                                                        {selectedPreviousAnswerFileSizes.text ? ` (${selectedPreviousAnswerFileSizes.text})` : ''}
-                                                    </p>
-                                                    {selectedPreviousAnswer.audioFileName &&
-                                                        selectedPreviousAnswer.videoFileName &&
-                                                        selectedPreviousAnswer.audioFileName === selectedPreviousAnswer.videoFileName ? (
-                                                        <p className="metric-label history-detail-meta">
-                                                            Media file: {selectedPreviousAnswer.audioFileName}
-                                                            {(selectedPreviousAnswerFileSizes.audio || selectedPreviousAnswerFileSizes.video)
-                                                                ? ` (${selectedPreviousAnswerFileSizes.audio || selectedPreviousAnswerFileSizes.video})`
-                                                                : ''}
-                                                        </p>
-                                                    ) : (
-                                                        <>
-                                                            <p className="metric-label history-detail-meta">
-                                                                Audio: {selectedPreviousAnswer.audioFileName || 'n/a'}
-                                                                {selectedPreviousAnswerFileSizes.audio ? ` (${selectedPreviousAnswerFileSizes.audio})` : ''}
-                                                            </p>
-                                                            <p className="metric-label history-detail-meta">
-                                                                Video: {selectedPreviousAnswer.videoFileName || 'n/a'}
-                                                                {selectedPreviousAnswerFileSizes.video ? ` (${selectedPreviousAnswerFileSizes.video})` : ''}
-                                                            </p>
-                                                        </>
-                                                    )}
-                                                </div>
-                                            </details>
+                                            {selectedPreviousAnswer.source !==
+                                                PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE && (
+                                                    <>
+                                                        <details className="transcript-box history-files">
+                                                            <summary>Files</summary>
+                                                            <div className="history-files-body">
+                                                                <p className="metric-label history-detail-meta">
+                                                                    Report: {selectedPreviousAnswer.reportFileName || 'n/a'}
+                                                                    {selectedPreviousAnswerFileSizes.report ? ` (${selectedPreviousAnswerFileSizes.report})` : ''}
+                                                                </p>
+                                                                <p className="metric-label history-detail-meta">
+                                                                    Transcript: {selectedPreviousAnswer.textFileName || 'n/a'}
+                                                                    {selectedPreviousAnswerFileSizes.text ? ` (${selectedPreviousAnswerFileSizes.text})` : ''}
+                                                                </p>
+                                                                {selectedPreviousAnswer.audioFileName &&
+                                                                    selectedPreviousAnswer.videoFileName &&
+                                                                    selectedPreviousAnswer.audioFileName === selectedPreviousAnswer.videoFileName ? (
+                                                                    <p className="metric-label history-detail-meta">
+                                                                        Media file: {selectedPreviousAnswer.audioFileName}
+                                                                        {(selectedPreviousAnswerFileSizes.audio || selectedPreviousAnswerFileSizes.video)
+                                                                            ? ` (${selectedPreviousAnswerFileSizes.audio || selectedPreviousAnswerFileSizes.video})`
+                                                                            : ''}
+                                                                    </p>
+                                                                ) : (
+                                                                    <>
+                                                                        <p className="metric-label history-detail-meta">
+                                                                            Audio: {selectedPreviousAnswer.audioFileName || 'n/a'}
+                                                                            {selectedPreviousAnswerFileSizes.audio ? ` (${selectedPreviousAnswerFileSizes.audio})` : ''}
+                                                                        </p>
+                                                                        <p className="metric-label history-detail-meta">
+                                                                            Video: {selectedPreviousAnswer.videoFileName || 'n/a'}
+                                                                            {selectedPreviousAnswerFileSizes.video ? ` (${selectedPreviousAnswerFileSizes.video})` : ''}
+                                                                        </p>
+                                                                    </>
+                                                                )}
+                                                            </div>
+                                                        </details>
 
-                                            <div className="transcript-box history-media">
-                                                <div className="history-media-head">
-                                                    <h3>Recording</h3>
-                                                    <div
-                                                        className="history-speed-controls"
-                                                        role="group"
-                                                        aria-label="Video playback speed"
-                                                    >
-                                                        {[1, 1.5, 2, 3].map((rate) => (
-                                                            <button
-                                                                key={rate}
-                                                                type="button"
-                                                                className={`btn ghost history-speed-btn${historyPlaybackRate === rate ? ' active' : ''}`}
-                                                                onClick={() => setHistoryPlaybackRate(rate)}
-                                                                disabled={
-                                                                    !selectedHistoryMedia.videoUrl &&
-                                                                    !selectedHistoryMedia.audioUrl
-                                                                }
-                                                            >
-                                                                {rate}x
-                                                            </button>
-                                                        ))}
-                                                    </div>
-                                                </div>
+                                                        <div className="transcript-box history-media">
+                                                            <div className="history-media-head">
+                                                                <h3>Recording</h3>
+                                                                <div
+                                                                    className="history-speed-controls"
+                                                                    role="group"
+                                                                    aria-label="Video playback speed"
+                                                                >
+                                                                    {[1, 1.5, 2, 3].map((rate) => (
+                                                                        <button
+                                                                            key={rate}
+                                                                            type="button"
+                                                                            className={`btn ghost history-speed-btn${historyPlaybackRate === rate ? ' active' : ''}`}
+                                                                            onClick={() => setHistoryPlaybackRate(rate)}
+                                                                            disabled={
+                                                                                !selectedHistoryMedia.videoUrl &&
+                                                                                !selectedHistoryMedia.audioUrl
+                                                                            }
+                                                                        >
+                                                                            {rate}x
+                                                                        </button>
+                                                                    ))}
+                                                                </div>
+                                                            </div>
 
-                                                {selectedHistoryMedia.videoUrl ? (
-                                                    <video
-                                                        ref={historyVideoRef}
-                                                        className="history-video"
-                                                        src={selectedHistoryMedia.videoUrl}
-                                                        controls
-                                                        preload="metadata"
-                                                        onLoadedMetadata={() => {
-                                                            if (historyVideoRef.current) {
-                                                                historyVideoRef.current.playbackRate =
-                                                                    historyPlaybackRate
-                                                            }
-                                                        }}
-                                                    />
-                                                ) : (
-                                                    <p className="muted">No video recording found for this answer.</p>
+                                                            {selectedHistoryMedia.videoUrl ? (
+                                                                <video
+                                                                    ref={historyVideoRef}
+                                                                    className="history-video"
+                                                                    src={selectedHistoryMedia.videoUrl}
+                                                                    controls
+                                                                    preload="metadata"
+                                                                    onLoadedMetadata={() => {
+                                                                        if (historyVideoRef.current) {
+                                                                            historyVideoRef.current.playbackRate =
+                                                                                historyPlaybackRate
+                                                                        }
+                                                                    }}
+                                                                />
+                                                            ) : (
+                                                                <p className="muted">No video recording found for this answer.</p>
+                                                            )}
+
+                                                            {!selectedHistoryMedia.videoUrl && selectedHistoryMedia.audioUrl ? (
+                                                                <audio
+                                                                    ref={historyAudioRef}
+                                                                    className="history-audio"
+                                                                    src={selectedHistoryMedia.audioUrl}
+                                                                    controls
+                                                                    preload="metadata"
+                                                                    onLoadedMetadata={() => {
+                                                                        if (historyAudioRef.current) {
+                                                                            historyAudioRef.current.playbackRate =
+                                                                                historyPlaybackRate
+                                                                        }
+                                                                    }}
+                                                                />
+                                                            ) : !selectedHistoryMedia.videoUrl ? (
+                                                                <p className="muted">No audio recording found for this answer.</p>
+                                                            ) : null}
+                                                        </div>
+                                                    </>
                                                 )}
-
-                                                {!selectedHistoryMedia.videoUrl && selectedHistoryMedia.audioUrl ? (
-                                                    <audio
-                                                        ref={historyAudioRef}
-                                                        className="history-audio"
-                                                        src={selectedHistoryMedia.audioUrl}
-                                                        controls
-                                                        preload="metadata"
-                                                        onLoadedMetadata={() => {
-                                                            if (historyAudioRef.current) {
-                                                                historyAudioRef.current.playbackRate =
-                                                                    historyPlaybackRate
-                                                            }
-                                                        }}
-                                                    />
-                                                ) : !selectedHistoryMedia.videoUrl ? (
-                                                    <p className="muted">No audio recording found for this answer.</p>
-                                                ) : null}
-                                            </div>
 
                                             <div className="transcript-box history-transcript">
                                                 <h3>Full Transcript</h3>
@@ -7557,6 +7915,45 @@ function App() {
                 </div>
             )}
 
+            {confirmCloseSettingsUnsavedLlmOpen && (
+                <div className="overlay" role="presentation">
+                    <div
+                        className="modal compact"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="settings-unsaved-llm-title"
+                    >
+                        <h2 id="settings-unsaved-llm-title">Save LLM changes?</h2>
+                        <p className="muted">
+                            You have unsaved LLM settings. Save LLM settings before closing, or discard changes.
+                        </p>
+                        <div className="actions">
+                            <button
+                                type="button"
+                                className="btn"
+                                onClick={saveLlmSettingsAndCloseSettings}
+                            >
+                                Save LLM Settings
+                            </button>
+                            <button
+                                type="button"
+                                className="btn danger"
+                                onClick={discardUnsavedLlmSettingsAndClose}
+                            >
+                                Discard
+                            </button>
+                            <button
+                                type="button"
+                                className="btn ghost"
+                                onClick={() => setConfirmCloseSettingsUnsavedLlmOpen(false)}
+                            >
+                                Stay
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {amReportModalOpen && (
                 <div className="overlay" role="presentation">
                     <div
@@ -7904,8 +8301,8 @@ function App() {
                             id="question-count-input"
                             type="number"
                             className="field"
-                            min={1}
-                            max={100}
+                            min={3}
+                            max={40}
                             step={1}
                             value={generateQuestionsCountInput}
                             onChange={(event) => setGenerateQuestionsCountInput(event.target.value)}
@@ -7950,7 +8347,10 @@ function App() {
                             {pendingDeleteAction.kind === 'parsed-question'
                                 ? 'This question will be removed from the Questions Import list.'
                                 : pendingDeleteAction.kind === 'previous-answer'
-                                    ? `This will remove the selected answer and move linked saved files into ${RECYCLE_BIN_FOLDER_NAME} under the selected folder.`
+                                    ? selectedPreviousAnswer?.source ===
+                                        PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE
+                                        ? 'This will remove the selected answer from local storage history.'
+                                        : `This will remove the selected answer and move linked saved files into ${RECYCLE_BIN_FOLDER_NAME} under the selected folder.`
                                     : 'This will remove the selected answer from Answer Summary only. Saved folder files will not be deleted.'}
                         </p>
                         <div className="actions">
