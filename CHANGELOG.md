@@ -19,6 +19,17 @@ Use this template for future releases:
 -
 ```
 
+## [1.8.29] - 2026-08-06
+
+### Added
+- Added a unified `Generate Reports` flow that starts AM and detailed report generation in parallel.
+- Added a split generation preview modal with side-by-side streaming output (`AM Report` on the left, `Detailed Report` on the right).
+- Added a combined PDF preview modal that shows AM and detailed report PDFs side-by-side with independent download actions.
+
+### Changed
+- Replaced the OpenRouter preset `cohere/north-mini-code:free` with `inclusionai/ling-3.0-flash:free`.
+- Replaced separate left-tab actions (`Generate AM Report`, `Generate Detailed Report`) with a single `Generate Reports` action.
+
 ## [1.8.28] - 2026-08-06
 
 ### Added

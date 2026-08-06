@@ -94,8 +94,8 @@ const OPENROUTER_MODEL_PRESETS = [
         label: 'NVIDIA Nemotron 3 Ultra 550B A55B [nvidia/nemotron-3-ultra-550b-a55b:free]',
     },
     {
-        value: 'cohere/north-mini-code:free',
-        label: 'Cohere North Mini Code [cohere/north-mini-code:free]',
+        value: 'inclusionai/ling-3.0-flash:free',
+        label: 'InclusionAI Ling 3.0 Flash [inclusionai/ling-3.0-flash:free]',
     },
 ]
 const NIM_MODEL_PRESETS = [

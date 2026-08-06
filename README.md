@@ -2,13 +2,13 @@
 
 Mock Interviewer is a React + Vite web app for practicing interview answers with live camera posture cues, audio/video recording, and Deepgram-powered transcription.
 
-Current app version: 1.8.28
+Current app version: 1.8.29
 
 ## Highlights
 
 - Deepgram BYOK settings with local key persistence and optional server-side validation endpoint
 - LLM model dropdown labels now include model path values in brackets for faster endpoint verification
-- Curated 3-option preset model lists (plus Custom) for OpenRouter and NVIDIA NIM
+- Curated 3-option preset model lists (plus Custom) for OpenRouter and NVIDIA NIM, including `inclusionai/ling-3.0-flash:free`
 - LLM provider HTTP errors now show provider name, status code, and truncated message in a 10-second notification
 - Live MediaPipe face analysis with eye-contact and gaze feedback metrics
 - Start Video Recording and Start Audio Recording workflows
@@ -22,8 +22,9 @@ Current app version: 1.8.28
 - Question-count normalization now reliably enforces the supported `3-40` range across browsers
 - Question-count modal now enforces `3-40` directly in UI validation and input bounds
 - Re-generating questions now warns before overwriting existing questions
-- Generate AM Report flow with streaming preview, cancel support, and in-app PDF preview modal
-- Generate Detailed Report flow with per-question analysis, suggested improved answers, and PDF preview
+- Unified Generate Reports flow that runs AM and detailed report generation in parallel
+- Side-by-side report generation modal (`AM Report` left, `Detailed Report` right)
+- Side-by-side PDF preview modal for AM and detailed outputs with separate download actions
 - Detailed report PDFs now start `Detailed Per-Question Analysis` on a new page and place each question after Question 1 on its own page
 - AM feedback PDF preview with download icon action and exit-confirmation discard warning
 - PDF metric/unit formatting keeps `%`/`°` attached to numbers in generated reports
@@ -137,7 +138,7 @@ Copy-Item -Recurse -Force dist\* .
 2. Under "LLM Chat Providers", enter at least one provider API key.
 3. Configure model and base URL for the provider you want to use.
 4. Save LLM settings.
-5. Use `Generate Questions`, `Generate AM Report`, or `Generate Detailed Report` from the left-side tabs.
+5. Use `Generate Questions` or `Generate Reports` from the left-side tabs.
 
 Behavior:
 - If provider settings are missing or invalid, generation returns an actionable error toast.
