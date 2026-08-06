@@ -158,13 +158,19 @@ Behavior:
 ## GitHub Pages and custom domain
 
 - Deployment workflow: .github/workflows/deploy-pages.yml
-- Target repository: haydenmlh/webcam-interview-analyzer-page
-- Target branch: gh-pages
+- Dev deployment workflow: .github/workflows/deploy-pages-dev.yml
+- Production target repository: haydenmlh/webcam-interview-analyzer-page
+- Production target branch: gh-pages
+- Dev target repository: haydenmlh/webcam-interview-analyzer-js (this source repository)
+- Dev target branch: gh-pages-dev
 - Custom domain file: public/CNAME
 - Configured domain: interview.haydenmlh.com
+- Dev configured domain: dev.interview.haydenmlh.com
 
 ### Required secret in source repository
 
 - PAGES_DEPLOY_TOKEN: Personal Access Token with write access to haydenmlh/webcam-interview-analyzer-page
 
 After first deploy, enable GitHub Pages on haydenmlh/webcam-interview-analyzer-page with source branch gh-pages, then set your DNS CNAME record for interview.haydenmlh.com to haydenmlh.github.io.
+
+For dev deploys, enable GitHub Pages on haydenmlh/webcam-interview-analyzer-js with source branch gh-pages-dev and set DNS CNAME for dev.interview.haydenmlh.com to haydenmlh.github.io.
