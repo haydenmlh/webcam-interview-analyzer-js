@@ -19,6 +19,11 @@ Use this template for future releases:
 -
 ```
 
+## [1.9.1] - 2026-08-06
+
+### Changed
+- Updated the active mock-interview turn action label from `Done Current Question` to `Finished my Answer`.
+
 ## [1.9.0] - 2026-08-06
 
 ### Added

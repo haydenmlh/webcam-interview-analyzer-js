@@ -6918,7 +6918,7 @@ function App() {
                                             {isMockInterviewStarted
                                                 ? (isSpeakingQuestion || isPreparingRecording || isTranscribing)
                                                     ? 'Reading Question (TTS)'
-                                                    : 'Done Current Question'
+                                                    : 'Finished my Answer'
                                                 : (
                                                     <>
                                                         Start Mock
