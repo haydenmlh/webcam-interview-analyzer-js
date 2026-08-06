@@ -66,6 +66,9 @@ const DEFAULT_DETAILED_REPORT_GENERATION_GUIDELINES =
 const LLM_PROVIDER_ENV_CONFIG = getLlmProviderConfig(import.meta.env)
 const HARDCODED_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1'
 const HARDCODED_NIM_BASE_URL = import.meta.env.DEV ? '/api/nim' : 'https://integrate.api.nvidia.com/v1'
+const LLM_HTTP_ERROR_TOAST_PREFIX = 'LLM API HTTP error:'
+const LLM_HTTP_ERROR_TOAST_TIMEOUT_MS = 10000
+const LLM_HTTP_ERROR_MESSAGE_MAX_LENGTH = 180
 const UNSAVED_QA_WARNING_MESSAGE =
     'Questions and Answer Summaries will not be saved. Please download the reports as needed.'
 const CUSTOM_MODEL_OPTION_VALUE = '__custom__'
@@ -131,6 +134,13 @@ function normalizeLlmProviderMode(value) {
     }
 
     return LLM_PROVIDER_MODE_AUTO
+}
+
+function truncateText(value, maxLength) {
+    const normalized = String(value || '').trim().replace(/\s+/g, ' ')
+    if (!normalized) return ''
+    if (normalized.length <= maxLength) return normalized
+    return `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`
 }
 
 const DEFAULT_WASM_URL =
@@ -2002,7 +2012,9 @@ function App() {
                 toast.startsWith(providerUsageToastPrefixB) ||
                 toast.startsWith(providerUsageToastPrefixC)
                 ? 5000
-                : 3500
+                : toast.startsWith(LLM_HTTP_ERROR_TOAST_PREFIX)
+                    ? LLM_HTTP_ERROR_TOAST_TIMEOUT_MS
+                    : 3500
         const timerId = window.setTimeout(() => setToast(''), timeoutMs)
         return () => window.clearTimeout(timerId)
     }, [toast])
@@ -2840,6 +2852,28 @@ function App() {
         return providerId === 'nim' ? 'NVIDIA NIM' : 'OpenRouter'
     }
 
+    function formatLlmProviderHttpErrorToast(error, providerId) {
+        if (error?.code !== 'provider-http-error') return ''
+
+        const statusCode = Number(error?.status)
+        if (!Number.isInteger(statusCode) || statusCode <= 0) return ''
+
+        const resolvedProviderId = providerId || error?.providerId
+        const providerLabel = getLlmProviderUsageLabel(resolvedProviderId)
+        const fallbackMessage = error?.message || 'Request failed.'
+        const rawProviderMessage = error?.providerMessage || fallbackMessage
+        const message = truncateText(rawProviderMessage, LLM_HTTP_ERROR_MESSAGE_MAX_LENGTH)
+
+        return `${LLM_HTTP_ERROR_TOAST_PREFIX} ${providerLabel} (${statusCode}) ${message}`
+    }
+
+    function showLlmProviderHttpErrorToast(error, providerId) {
+        const toastMessage = formatLlmProviderHttpErrorToast(error, providerId)
+        if (!toastMessage) return false
+        setToast(toastMessage)
+        return true
+    }
+
     async function generateQuestionsFromCvJd(options = {}) {
         const {
             closeCvJd = false,
@@ -2923,6 +2957,7 @@ function App() {
                     })
                     break
                 } catch (error) {
+                    showLlmProviderHttpErrorToast(error, providerConfig.providerId)
                     lastError = error
                 }
             }
@@ -2944,7 +2979,9 @@ function App() {
             setToast(`Generated ${parsedQuestions.length} question(s).`)
         } catch (error) {
             setQuestionsBulkInput('')
-            setToast(error?.message || 'Could not generate questions.')
+            if (!showLlmProviderHttpErrorToast(error)) {
+                setToast(error?.message || 'Could not generate questions.')
+            }
         } finally {
             setIsGeneratingQuestions(false)
         }
@@ -3044,6 +3081,7 @@ function App() {
                     if (error?.code === 'request-aborted') {
                         throw error
                     }
+                    showLlmProviderHttpErrorToast(error, providerConfig.providerId)
                     lastError = error
                 }
             }
@@ -3078,7 +3116,9 @@ function App() {
             if (error?.code === 'request-aborted') {
                 setToast('AM report generation canceled.')
             } else {
-                setToast(error?.message || 'Could not generate AM report.')
+                if (!showLlmProviderHttpErrorToast(error)) {
+                    setToast(error?.message || 'Could not generate AM report.')
+                }
             }
         } finally {
             amReportAbortControllerRef.current = null
@@ -3180,6 +3220,7 @@ function App() {
                     if (error?.code === 'request-aborted') {
                         throw error
                     }
+                    showLlmProviderHttpErrorToast(error, providerConfig.providerId)
                     lastError = error
                 }
             }
@@ -3214,7 +3255,9 @@ function App() {
             if (error?.code === 'request-aborted') {
                 setToast('Detailed report generation canceled.')
             } else {
-                setToast(error?.message || 'Could not generate detailed report.')
+                if (!showLlmProviderHttpErrorToast(error)) {
+                    setToast(error?.message || 'Could not generate detailed report.')
+                }
             }
         } finally {
             detailedReportAbortControllerRef.current = null
@@ -4022,7 +4065,9 @@ function App() {
                 setToast('OpenRouter API key saved and validated.')
             })
             .catch((error) => {
-                setToast(`OpenRouter API key saved, but validation failed: ${error?.message || 'Unknown error.'}`)
+                if (!showLlmProviderHttpErrorToast(error, 'openrouter')) {
+                    setToast(`OpenRouter API key saved, but validation failed: ${error?.message || 'Unknown error.'}`)
+                }
             })
             .finally(() => {
                 setIsSavingOpenrouterKey(false)
@@ -4049,7 +4094,9 @@ function App() {
                 setToast('NVIDIA NIM API key saved and validated.')
             })
             .catch((error) => {
-                setToast(`NVIDIA NIM API key saved, but validation failed: ${error?.message || 'Unknown error.'}`)
+                if (!showLlmProviderHttpErrorToast(error, 'nim')) {
+                    setToast(`NVIDIA NIM API key saved, but validation failed: ${error?.message || 'Unknown error.'}`)
+                }
             })
             .finally(() => {
                 setIsSavingNimKey(false)

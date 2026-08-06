@@ -19,6 +19,15 @@ Use this template for future releases:
 -
 ```
 
+## [1.8.18] - 2026-08-06
+
+### Changed
+- LLM provider HTTP failures now surface a toast that includes provider name, HTTP status code, and a truncated provider error message.
+- LLM provider HTTP error toasts now remain visible for 10 seconds before auto-dismiss.
+
+### Fixed
+- Raised `Previous Answers` disabled-tooltip stacking so its tooltip displays above the webcam image and meeting overlay.
+
 ## [1.8.17] - 2026-08-05
 
 ### Changed
