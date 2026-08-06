@@ -62,17 +62,19 @@ const LLM_PROVIDER_MODE_OPENROUTER_ONLY = 'openrouter-only'
 const LLM_PROVIDER_MODE_NIM_ONLY = 'nim-only'
 const PREVIOUS_ANSWERS_SOURCE_FOLDER = 'folder'
 const PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE = 'local-storage'
+const CAMERA_WORKFLOW_MODE_PRACTICE = 'practice'
+const CAMERA_WORKFLOW_MODE_MOCK_INTERVIEW = 'mock-interview'
 const DEFAULT_GENERATED_QUESTION_COUNT = 10
 const DEFAULT_QUESTION_GENERATION_GUIDELINES =
     'Generate concise, role-relevant interview questions. Cover technical depth, behavioral examples, and company alignment. Avoid duplicates. Return one question per line.'
 const DEFAULT_AM_REPORT_GENERATION_GUIDELINES =
-    'Generate a report for an account-manager at a consulting firm regarding the Answers provided in context, which were answered by a consultant. Provide feedback grounded in the interview answer transcript, answer metrics, JD and CV. Be specific, concise, and evidence-based. Do not generate per question feedback.'
+    'Generate a report for an account-manager at a consulting firm regarding the Answers provided in context, which were answered by a consultant. Provide feedback grounded in the interview answer transcript, answer metrics, JD and CV. Be specific, concise, and evidence-based. Do not generate per-question feedback. Use markdown only (no HTML) and follow this structure: ## Summary, ## Key Strengths, ## Key Development Areas, ## Domain Knowledge Assessment, ## Interview Progression, ## Primary Interview Risks, ## Recommended Coach Actions, ## Final Recommendation.'
 const DEFAULT_DETAILED_REPORT_GENERATION_GUIDELINES =
     'Generate an in-depth report with an executive summary first, then detailed per-question analysis. For each question include strengths, weaknesses, metric interpretation, and a suggested improved answer. Tailor suggested answers to CV/JD/company/job title when relevant, and explicitly state when profile context is not relevant to that specific question.'
 const QUESTION_GENERATION_USER_MESSAGE = (questionCount, jdOnlyQuestionCount) =>
     `Generate ${questionCount} concise mock interview questions based on the provided CV, job description, and company. If a job description is provided, include at least ${jdOnlyQuestionCount} questions that are derived only from the job description requirements and are not based on the CV. Return only the questions, one per line, no intro or explanation.`
 const AM_REPORT_USER_MESSAGE =
-    'You are an Interview Expert for a Consulting Firm. You are writing feedback for the mock interview answers. Using the provided interview Job Title, Q&A transcript, Q&A metrics, JD and CV, return markdown with sections: 1) Initial Feedback, 2) Overall Rating (out of 10), 3) Answer Strengths, 4) Answer Weaknesses, 5) Future Directions For Improvement. Keep it concise and evidence-based.'
+    'You are an Interview Expert for a Consulting Firm. You are writing feedback for mock interview answers. Using interview Job Title, Q&A transcript, Q&A metrics, JD and CV, return concise, evidence-based markdown in this exact section order: 1) ## Overall Verdict, 2) ## Key Strengths, 3) ## Key Development Areas, 4) ## Domain Knowledge Assessment, 5) ## Interview Progression, 6) ## Primary Interview Risks, 7) ## Recommended Coach Actions, 8) ## Final Recommendation. Keep it account-manager friendly and do not include per-question analysis.'
 const DETAILED_REPORT_USER_MESSAGE =
     'You are an Interview Expert for a Consulting Firm. Using the provided interview context, return markdown with these exact top-level sections in order: 1) Initial Feedback, 2) Overall Rating (out of 10), 3) Answer Strengths, 4) Answer Weaknesses, 5) Future Directions For Improvement, 6) Detailed Per-Question Analysis. In section 6, create one subsection per answer using heading format "### Question N: <question>" and include: Candidate Answer Snapshot, Strengths, Weaknesses, Metric Interpretation, Suggested Improved Answer. The Suggested Improved Answer must describe an ideal answer and tailor it to CV/JD/company/job title context when relevant; if not relevant, explicitly state that no CV/JD tailoring applies. Keep feedback specific, concise, and evidence-based using transcript and metrics.'
 const LLM_PROVIDER_ENV_CONFIG = getLlmProviderConfig(import.meta.env)
@@ -1205,6 +1207,39 @@ async function downloadInterviewReportPdf({
             .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g, '')
     }
 
+    function getHongKongTimestampParts(dateValue = new Date()) {
+        const formatter = new Intl.DateTimeFormat('en-GB', {
+            timeZone: 'Asia/Hong_Kong',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false,
+        })
+        const parts = formatter.formatToParts(dateValue)
+        const partValue = (type) => parts.find((part) => part.type === type)?.value || '00'
+        return {
+            year: partValue('year'),
+            month: partValue('month'),
+            day: partValue('day'),
+            hour: partValue('hour'),
+            minute: partValue('minute'),
+            second: partValue('second'),
+        }
+    }
+
+    function formatHongKongPdfTimestamp(dateValue = new Date()) {
+        const { year, month, day, hour, minute, second } = getHongKongTimestampParts(dateValue)
+        return `${year}-${month}-${day} ${hour}:${minute}:${second} HKT`
+    }
+
+    function formatHongKongPdfFileTimestamp(dateValue = new Date()) {
+        const { year, month, day, hour, minute, second } = getHongKongTimestampParts(dateValue)
+        return `${year}-${month}-${day}_${hour}-${minute}-${second}`
+    }
+
     function ensureRoom(heightNeeded = defaultLineHeight) {
         if (cursorY + heightNeeded <= pageHeight - margin) return
         doc.addPage()
@@ -1576,11 +1611,21 @@ async function downloadInterviewReportPdf({
                         cursorY = margin
                     }
                 } else if (
-                    detailedPdfPaginationState.inDetailedSection &&
-                    headingLevel >= 3 &&
+                    headingLevel >= 2 &&
                     /^Question\s+\d+\b/i.test(headingText)
                 ) {
-                    if (detailedPdfPaginationState.questionHeadingCount >= 1) {
+                    if (!detailedPdfPaginationState.inDetailedSection) {
+                        detailedPdfPaginationState.inDetailedSection = true
+                        detailedPdfPaginationState.questionHeadingCount = 0
+                    }
+
+                    // Ensure every question heading, including Question 1, starts on a fresh page.
+                    if (detailedPdfPaginationState.questionHeadingCount === 0) {
+                        if (cursorY > margin) {
+                            doc.addPage()
+                            cursorY = margin
+                        }
+                    } else {
                         doc.addPage()
                         cursorY = margin
                     }
@@ -1678,7 +1723,8 @@ async function downloadInterviewReportPdf({
         })
     }
 
-    const stamp = new Date().toISOString()
+    const reportGeneratedAt = new Date()
+    const displayStamp = formatHongKongPdfTimestamp(reportGeneratedAt)
     const safeCompanyName = companyName || 'Unknown company'
     const safeConsultantFullName = consultantFullName || '(not provided)'
     const safeJobTitle = jobTitle || '(not provided)'
@@ -1691,7 +1737,7 @@ async function downloadInterviewReportPdf({
         fontStyle: 'bold',
         spacingAfter: 4,
     })
-    writeTextBlock(`Generated: ${stamp}`, {
+    writeTextBlock(`Generated: ${displayStamp}`, {
         fontSize: 10,
         spacingAfter: 2,
     })
@@ -1715,7 +1761,7 @@ async function downloadInterviewReportPdf({
     })
     renderTokens(marked.lexer(safeFeedbackMarkdown), 0)
 
-    const fileDateStamp = stamp.replace(/[:.]/g, '-').replace('T', '_').replace('Z', '')
+    const fileDateStamp = formatHongKongPdfFileTimestamp(reportGeneratedAt)
     const fileName = `${fileNamePrefix}-${fileDateStamp}.pdf`
     const blob = doc.output('blob')
     return { blob, fileName }
@@ -1758,6 +1804,7 @@ function App() {
     const deepgramKeyInputRef = useRef(null)
     const amReportAbortControllerRef = useRef(null)
     const detailedReportAbortControllerRef = useRef(null)
+    const cancelPendingRecordingStartRef = useRef(false)
 
     const blinkTrackerRef = useRef({
         closed: false,
@@ -1858,6 +1905,7 @@ function App() {
     const [isDesktopViewport, setIsDesktopViewport] = useState(() =>
         typeof window !== 'undefined' ? window.innerWidth > 860 : true,
     )
+    const [cameraWorkflowMode, setCameraWorkflowMode] = useState(CAMERA_WORKFLOW_MODE_MOCK_INTERVIEW)
     const [isSessionPanelMinimized, setIsSessionPanelMinimized] = useState(
         () => getImportedQuestionsFromCurrentUrl().length > 0,
     )
@@ -1874,6 +1922,14 @@ function App() {
         return imported.length ? 0 : null
     })
     const [nextQuestionCursor, setNextQuestionCursor] = useState(0)
+    const [requestedQuestionGenerationCount, setRequestedQuestionGenerationCount] = useState(
+        DEFAULT_GENERATED_QUESTION_COUNT,
+    )
+    const [generatedQuestionProgressCount, setGeneratedQuestionProgressCount] = useState(0)
+    const [isMockQuestionOverlayVisible, setIsMockQuestionOverlayVisible] = useState(false)
+    const [isMockInterviewStarted, setIsMockInterviewStarted] = useState(false)
+    const [hasMockInterviewStartedOnce, setHasMockInterviewStartedOnce] = useState(false)
+    const [isEndingMockInterview, setIsEndingMockInterview] = useState(false)
     const [answeredQuestionKeys, setAnsweredQuestionKeys] = useState([])
     const [cvText, setCvText] = useState(() => getSavedValue(STORAGE_CV_TEXT))
     const [jdText, setJdText] = useState(() => getSavedValue(STORAGE_JD_TEXT))
@@ -1931,20 +1987,17 @@ function App() {
     const [isGeneratingQuestions, setIsGeneratingQuestions] = useState(false)
     const [isGeneratingAmReport, setIsGeneratingAmReport] = useState(false)
     const [isGeneratingDetailedReport, setIsGeneratingDetailedReport] = useState(false)
-    const [amReportModalOpen, setAmReportModalOpen] = useState(false)
+    const [combinedReportModalOpen, setCombinedReportModalOpen] = useState(false)
     const [amReportMarkdownPreview, setAmReportMarkdownPreview] = useState('')
-    const [detailedReportModalOpen, setDetailedReportModalOpen] = useState(false)
     const [detailedReportMarkdownPreview, setDetailedReportMarkdownPreview] = useState('')
-    const [amReportPdfPreviewOpen, setAmReportPdfPreviewOpen] = useState(false)
+    const [combinedReportPdfPreviewOpen, setCombinedReportPdfPreviewOpen] = useState(false)
     const [amReportPdfPreviewUrl, setAmReportPdfPreviewUrl] = useState('')
     const [amReportPdfBlob, setAmReportPdfBlob] = useState(null)
     const [amReportPdfFileName, setAmReportPdfFileName] = useState('')
-    const [detailedReportPdfPreviewOpen, setDetailedReportPdfPreviewOpen] = useState(false)
     const [detailedReportPdfPreviewUrl, setDetailedReportPdfPreviewUrl] = useState('')
     const [detailedReportPdfBlob, setDetailedReportPdfBlob] = useState(null)
     const [detailedReportPdfFileName, setDetailedReportPdfFileName] = useState('')
-    const [confirmCloseAmReportPdfOpen, setConfirmCloseAmReportPdfOpen] = useState(false)
-    const [confirmCloseDetailedReportPdfOpen, setConfirmCloseDetailedReportPdfOpen] = useState(false)
+    const [confirmCloseCombinedReportPdfOpen, setConfirmCloseCombinedReportPdfOpen] = useState(false)
     const [llmProviderMode, setLlmProviderMode] = useState(() =>
         normalizeLlmProviderMode(getSavedValue(STORAGE_LLM_PROVIDER_MODE)),
     )
@@ -2778,11 +2831,37 @@ function App() {
         return index >= 0 ? index + 1 : 0
     }, [parsedDrawerQuestionKeys, questionInput])
 
+    const currentMockQuestionIndex = useMemo(() => {
+        if (!parsedDrawerQuestions.length) return -1
+
+        if (
+            activeQuestionListIndex != null &&
+            activeQuestionListIndex >= 0 &&
+            activeQuestionListIndex < parsedDrawerQuestions.length
+        ) {
+            return activeQuestionListIndex
+        }
+
+        const currentQuestionKey = normalizeQuestionKey(questionInput)
+        if (!currentQuestionKey) return 0
+
+        const index = parsedDrawerQuestionKeys.findIndex((key) => key === currentQuestionKey)
+        return index >= 0 ? index : 0
+    }, [activeQuestionListIndex, parsedDrawerQuestionKeys, parsedDrawerQuestions.length, questionInput])
+
+    const isMockOnLastQuestion =
+        currentMockQuestionIndex >= 0 &&
+        currentMockQuestionIndex === parsedDrawerQuestions.length - 1
+
     const shouldPromptQuestionImport =
         !parsedDrawerQuestions.length
 
     const hasQuestionsInList = parsedDrawerQuestions.length > 0
     const canPromptGenerateQuestionsFromCvJd = hasCvAndJdContext()
+    const hasMockCvJdInput = Boolean(cvText.trim() || jdText.trim())
+    const isMockMissingCvJdInput = !hasMockCvJdInput
+    const isCvJdModalEditLocked =
+        isGeneratingQuestions || isGeneratingAmReport || isGeneratingDetailedReport
 
     const showNoNextQuestionTooltip =
         shouldPromptQuestionImport && !isImportQuestionDisabled
@@ -2817,18 +2896,18 @@ function App() {
     const activePopupMessage = toast || warningPopupMessage
 
     useEffect(() => {
-        if (!amReportModalOpen) return
+        if (!combinedReportModalOpen) return
         const container = amReportPreviewScrollRef.current
         if (!container) return
         container.scrollTop = container.scrollHeight
-    }, [amReportMarkdownPreview, amReportModalOpen])
+    }, [amReportMarkdownPreview, combinedReportModalOpen])
 
     useEffect(() => {
-        if (!detailedReportModalOpen) return
+        if (!combinedReportModalOpen) return
         const container = detailedReportPreviewScrollRef.current
         if (!container) return
         container.scrollTop = container.scrollHeight
-    }, [detailedReportMarkdownPreview, detailedReportModalOpen])
+    }, [detailedReportMarkdownPreview, combinedReportModalOpen])
 
     useEffect(() => {
         return () => {
@@ -3082,10 +3161,14 @@ function App() {
         if (isGeneratingQuestions) return
 
         const normalizedQuestionCount = Math.max(
-            3,
-            Math.min(40, Number.parseInt(questionCount, 10) || DEFAULT_GENERATED_QUESTION_COUNT),
+            4,
+            Math.min(25, Number.parseInt(questionCount, 10) || DEFAULT_GENERATED_QUESTION_COUNT),
         )
+        const shouldOpenQuestionsDrawer =
+            openQuestionsDrawer && cameraWorkflowMode === CAMERA_WORKFLOW_MODE_PRACTICE
         const jdOnlyQuestionCount = Math.floor(0.4 * normalizedQuestionCount)
+        setRequestedQuestionGenerationCount(normalizedQuestionCount)
+        setGeneratedQuestionProgressCount(0)
 
         const cv = cvText.trim()
         const jobDescription = jdText.trim()
@@ -3111,10 +3194,14 @@ function App() {
         if (closeCvJd) {
             closeCvJdModal()
         }
-        if (openQuestionsDrawer) {
+        if (shouldOpenQuestionsDrawer) {
             setQuestionsDrawerOpen(true)
             setQuestionsBulkInput('Generating questions...')
+        } else if (cameraWorkflowMode === CAMERA_WORKFLOW_MODE_MOCK_INTERVIEW) {
+            setQuestionsDrawerOpen(false)
         }
+        setIsMockQuestionOverlayVisible(false)
+        setIsMockInterviewStarted(false)
         setActiveQuestionListIndex(null)
         setNextQuestionCursor(0)
 
@@ -3126,7 +3213,7 @@ function App() {
             for (let index = 0; index < providerCandidates.length; index += 1) {
                 const providerConfig = providerCandidates[index]
 
-                if (index > 0 && openQuestionsDrawer) {
+                if (index > 0 && shouldOpenQuestionsDrawer) {
                     const retryLabel =
                         providerConfig.providerId === 'nim' ? 'NVIDIA NIM' : 'OpenRouter'
                     setQuestionsBulkInput(`Retrying with ${retryLabel}...`)
@@ -3150,6 +3237,11 @@ function App() {
                         stream: true,
                         onChunk: (fullText) => {
                             setQuestionsBulkInput(fullText || 'Generating questions...')
+                            const generatedCount = parseGeneratedQuestions(fullText).length
+                            const boundedCount = Math.min(normalizedQuestionCount, generatedCount)
+                            setGeneratedQuestionProgressCount((prev) =>
+                                boundedCount > prev ? boundedCount : prev,
+                            )
                         },
                         context: {
                             question: 'Generate interview questions from profile context.',
@@ -3180,12 +3272,16 @@ function App() {
             }
 
             setQuestionsBulkInput(parsedQuestions.join('\n'))
+            setGeneratedQuestionProgressCount(
+                Math.min(normalizedQuestionCount, parsedQuestions.length),
+            )
             setActiveQuestionListIndex(0)
             setNextQuestionCursor(0)
             setQuestionInput(parsedQuestions[0] || '')
             setToast(`Generated ${parsedQuestions.length} question(s).`)
         } catch (error) {
             setQuestionsBulkInput('')
+            setGeneratedQuestionProgressCount(0)
             if (!showLlmProviderHttpErrorToast(error)) {
                 setToast(error?.message || 'Could not generate questions.')
             }
@@ -3232,9 +3328,9 @@ function App() {
         ].join(', ')
 
         setIsGeneratingAmReport(true)
-        setAmReportModalOpen(true)
+        setCombinedReportModalOpen(true)
         setAmReportMarkdownPreview('Generating AM report...')
-        setConfirmCloseAmReportPdfOpen(false)
+        setConfirmCloseCombinedReportPdfOpen(false)
         setToast('Generating AM feedback report...')
 
         try {
@@ -3314,11 +3410,11 @@ function App() {
             setAmReportPdfPreviewUrl(previewUrl)
             setAmReportPdfBlob(pdfDocument.blob)
             setAmReportPdfFileName(pdfDocument.fileName || 'am-feedback-report.pdf')
-            setAmReportPdfPreviewOpen(true)
-            setAmReportModalOpen(false)
+            setCombinedReportPdfPreviewOpen(true)
+            setCombinedReportModalOpen(false)
             setToast('AM feedback PDF ready. Review or download.')
         } catch (error) {
-            setAmReportModalOpen(false)
+            setCombinedReportModalOpen(false)
             if (error?.code === 'request-aborted') {
                 setToast('AM report generation canceled.')
             } else {
@@ -3370,9 +3466,9 @@ function App() {
         ].join(', ')
 
         setIsGeneratingDetailedReport(true)
-        setDetailedReportModalOpen(true)
+        setCombinedReportModalOpen(true)
         setDetailedReportMarkdownPreview('Generating detailed report...')
-        setConfirmCloseDetailedReportPdfOpen(false)
+        setConfirmCloseCombinedReportPdfOpen(false)
         setToast('Generating detailed interview report...')
 
         try {
@@ -3452,11 +3548,11 @@ function App() {
             setDetailedReportPdfPreviewUrl(previewUrl)
             setDetailedReportPdfBlob(pdfDocument.blob)
             setDetailedReportPdfFileName(pdfDocument.fileName || 'detailed-interview-report.pdf')
-            setDetailedReportPdfPreviewOpen(true)
-            setDetailedReportModalOpen(false)
+            setCombinedReportPdfPreviewOpen(true)
+            setCombinedReportModalOpen(false)
             setToast('Detailed report PDF ready. Review or download.')
         } catch (error) {
-            setDetailedReportModalOpen(false)
+            setCombinedReportModalOpen(false)
             if (error?.code === 'request-aborted') {
                 setToast('Detailed report generation canceled.')
             } else {
@@ -3466,6 +3562,263 @@ function App() {
             }
         } finally {
             detailedReportAbortControllerRef.current = null
+            setIsGeneratingDetailedReport(false)
+        }
+    }
+
+    async function generateCombinedInterviewReports() {
+        if (isGeneratingAmReport || isGeneratingDetailedReport) return
+
+        if (!interviewSummaries.length) {
+            setToast('Add at least one answer to Answer Summary before generating reports.')
+            return
+        }
+
+        const cv = cvText.trim()
+        const jobDescription = jdText.trim()
+        const companyName = companyNameInput.trim()
+        const consultantFullName = consultantFullNameInput.trim()
+        const jobTitle = jobTitleInput.trim()
+        if (!cv && !jobDescription && !companyName) {
+            setToast('Add CV, JD, or company name before generating reports.')
+            return
+        }
+
+        const providerCandidates = getLlmProviderCandidatesForCurrentMode()
+        if (!providerCandidates.length) {
+            showLlmProviderMissingKeyToast()
+            return
+        }
+
+        const summaryMarkdown = buildAnswerSummaryMarkdown(
+            interviewSummaries,
+            overallInterviewSummary,
+        )
+
+        const metricSummary = [
+            `Total answers: ${overallInterviewSummary.totalAnswers}`,
+            `Average WPM: ${overallInterviewSummary.averageWpm}`,
+            `Average answer length (sec): ${overallInterviewSummary.averageAnswerLengthSec}`,
+            `Average hesitations: ${overallInterviewSummary.averageHesitations}`,
+            `Average gaze center (%): ${overallInterviewSummary.averageGazeCenterPct}`,
+        ].join(', ')
+
+        setAmReportPdfPreviewUrl('')
+        setAmReportPdfBlob(null)
+        setAmReportPdfFileName('')
+        setDetailedReportPdfPreviewUrl('')
+        setDetailedReportPdfBlob(null)
+        setDetailedReportPdfFileName('')
+        setIsGeneratingAmReport(false)
+        setIsGeneratingDetailedReport(true)
+        setCombinedReportModalOpen(true)
+        setCombinedReportPdfPreviewOpen(false)
+        setAmReportMarkdownPreview('Waiting for detailed report...')
+        setDetailedReportMarkdownPreview('Generating detailed report...')
+        setConfirmCloseCombinedReportPdfOpen(false)
+        setToast('Generating detailed report first, then AM report...')
+
+        const generateDetailedTask = async () => {
+            let result = null
+            let lastError = null
+            const controller = new AbortController()
+            detailedReportAbortControllerRef.current = controller
+
+            try {
+                for (let index = 0; index < providerCandidates.length; index += 1) {
+                    const providerConfig = providerCandidates[index]
+                    setDetailedReportMarkdownPreview('')
+
+                    if (controller.signal.aborted) {
+                        const abortError = new Error('Detailed report generation canceled.')
+                        abortError.code = 'request-aborted'
+                        throw abortError
+                    }
+
+                    const providerLabel = getLlmProviderUsageLabel(providerConfig.providerId)
+                    const providerUsageMessage = `Generating Detailed Report, LLM API used: ${providerLabel}`
+                    console.info(providerUsageMessage)
+
+                    try {
+                        result = await sendInterviewChatMessage({
+                            providerId: providerConfig.providerId,
+                            apiKey: providerConfig.apiKey,
+                            model: providerConfig.model,
+                            baseUrl: providerConfig.baseUrl,
+                            userMessage: DETAILED_REPORT_USER_MESSAGE,
+                            context: {
+                                question: 'Generate a detailed mock interview report with both overall summary and per-question analysis.',
+                                answer: summaryMarkdown,
+                                generationGuidelines: DEFAULT_DETAILED_REPORT_GENERATION_GUIDELINES,
+                                metricSummary,
+                                companyName,
+                                consultantFullName,
+                                jobTitle,
+                                jobDescription,
+                                cv,
+                            },
+                            stream: true,
+                            onChunk: (fullText) => {
+                                setDetailedReportMarkdownPreview(fullText || '')
+                            },
+                            signal: controller.signal,
+                        })
+                        break
+                    } catch (error) {
+                        if (error?.code === 'request-aborted') {
+                            throw error
+                        }
+                        showLlmProviderHttpErrorToast(error, providerConfig.providerId)
+                        lastError = error
+                    }
+                }
+
+                if (!result?.text) {
+                    throw lastError || new Error('Could not generate detailed report.')
+                }
+
+                const pdfDocument = await downloadInterviewReportPdf({
+                    companyName,
+                    consultantFullName,
+                    jobTitle,
+                    feedbackText: result.text,
+                    reportTitle: 'Detailed Interview Report',
+                    feedbackSectionTitle: 'Detailed Feedback Output',
+                    fileNamePrefix: 'detailed-interview-report',
+                })
+
+                if (!pdfDocument?.blob) {
+                    throw new Error('Could not prepare detailed report PDF.')
+                }
+
+                return { text: result.text, pdfDocument }
+            } finally {
+                detailedReportAbortControllerRef.current = null
+            }
+        }
+
+        const generateAmTask = async (detailedReportText) => {
+            let result = null
+            let lastError = null
+            const controller = new AbortController()
+            amReportAbortControllerRef.current = controller
+
+            try {
+                for (let index = 0; index < providerCandidates.length; index += 1) {
+                    const providerConfig = providerCandidates[index]
+                    setAmReportMarkdownPreview('')
+
+                    if (controller.signal.aborted) {
+                        const abortError = new Error('AM report generation canceled.')
+                        abortError.code = 'request-aborted'
+                        throw abortError
+                    }
+
+                    const providerLabel = getLlmProviderUsageLabel(providerConfig.providerId)
+                    const providerUsageMessage = `Generating AM Report, LLM API used: ${providerLabel}`
+                    console.info(providerUsageMessage)
+
+                    try {
+                        result = await sendInterviewChatMessage({
+                            providerId: providerConfig.providerId,
+                            apiKey: providerConfig.apiKey,
+                            model: providerConfig.model,
+                            baseUrl: providerConfig.baseUrl,
+                            userMessage: AM_REPORT_USER_MESSAGE,
+                            context: {
+                                question: 'Generate concise mock interview feedback and summary for the consultant at consulting firm. Do not include per question feedback. Ensure consistency with the detailed report provided in context.',
+                                answer: `${summaryMarkdown}\n\nDetailed report for alignment:\n${detailedReportText}`,
+                                generationGuidelines: `${DEFAULT_AM_REPORT_GENERATION_GUIDELINES}\n\nUse the detailed report context to keep conclusions, strengths, risks, and recommendations consistent across both outputs.`,
+                                metricSummary,
+                                companyName,
+                                consultantFullName,
+                                jobTitle,
+                                jobDescription,
+                                cv,
+                            },
+                            stream: true,
+                            onChunk: (fullText) => {
+                                setAmReportMarkdownPreview(fullText || '')
+                            },
+                            signal: controller.signal,
+                        })
+                        break
+                    } catch (error) {
+                        if (error?.code === 'request-aborted') {
+                            throw error
+                        }
+                        showLlmProviderHttpErrorToast(error, providerConfig.providerId)
+                        lastError = error
+                    }
+                }
+
+                if (!result?.text) {
+                    throw lastError || new Error('Could not generate AM report.')
+                }
+
+                const pdfDocument = await downloadInterviewReportPdf({
+                    companyName,
+                    consultantFullName,
+                    jobTitle,
+                    feedbackText: result.text,
+                    reportTitle: 'Account Manager Interview Feedback Report',
+                    feedbackSectionTitle: 'AM Feedback Output',
+                    fileNamePrefix: 'am-feedback-report',
+                })
+
+                if (!pdfDocument?.blob) {
+                    throw new Error('Could not prepare AM feedback PDF.')
+                }
+
+                return { text: result.text, pdfDocument }
+            } finally {
+                amReportAbortControllerRef.current = null
+            }
+        }
+
+        let hasDetailedPdf = false
+        let hasAmPdf = false
+
+        try {
+            const detailedResult = await generateDetailedTask()
+            const detailedPreviewUrl = URL.createObjectURL(detailedResult.pdfDocument.blob)
+            setDetailedReportPdfPreviewUrl(detailedPreviewUrl)
+            setDetailedReportPdfBlob(detailedResult.pdfDocument.blob)
+            setDetailedReportPdfFileName(detailedResult.pdfDocument.fileName || 'detailed-interview-report.pdf')
+            hasDetailedPdf = true
+
+            setIsGeneratingDetailedReport(false)
+            setIsGeneratingAmReport(true)
+            setAmReportMarkdownPreview('Generating AM report from detailed report...')
+
+            const amResult = await generateAmTask(detailedResult.text)
+            const amPreviewUrl = URL.createObjectURL(amResult.pdfDocument.blob)
+            setAmReportPdfPreviewUrl(amPreviewUrl)
+            setAmReportPdfBlob(amResult.pdfDocument.blob)
+            setAmReportPdfFileName(amResult.pdfDocument.fileName || 'am-feedback-report.pdf')
+            hasAmPdf = true
+
+            setCombinedReportModalOpen(false)
+            setCombinedReportPdfPreviewOpen(true)
+            setToast('Detailed and AM PDFs ready. Review or download.')
+        } catch (error) {
+            setCombinedReportModalOpen(false)
+
+            if (hasDetailedPdf || hasAmPdf) {
+                setCombinedReportPdfPreviewOpen(true)
+            }
+
+            if (error?.code === 'request-aborted') {
+                setToast('Report generation canceled.')
+            } else if (!showLlmProviderHttpErrorToast(error)) {
+                if (hasDetailedPdf && !hasAmPdf) {
+                    setToast('Detailed report is ready, but AM report generation failed.')
+                } else {
+                    setToast(error?.message || 'Could not generate reports.')
+                }
+            }
+        } finally {
+            setIsGeneratingAmReport(false)
             setIsGeneratingDetailedReport(false)
         }
     }
@@ -3482,6 +3835,11 @@ function App() {
         if (controller) {
             controller.abort()
         }
+    }
+
+    function cancelCombinedReportGeneration() {
+        cancelAmReportGeneration()
+        cancelDetailedReportGeneration()
     }
 
     function downloadCurrentAmReportPdf() {
@@ -3505,24 +3863,39 @@ function App() {
     }
 
     function requestCloseAmReportPdfPreview() {
-        setConfirmCloseAmReportPdfOpen(true)
+        setConfirmCloseCombinedReportPdfOpen(true)
     }
 
     function requestCloseDetailedReportPdfPreview() {
-        setConfirmCloseDetailedReportPdfOpen(true)
+        setConfirmCloseCombinedReportPdfOpen(true)
+    }
+
+    function requestCloseCombinedReportPdfPreview() {
+        setConfirmCloseCombinedReportPdfOpen(true)
     }
 
     function closeAmReportPdfPreviewConfirmed() {
-        setConfirmCloseAmReportPdfOpen(false)
-        setAmReportPdfPreviewOpen(false)
+        setConfirmCloseCombinedReportPdfOpen(false)
+        setCombinedReportPdfPreviewOpen(false)
         setAmReportPdfBlob(null)
         setAmReportPdfFileName('')
         setAmReportPdfPreviewUrl('')
     }
 
     function closeDetailedReportPdfPreviewConfirmed() {
-        setConfirmCloseDetailedReportPdfOpen(false)
-        setDetailedReportPdfPreviewOpen(false)
+        setConfirmCloseCombinedReportPdfOpen(false)
+        setCombinedReportPdfPreviewOpen(false)
+        setDetailedReportPdfBlob(null)
+        setDetailedReportPdfFileName('')
+        setDetailedReportPdfPreviewUrl('')
+    }
+
+    function closeCombinedReportPdfPreviewConfirmed() {
+        setConfirmCloseCombinedReportPdfOpen(false)
+        setCombinedReportPdfPreviewOpen(false)
+        setAmReportPdfBlob(null)
+        setAmReportPdfFileName('')
+        setAmReportPdfPreviewUrl('')
         setDetailedReportPdfBlob(null)
         setDetailedReportPdfFileName('')
         setDetailedReportPdfPreviewUrl('')
@@ -3561,8 +3934,8 @@ function App() {
 
     function confirmGenerateQuestionsCountSelection() {
         const parsedCount = Number.parseInt(generateQuestionsCountInput, 10)
-        if (!Number.isInteger(parsedCount) || parsedCount < 3 || parsedCount > 40) {
-            setToast('Enter a question count between 3 and 40.')
+        if (!Number.isInteger(parsedCount) || parsedCount < 4 || parsedCount > 25) {
+            setToast('Enter a question count between 4 and 25.')
             return
         }
 
@@ -3616,10 +3989,13 @@ function App() {
         setQuestionsBulkInput('')
         setActiveQuestionListIndex(null)
         setNextQuestionCursor(0)
+        setIsMockQuestionOverlayVisible(false)
+        setIsMockInterviewStarted(false)
+        setHasMockInterviewStartedOnce(false)
         setToast('Questions list cleared.')
     }
 
-    function requestGenerateQuestionsFromQuestionsModal() {
+    function requestGenerateQuestionsFromQuestionsModal(options = {}) {
         if (isGeneratingQuestions) return
 
         if (parsedDrawerQuestions.length) {
@@ -3627,12 +4003,156 @@ function App() {
             return
         }
 
-        openGenerateQuestionsCountModal()
+        openGenerateQuestionsCountModal(options)
     }
 
     function confirmRegenerateQuestions() {
         setConfirmRegenerateQuestionsOpen(false)
         openGenerateQuestionsCountModal()
+    }
+
+    function getCurrentMockQuestionIndex() {
+        if (!parsedDrawerQuestions.length) return -1
+
+        if (
+            activeQuestionListIndex != null &&
+            activeQuestionListIndex >= 0 &&
+            activeQuestionListIndex < parsedDrawerQuestions.length
+        ) {
+            return activeQuestionListIndex
+        }
+
+        const currentIndexFromInput = parsedDrawerQuestionKeys.findIndex(
+            (questionKey) => questionKey === normalizeQuestionKey(questionInput),
+        )
+
+        return currentIndexFromInput >= 0 ? currentIndexFromInput : 0
+    }
+
+    async function startMockInterviewQuestionAt(index, options = {}) {
+        const question = parsedDrawerQuestions[index]
+        if (!question) return false
+
+        // Reset overlay visibility on question transition; user can explicitly show it again.
+        setIsMockQuestionOverlayVisible(false)
+
+        importQuestion(question, {
+            closePanel: false,
+            questionIndex: index,
+        })
+
+        const started = await startRecording('audio', question, options)
+        return started
+    }
+
+    async function runMockStartOrDoneAction() {
+        if (!parsedDrawerQuestions.length) {
+            setToast('Generate questions first.')
+            return
+        }
+
+        if (isMockInterviewStarted) {
+            if (!isRecording || isSpeakingQuestion || isPreparingRecording || isTranscribing) {
+                return
+            }
+
+            await stopRecordingAndTranscribe()
+
+            if (!isMockInterviewStarted) return
+
+            const currentIndex = getCurrentMockQuestionIndex()
+            const nextIndex = currentIndex + 1
+
+            if (nextIndex >= parsedDrawerQuestions.length) {
+                setIsMockInterviewStarted(false)
+                setToast('Mock interview completed.')
+                return
+            }
+
+            const nextStarted = await startMockInterviewQuestionAt(nextIndex, {
+                skipBusyCheck: true,
+            })
+            if (!nextStarted) {
+                setIsMockInterviewStarted(false)
+                setToast('Could not continue to the next question.')
+            }
+            return
+        }
+
+        const startIndex = getCurrentMockQuestionIndex()
+        if (startIndex < 0) {
+            setToast('Generate questions first.')
+            return
+        }
+
+        setIsMockInterviewStarted(true)
+        setHasMockInterviewStartedOnce(true)
+
+        const started = await startMockInterviewQuestionAt(startIndex)
+        if (!started) {
+            setIsMockInterviewStarted(false)
+        }
+    }
+
+    function handleStartMockInterview() {
+        void runMockStartOrDoneAction()
+    }
+
+    async function handleEndQuestionInterviewAndGenerateReports() {
+        if (isEndingMockInterview) return
+        setIsEndingMockInterview(true)
+        try {
+            cancelPendingRecordingStartRef.current = true
+            if (typeof window !== 'undefined' && window.speechSynthesis) {
+                window.speechSynthesis.cancel()
+            }
+
+            const wasRecording = isRecording
+            setIsMockInterviewStarted(false)
+
+            if (wasRecording) {
+                await stopRecordingAndTranscribe()
+                setToast('Mock interview ended early. Current answer was saved.')
+            } else {
+                setToast('Mock interview ended early.')
+            }
+        } finally {
+            setIsEndingMockInterview(false)
+        }
+    }
+
+    function handleShowCurrentMockQuestion() {
+        if (isMockQuestionOverlayVisible) {
+            setIsMockQuestionOverlayVisible(false)
+            return
+        }
+
+        if (!parsedDrawerQuestions.length) {
+            setToast('Generate questions first.')
+            return
+        }
+
+        const resolvedIndex =
+            activeQuestionListIndex != null &&
+                activeQuestionListIndex >= 0 &&
+                activeQuestionListIndex < parsedDrawerQuestions.length
+                ? activeQuestionListIndex
+                : 0
+
+        const currentQuestion = parsedDrawerQuestions[resolvedIndex]
+        if (!currentQuestion) {
+            setToast('No current question is available.')
+            return
+        }
+
+        setQuestionInput(currentQuestion)
+        setActiveQuestionListIndex(resolvedIndex)
+        setNextQuestionCursor((resolvedIndex + 1) % parsedDrawerQuestions.length)
+        setIsMockQuestionOverlayVisible(true)
+    }
+
+    function handleGenerateReportsFromMockInterview() {
+        void generateCombinedInterviewReports()
     }
 
     function performRemoveParsedQuestionAt(index) {
@@ -4839,6 +5359,15 @@ function App() {
         setPendingDeleteAction({ kind: 'summary-answer' })
     }
 
+    function clearAllSummaryAnswers() {
+        if (!interviewSummaries.length) {
+            setToast('No summary answers to clear.')
+            return
+        }
+
+        setPendingDeleteAction({ kind: 'summary-all' })
+    }
+
     async function performDeleteSelectedSummaryAnswer() {
         if (!selectedSummary) {
             setToast('Select a summary answer first.')
@@ -4871,6 +5400,13 @@ function App() {
 
         if (action.kind === 'summary-answer') {
             await performDeleteSelectedSummaryAnswer()
+            return
+        }
+
+        if (action.kind === 'summary-all') {
+            setInterviewSummaries([])
+            setSelectedSummaryId(OVERALL_SUMMARY_VIEW_ID)
+            setToast('All summary answers cleared from this session.')
         }
     }
 
@@ -5392,22 +5928,24 @@ function App() {
         }
     }
 
-    async function startRecording(mode = 'audio', importedQuestion = '') {
-        if (isRecording || isTranscribing || isPreparingRecording) return
+    async function startRecording(mode = 'audio', importedQuestion = '', options = {}) {
+        const { skipBusyCheck = false } = options
+        if (!skipBusyCheck && (isRecording || isTranscribing || isPreparingRecording)) return false
 
         if (!hasSttProvider) {
             openSettings()
             setBanner('Add Deepgram key, or enable "Use fallback when Deepgram key is missing" in Settings.')
-            return
+            return false
         }
 
         if (mode === 'video' && !cameraStreamRef.current) {
             setBanner('Camera access is required to capture video with audio.')
-            return
+            return false
         }
 
         try {
             setIsPreparingRecording(true)
+            cancelPendingRecordingStartRef.current = false
             recordingModeRef.current = mode
             setBanner('')
             if (!hasKey && canUseSttFallbackWithoutKey) {
@@ -5424,6 +5962,13 @@ function App() {
 
             const ttsQuestion = importedQuestion.trim() || questionInput.trim()
             await speakQuestionIfEnabled(ttsQuestion)
+
+            if (cancelPendingRecordingStartRef.current) {
+                setIsPreparingRecording(false)
+                recordingModeRef.current = 'audio'
+                cancelPendingRecordingStartRef.current = false
+                return false
+            }
 
             const stream = await navigator.mediaDevices.getUserMedia({
                 audio: true,
@@ -5497,6 +6042,7 @@ function App() {
             }
 
             setToast(mode === 'video' ? 'Video recording started.' : 'Audio recording started.')
+            return true
         } catch {
             setIsPreparingRecording(false)
             recordingActiveRef.current = false
@@ -5508,6 +6054,7 @@ function App() {
             videoRecorderRef.current = null
             chunksRef.current = []
             videoChunksRef.current = []
+            return false
         }
     }
 
@@ -5745,6 +6292,7 @@ function App() {
             ? CAMERA_DISPLAY_MODE_INTERVIEWER_PLUS_SELF_PIP
             : CAMERA_DISPLAY_MODE_INTERVIEWER_ONLY
         : CAMERA_DISPLAY_MODE_SELF_ONLY
+    const isPracticeMode = cameraWorkflowMode === CAMERA_WORKFLOW_MODE_PRACTICE
     const isCameraAccessAllowed = hasCameraAccess || cameraPermissionState === 'granted'
 
     function handleThemeModeToggle() {
@@ -5853,20 +6401,43 @@ function App() {
                     <section
                         className={`panel camera-panel${centerCameraLayout ? ' centered-camera-panel' : ''}`}
                     >
-                        {isDesktopViewport && (
+                        <div className="camera-mode-toggle" role="group" aria-label="Interview mode">
+                            <button
+                                type="button"
+                                className={`btn camera-mode-toggle-btn${cameraWorkflowMode === CAMERA_WORKFLOW_MODE_PRACTICE ? ' is-active' : ' ghost'}`}
+                                onClick={() => setCameraWorkflowMode(CAMERA_WORKFLOW_MODE_PRACTICE)}
+                                aria-pressed={cameraWorkflowMode === CAMERA_WORKFLOW_MODE_PRACTICE}
+                            >
+                                Practice Mode
+                            </button>
+                            <button
+                                type="button"
+                                className={`btn camera-mode-toggle-btn${cameraWorkflowMode === CAMERA_WORKFLOW_MODE_MOCK_INTERVIEW ? ' is-active' : ' ghost'}`}
+                                onClick={() => setCameraWorkflowMode(CAMERA_WORKFLOW_MODE_MOCK_INTERVIEW)}
+                                aria-pressed={cameraWorkflowMode === CAMERA_WORKFLOW_MODE_MOCK_INTERVIEW}
+                            >
+                                Mock Interview Mode
+                            </button>
+                        </div>
+
+                        {isDesktopViewport && isPracticeMode && (
                             <button
                                 type="button"
                                 className="generate-questions-peek-tab"
                                 onClick={() => {
                                     openGenerateQuestionsCountModal()
                                 }}
-                                disabled={isGeneratingQuestions}
-                                title="Generates questions based on CV/JD/Company Name"
+                                disabled={isGeneratingQuestions || !hasMockCvJdInput}
+                                title={
+                                    !hasMockCvJdInput
+                                        ? 'Add CV or JD details first.'
+                                        : 'Generates questions based on CV/JD/Company Name'
+                                }
                             >
                                 {isGeneratingQuestions ? 'Generating...' : 'Generate Questions'}
                             </button>
                         )}
-                        {isDesktopViewport && (
+                        {isDesktopViewport && isPracticeMode && (
                             <button
                                 type="button"
                                 className="question-peek-tab"
@@ -5882,26 +6453,19 @@ function App() {
                                 aria-expanded={questionsDrawerOpen}
                                 aria-controls="questions-modal"
                                 title={
-                                    questionsDrawerOpen
-                                        ? parsedDrawerQuestions.length
+                                    !hasMockCvJdInput
+                                        ? 'Add CV or JD details first.'
+                                        : questionsDrawerOpen
                                             ? 'Hide questions list modal'
-                                            : 'Hide questions import modal'
-                                        : parsedDrawerQuestions.length
-                                            ? 'Show questions list modal'
-                                            : 'Show questions import modal'
+                                            : 'Show questions list modal'
                                 }
+                                disabled={!hasMockCvJdInput}
                             >
-                                {parsedDrawerQuestions.length ? 'Questions List' : 'Questions Import'}
+                                Questions List
                             </button>
                         )}
-                        {isDesktopViewport && (
-                            <span
-                                className={`disabled-tooltip-wrap summary-peek-tab-wrap${summaryViewDisabledReason ? ' has-tooltip' : ''}`}
-                                data-disabled-reason={summaryViewDisabledReason}
-                                onPointerDown={(event) =>
-                                    suppressDisabledTooltipPointerDefault(event, isSummaryViewDisabled)
-                                }
-                            >
+                        {isDesktopViewport && isPracticeMode && (
+                            <span className="summary-peek-tab-wrap">
                                 <button
                                     type="button"
                                     className="summary-peek-tab"
@@ -5917,11 +6481,9 @@ function App() {
                                     aria-expanded={summaryModalOpen}
                                     aria-controls="summary-modal"
                                     title={
-                                        isSummaryViewDisabled
-                                            ? summaryViewDisabledReason
-                                            : summaryModalOpen
-                                                ? 'Hide answer summary modal'
-                                                : 'Show answer summary modal'
+                                        summaryModalOpen
+                                            ? 'Hide answer summary modal'
+                                            : 'Show answer summary modal'
                                     }
                                     disabled={isSummaryViewDisabled}
                                 >
@@ -5929,41 +6491,26 @@ function App() {
                                 </button>
                             </span>
                         )}
-                        {isDesktopViewport && (
+                        {isDesktopViewport && isPracticeMode && (
                             <button
                                 type="button"
-                                className="am-report-peek-tab"
+                                className="reports-peek-tab"
                                 onClick={() => {
-                                    void generateAmFeedbackReport()
+                                    void generateCombinedInterviewReports()
                                 }}
                                 disabled={isGeneratingAmReport || isGeneratingDetailedReport || !interviewSummaries.length}
                                 title={
                                     interviewSummaries.length
-                                        ? 'Generate AM feedback report PDF from summary and CV/JD'
-                                        : 'Answer a question first to generate a report.'
+                                        ? 'Generate reports sequentially (Detailed first, then AM) and review both PDFs side-by-side'
+                                        : 'Answer a question first to generate reports.'
                                 }
                             >
-                                {isGeneratingAmReport ? 'Generating...' : 'Generate AM Report'}
+                                {(isGeneratingAmReport || isGeneratingDetailedReport)
+                                    ? 'Generating Reports...'
+                                    : 'Generate Reports'}
                             </button>
                         )}
-                        {isDesktopViewport && (
-                            <button
-                                type="button"
-                                className="detailed-report-peek-tab"
-                                onClick={() => {
-                                    void generateDetailedInterviewReport()
-                                }}
-                                disabled={isGeneratingDetailedReport || isGeneratingAmReport || !interviewSummaries.length}
-                                title={
-                                    interviewSummaries.length
-                                        ? 'Generate detailed per-question report with suggested improved answers'
-                                        : 'Answer a question first to generate a detailed report.'
-                                }
-                            >
-                                {isGeneratingDetailedReport ? 'Generating...' : 'Generate Detailed Report'}
-                            </button>
-                        )}
-                        {isDesktopViewport && (
+                        {isDesktopViewport && isPracticeMode && (
                             <span
                                 className={`disabled-tooltip-wrap previous-peek-tab-wrap${previousAnswersViewDisabledReason ? ' has-tooltip' : ''}`}
                                 data-disabled-reason={previousAnswersViewDisabledReason}
@@ -5987,7 +6534,7 @@ function App() {
                             </span>
                         )}
 
-                        {isDesktopViewport && (
+                        {isDesktopViewport && isPracticeMode && (
                             <button
                                 type="button"
                                 className="cvjd-peek-tab"
@@ -6141,7 +6688,7 @@ function App() {
                                 ) : null}
                             </div>
 
-                            {questionInput.trim() ? (
+                            {(questionInput.trim() && (isPracticeMode || isMockQuestionOverlayVisible)) ? (
                                 <div className="camera-question-overlay" aria-live="polite">
                                     <p>
                                         {currentQuestionListNumber
@@ -6170,107 +6717,111 @@ function App() {
                                             {deepgramKeyWarningText}
                                         </button>
                                     ) : null}
-                                    <div className="camera-recording-primary">
-                                        <button
-                                            type="button"
-                                            className="btn ghost two-line-btn"
-                                            onClick={() => startRecording('audio')}
-                                            disabled={isTranscribing}
-                                        >
-                                            <span>
-                                                Start Audio
-                                                <br />
-                                                Recording
+                                    {isPracticeMode && (
+                                        <>
+                                            <div className="camera-recording-primary">
+                                                <button
+                                                    type="button"
+                                                    className="btn ghost two-line-btn"
+                                                    onClick={() => startRecording('audio')}
+                                                    disabled={isTranscribing}
+                                                >
+                                                    <span>
+                                                        Start Audio
+                                                        <br />
+                                                        Recording
+                                                    </span>
+                                                </button>
+                                                <span
+                                                    className={`disabled-tooltip-wrap start-video-wrap${isVideoStartDisabled && videoStartDisabledReason ? ' has-tooltip' : ''}`}
+                                                    data-disabled-reason={videoStartDisabledReason}
+                                                >
+                                                    <button
+                                                        type="button"
+                                                        className="btn two-line-btn"
+                                                        onClick={() => startRecording('video')}
+                                                        disabled={isVideoStartDisabled}
+                                                    >
+                                                        <span>
+                                                            Start Video
+                                                            <br />
+                                                            Recording
+                                                        </span>
+                                                    </button>
+                                                </span>
+                                            </div>
+                                            <span
+                                                className={`disabled-tooltip-wrap question-next-tooltip-wrap camera-recording-next-wrap${showNoNextQuestionTooltip ? ' has-tooltip' : ''}`}
+                                            >
+                                                {hasQuestionsInList ? (
+                                                    <>
+                                                        <button
+                                                            type="button"
+                                                            className="btn ghost question-prev-btn two-line-btn"
+                                                            onClick={handlePreviousQuestionAction}
+                                                            disabled={isImportQuestionDisabled}
+                                                            title="Go to previous question"
+                                                        >
+                                                            <span className="material-symbols-outlined question-nav-icon" aria-hidden="true">
+                                                                chevron_left
+                                                            </span>
+                                                            <span className="question-nav-label">
+                                                                Previous
+                                                                <br />
+                                                                Question
+                                                            </span>
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            className="btn question-next-btn two-line-btn"
+                                                            onClick={handleNextQuestionAction}
+                                                            disabled={isImportQuestionDisabled}
+                                                            title={nextQuestionTitle}
+                                                        >
+                                                            <span className="question-nav-label">
+                                                                Next
+                                                                <br />
+                                                                Question
+                                                            </span>
+                                                            <span className="material-symbols-outlined question-nav-icon" aria-hidden="true">
+                                                                chevron_right
+                                                            </span>
+                                                        </button>
+                                                    </>
+                                                ) : isGeneratingQuestions ? null : canPromptGenerateQuestionsFromCvJd ? (
+                                                    <button
+                                                        type="button"
+                                                        className="btn question-next-btn question-generate-btn two-line-btn"
+                                                        onClick={generateQuestionsInBackground}
+                                                        disabled={isImportQuestionDisabled}
+                                                        title="Generate questions in the background"
+                                                    >
+                                                        <span className="question-nav-label">
+                                                            Generate
+                                                            <br />
+                                                            Questions
+                                                        </span>
+                                                    </button>
+                                                ) : (
+                                                    <button
+                                                        type="button"
+                                                        className="btn ghost question-next-btn two-line-btn"
+                                                        onClick={openCvJdModal}
+                                                        disabled={isImportQuestionDisabled}
+                                                        title="Add CV and JD details first"
+                                                    >
+                                                        <span className="question-nav-label">
+                                                            Add JD and CV
+                                                            <br />
+                                                            information
+                                                        </span>
+                                                    </button>
+                                                )}
                                             </span>
-                                        </button>
-                                        <span
-                                            className={`disabled-tooltip-wrap start-video-wrap${isVideoStartDisabled && videoStartDisabledReason ? ' has-tooltip' : ''}`}
-                                            data-disabled-reason={videoStartDisabledReason}
-                                        >
-                                            <button
-                                                type="button"
-                                                className="btn two-line-btn"
-                                                onClick={() => startRecording('video')}
-                                                disabled={isVideoStartDisabled}
-                                            >
-                                                <span>
-                                                    Start Video
-                                                    <br />
-                                                    Recording
-                                                </span>
-                                            </button>
-                                        </span>
-                                    </div>
-                                    <span
-                                        className={`disabled-tooltip-wrap question-next-tooltip-wrap camera-recording-next-wrap${showNoNextQuestionTooltip ? ' has-tooltip' : ''}`}
-                                    >
-                                        {hasQuestionsInList ? (
-                                            <>
-                                                <button
-                                                    type="button"
-                                                    className="btn ghost question-prev-btn two-line-btn"
-                                                    onClick={handlePreviousQuestionAction}
-                                                    disabled={isImportQuestionDisabled}
-                                                    title="Go to previous question"
-                                                >
-                                                    <span className="material-symbols-outlined question-nav-icon" aria-hidden="true">
-                                                        chevron_left
-                                                    </span>
-                                                    <span className="question-nav-label">
-                                                        Previous
-                                                        <br />
-                                                        Question
-                                                    </span>
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    className="btn question-next-btn two-line-btn"
-                                                    onClick={handleNextQuestionAction}
-                                                    disabled={isImportQuestionDisabled}
-                                                    title={nextQuestionTitle}
-                                                >
-                                                    <span className="question-nav-label">
-                                                        Next
-                                                        <br />
-                                                        Question
-                                                    </span>
-                                                    <span className="material-symbols-outlined question-nav-icon" aria-hidden="true">
-                                                        chevron_right
-                                                    </span>
-                                                </button>
-                                            </>
-                                        ) : isGeneratingQuestions ? null : canPromptGenerateQuestionsFromCvJd ? (
-                                            <button
-                                                type="button"
-                                                className="btn question-next-btn question-generate-btn two-line-btn"
-                                                onClick={generateQuestionsInBackground}
-                                                disabled={isImportQuestionDisabled}
-                                                title="Generate questions in the background"
-                                            >
-                                                <span className="question-nav-label">
-                                                    Generate
-                                                    <br />
-                                                    Questions
-                                                </span>
-                                            </button>
-                                        ) : (
-                                            <button
-                                                type="button"
-                                                className="btn ghost question-next-btn two-line-btn"
-                                                onClick={openCvJdModal}
-                                                disabled={isImportQuestionDisabled}
-                                                title="Add CV and JD details first"
-                                            >
-                                                <span className="question-nav-label">
-                                                    Add JD and CV
-                                                    <br />
-                                                    information
-                                                </span>
-                                            </button>
-                                        )}
-                                    </span>
+                                        </>
+                                    )}
                                 </>
-                            ) : (
+                            ) : isPracticeMode ? (
                                 <button
                                     type="button"
                                     className="btn"
@@ -6278,8 +6829,192 @@ function App() {
                                 >
                                     Stop and Transcribe
                                 </button>
-                            )}
+                            ) : null}
                         </div>
+
+                        {!isPracticeMode && (
+                            <div className="actions wrap mock-interview-actions">
+                                <div className="mock-question-actions">
+                                    <button
+                                        type="button"
+                                        className={`btn two-line-btn mock-cvjd-btn${hasMockCvJdInput ? ' ghost' : ' mock-cvjd-pulse-btn'}`}
+                                        onClick={openCvJdModal}
+                                        disabled={isImportQuestionDisabled}
+                                        title={
+                                            hasMockCvJdInput
+                                                ? 'Review or update your saved CV and JD details'
+                                                : 'Add CV and JD details'
+                                        }
+                                    >
+                                        <span>
+                                            {hasMockCvJdInput ? 'Modify JD/CV' : 'Input JD/CV'}
+                                        </span>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className={`btn two-line-btn mock-generate-questions-btn${isMockMissingCvJdInput ? ' ghost' : ''}`}
+                                        onClick={() =>
+                                            requestGenerateQuestionsFromQuestionsModal({
+                                                openQuestionsDrawer: false,
+                                            })
+                                        }
+                                        disabled={
+                                            isGeneratingQuestions ||
+                                            isImportQuestionDisabled ||
+                                            isMockMissingCvJdInput
+                                        }
+                                        title={
+                                            isMockMissingCvJdInput
+                                                ? 'Add CV and JD details first.'
+                                                : hasQuestionsInList
+                                                    ? 'Re-generate questions based on CV/JD/Company Name'
+                                                    : 'Generate questions based on CV/JD/Company Name'
+                                        }
+                                    >
+                                        {isGeneratingQuestions
+                                            ? (
+                                                <span>
+                                                    Generating
+                                                    <br />
+                                                    {`(${generatedQuestionProgressCount}/${requestedQuestionGenerationCount})`}
+                                                </span>
+                                            )
+                                            : (
+                                                <span>
+                                                    {hasQuestionsInList ? 'Re-generate' : 'Generate'}
+                                                    <br />
+                                                    Questions
+                                                </span>
+                                            )}
+                                    </button>
+                                </div>
+                                <div className="mock-start-actions">
+                                    <button
+                                        type="button"
+                                        className={`btn mock-start-interview-btn${isMockMissingCvJdInput ? ' ghost' : ''}`}
+                                        onClick={handleStartMockInterview}
+                                        disabled={
+                                            isGeneratingQuestions ||
+                                            isMockMissingCvJdInput ||
+                                            !hasQuestionsInList ||
+                                            (isMockInterviewStarted &&
+                                                (!isRecording || isSpeakingQuestion || isPreparingRecording || isTranscribing))
+                                        }
+                                        title={
+                                            isGeneratingQuestions
+                                                ? 'Wait for question generation to finish.'
+                                                : isMockMissingCvJdInput
+                                                    ? 'Add CV and JD details first.'
+                                                    : !hasQuestionsInList
+                                                        ? 'Generate questions first.'
+                                                        : isMockInterviewStarted && (isSpeakingQuestion || isPreparingRecording || isTranscribing)
+                                                            ? 'Reading current question with TTS.'
+                                                            : isMockInterviewStarted && isRecording
+                                                                ? 'Done with current question and continue to the next one.'
+                                                                : 'Start current mock interview.'
+                                        }
+                                    >
+                                        <span>
+                                            {isMockInterviewStarted
+                                                ? (isSpeakingQuestion || isPreparingRecording || isTranscribing)
+                                                    ? 'Reading Question (TTS)'
+                                                    : 'Done Current Question'
+                                                : (
+                                                    <>
+                                                        Start Mock
+                                                        <br />
+                                                        Interview
+                                                    </>
+                                                )}
+                                        </span>
+                                    </button>
+                                </div>
+                                <div className="mock-right-actions">
+                                    <button
+                                        type="button"
+                                        className="btn ghost mock-show-current-question-btn"
+                                        onClick={handleShowCurrentMockQuestion}
+                                        disabled={isMockMissingCvJdInput || !hasQuestionsInList}
+                                        title={
+                                            isMockMissingCvJdInput
+                                                ? 'Add CV and JD details first.'
+                                                : !hasQuestionsInList
+                                                    ? 'Generate questions first.'
+                                                    : isMockQuestionOverlayVisible
+                                                        ? 'Hide the current question.'
+                                                        : 'Show the current question.'
+                                        }
+                                    >
+                                        <span>
+                                            {isMockQuestionOverlayVisible ? 'Hide Current' : 'Show Current'}
+                                            <br />
+                                            Question
+                                        </span>
+                                    </button>
+                                    <div className="mock-end-actions">
+                                        <button
+                                            type="button"
+                                            className={`btn two-line-btn mock-end-interview-btn${isMockMissingCvJdInput ? ' ghost' : ''}`}
+                                            onClick={handleEndQuestionInterviewAndGenerateReports}
+                                            disabled={
+                                                isMockMissingCvJdInput ||
+                                                !hasQuestionsInList ||
+                                                !isMockInterviewStarted ||
+                                                isEndingMockInterview
+                                            }
+                                            title={
+                                                isMockMissingCvJdInput
+                                                    ? 'Add CV and JD details first.'
+                                                    : !hasQuestionsInList
+                                                        ? 'Generate questions first.'
+                                                        : !isMockInterviewStarted
+                                                            ? 'Start mock interview first.'
+                                                            : isEndingMockInterview
+                                                                ? 'Ending interview and saving current answer...'
+                                                                : !isMockOnLastQuestion
+                                                                    ? 'End interview early and save current answer.'
+                                                                    : 'End current mock interview.'
+                                            }
+                                        >
+                                            <span>
+                                                {isEndingMockInterview
+                                                    ? 'Ending...'
+                                                    : isMockInterviewStarted && !isMockOnLastQuestion
+                                                        ? 'End Interview Early'
+                                                        : 'End Interview'}
+                                            </span>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="btn ghost two-line-btn mock-generate-reports-btn"
+                                            onClick={handleGenerateReportsFromMockInterview}
+                                            disabled={
+                                                isMockMissingCvJdInput ||
+                                                !hasQuestionsInList ||
+                                                !hasMockInterviewStartedOnce ||
+                                                isMockInterviewStarted ||
+                                                isImportQuestionDisabled ||
+                                                isGeneratingAmReport ||
+                                                isGeneratingDetailedReport
+                                            }
+                                            title={
+                                                isMockMissingCvJdInput
+                                                    ? 'Add CV and JD details first.'
+                                                    : !hasQuestionsInList
+                                                        ? 'Generate questions first.'
+                                                        : !hasMockInterviewStartedOnce
+                                                            ? 'Start mock interview first.'
+                                                            : isMockInterviewStarted || isImportQuestionDisabled
+                                                                ? 'End the interview first before generating reports.'
+                                                                : 'Generate reports sequentially (Detailed first, then AM).'
+                                            }
+                                        >
+                                            <span>Generate Reports</span>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
 
                         {debugEnabled && (
                             <div className="actions wrap camera-controls-row">
@@ -7033,6 +7768,18 @@ function App() {
                                 </button>
                                 <button
                                     type="button"
+                                    className="btn danger"
+                                    onClick={clearAllSummaryAnswers}
+                                    disabled={!interviewSummaries.length}
+                                    title="Clear all answers"
+                                >
+                                    <span className="material-symbols-outlined topbar-icon" aria-hidden="true">
+                                        delete_sweep
+                                    </span>
+                                    <span>Clear All Answers</span>
+                                </button>
+                                <button
+                                    type="button"
                                     className="btn ghost history-close-btn"
                                     onClick={closeSummaryModal}
                                     aria-label="Close"
@@ -7205,8 +7952,12 @@ function App() {
                                     onClick={() => {
                                         openGenerateQuestionsCountModal({ closeCvJd: true })
                                     }}
-                                    disabled={isGeneratingQuestions}
-                                    title="Generates questions based on CV/JD/Company Name"
+                                    disabled={isGeneratingQuestions || (!cvText.trim() && !jdText.trim())}
+                                    title={
+                                        !cvText.trim() && !jdText.trim()
+                                            ? 'Add CV or JD details first.'
+                                            : 'Generates questions based on CV/JD/Company Name'
+                                    }
                                 >
                                     {isGeneratingQuestions ? 'Generating...' : 'Generate Questions'}
                                 </button>
@@ -7224,9 +7975,6 @@ function App() {
 
                         <div className="question-modal-body cvjd-modal-body">
                             <div className="question-modal-inner cvjd-modal-inner">
-                                <p className="muted">
-                                    Save your candidate profile and target role details here for quick Gemini prompts.
-                                </p>
                                 <label htmlFor="cvjd-consultant-full-name" className="label cvjd-label">
                                     Consultant Full Name
                                 </label>
@@ -7238,6 +7986,7 @@ function App() {
                                     onChange={(event) => setConsultantFullNameInput(event.target.value)}
                                     placeholder="Example: Alex Morgan"
                                     autoComplete="off"
+                                    disabled={isCvJdModalEditLocked}
                                 />
                                 <label htmlFor="cvjd-company" className="label cvjd-label">
                                     Company Name
@@ -7250,6 +7999,7 @@ function App() {
                                     onChange={(event) => setCompanyNameInput(event.target.value)}
                                     placeholder="Example: Contoso"
                                     autoComplete="off"
+                                    disabled={isCvJdModalEditLocked}
                                 />
 
                                 <label htmlFor="cvjd-job-title" className="label cvjd-label">
@@ -7263,6 +8013,7 @@ function App() {
                                     onChange={(event) => setJobTitleInput(event.target.value)}
                                     placeholder="Example: Senior Consultant"
                                     autoComplete="off"
+                                    disabled={isCvJdModalEditLocked}
                                 />
 
                                 <label htmlFor="cvjd-jd" className="label cvjd-label">
@@ -7275,6 +8026,7 @@ function App() {
                                     onChange={(event) => setJdText(event.target.value)}
                                     rows={12}
                                     placeholder="Paste the job description here"
+                                    disabled={isCvJdModalEditLocked}
                                 />
 
                                 <label htmlFor="cvjd-cv" className="label cvjd-label">
@@ -7287,6 +8039,7 @@ function App() {
                                     onChange={(event) => setCvText(event.target.value)}
                                     rows={12}
                                     placeholder="Paste your CV here"
+                                    disabled={isCvJdModalEditLocked}
                                 />
                             </div>
                         </div>
@@ -7313,7 +8066,7 @@ function App() {
                         onClick={(event) => event.stopPropagation()}
                     >
                         <div className="history-modal-header">
-                            <h2 id="questions-modal-title">Questions LIst</h2>
+                            <h2 id="questions-modal-title">Questions List</h2>
                             <div className="summary-header-actions">
                                 <button
                                     type="button"
@@ -7954,31 +8707,44 @@ function App() {
                 </div>
             )}
 
-            {amReportModalOpen && (
+            {combinedReportModalOpen && (
                 <div className="overlay" role="presentation">
                     <div
                         className="modal question-modal am-report-stream-modal"
                         role="dialog"
                         aria-modal="true"
-                        aria-labelledby="am-report-stream-title"
+                        aria-labelledby="combined-report-stream-title"
                     >
                         <div className="history-modal-header">
-                            <h2 id="am-report-stream-title">Generating AM Report</h2>
+                            <h2 id="combined-report-stream-title">Generating Reports (Detailed to AM)</h2>
                             <div className="summary-header-actions">
                                 <button
                                     type="button"
                                     className="btn danger"
-                                    onClick={cancelAmReportGeneration}
-                                    disabled={!isGeneratingAmReport}
+                                    onClick={cancelCombinedReportGeneration}
+                                    disabled={!isGeneratingAmReport && !isGeneratingDetailedReport}
                                 >
                                     Cancel
                                 </button>
                             </div>
                         </div>
-                        <div className="question-modal-body am-report-stream-body" ref={amReportPreviewScrollRef}>
-                            <div className="question-modal-inner am-report-stream-inner" aria-live="polite">
-                                <div className="am-report-stream-content no-select">
-                                    <ReactMarkdown>{amReportMarkdownPreview || 'Generating AM report...'}</ReactMarkdown>
+                        <div className="question-modal-body am-report-stream-body">
+                            <div className="combined-report-stream-grid" aria-live="polite">
+                                <div className="combined-report-stream-panel">
+                                    <h3>AM Report</h3>
+                                    <div className="question-modal-inner am-report-stream-inner" ref={amReportPreviewScrollRef}>
+                                        <div className="am-report-stream-content no-select">
+                                            <ReactMarkdown>{amReportMarkdownPreview || 'Generating AM report...'}</ReactMarkdown>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="combined-report-stream-panel">
+                                    <h3>Detailed Report</h3>
+                                    <div className="question-modal-inner am-report-stream-inner" ref={detailedReportPreviewScrollRef}>
+                                        <div className="am-report-stream-content no-select">
+                                            <ReactMarkdown>{detailedReportMarkdownPreview || 'Generating detailed report...'}</ReactMarkdown>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -7986,13 +8752,13 @@ function App() {
                 </div>
             )}
 
-            {amReportPdfPreviewOpen && (
+            {combinedReportPdfPreviewOpen && (
                 <div
                     className="overlay"
                     role="presentation"
                     onPointerDown={(event) => {
                         if (event.target === event.currentTarget) {
-                            requestCloseAmReportPdfPreview()
+                            requestCloseCombinedReportPdfPreview()
                         }
                     }}
                 >
@@ -8000,27 +8766,16 @@ function App() {
                         className="modal question-modal am-report-pdf-modal"
                         role="dialog"
                         aria-modal="true"
-                        aria-labelledby="am-report-pdf-title"
+                        aria-labelledby="combined-report-pdf-title"
                         onClick={(event) => event.stopPropagation()}
                     >
                         <div className="history-modal-header">
-                            <h2 id="am-report-pdf-title">AM Feedback PDF</h2>
+                            <h2 id="combined-report-pdf-title">Report PDFs</h2>
                             <div className="summary-header-actions">
                                 <button
                                     type="button"
-                                    className="btn ghost history-close-btn icon-only-btn"
-                                    onClick={downloadCurrentAmReportPdf}
-                                    aria-label="Download PDF"
-                                    title="Download PDF"
-                                >
-                                    <span className="material-symbols-outlined" aria-hidden="true">
-                                        download
-                                    </span>
-                                </button>
-                                <button
-                                    type="button"
                                     className="btn ghost history-close-btn"
-                                    onClick={requestCloseAmReportPdfPreview}
+                                    onClick={requestCloseCombinedReportPdfPreview}
                                     aria-label="Close"
                                     title="Close"
                                 >
@@ -8028,166 +8783,92 @@ function App() {
                                 </button>
                             </div>
                         </div>
-                        <div className="am-report-pdf-body">
-                            {amReportPdfPreviewUrl ? (
-                                <iframe
-                                    title="AM Feedback PDF Preview"
-                                    src={amReportPdfPreviewUrl}
-                                    className="am-report-pdf-iframe"
-                                />
-                            ) : (
-                                <p className="muted">Could not render PDF preview.</p>
-                            )}
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {detailedReportModalOpen && (
-                <div className="overlay" role="presentation">
-                    <div
-                        className="modal question-modal am-report-stream-modal"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="detailed-report-stream-title"
-                    >
-                        <div className="history-modal-header">
-                            <h2 id="detailed-report-stream-title">Generating Detailed Report</h2>
-                            <div className="summary-header-actions">
-                                <button
-                                    type="button"
-                                    className="btn danger"
-                                    onClick={cancelDetailedReportGeneration}
-                                    disabled={!isGeneratingDetailedReport}
-                                >
-                                    Cancel
-                                </button>
-                            </div>
-                        </div>
-                        <div className="question-modal-body am-report-stream-body" ref={detailedReportPreviewScrollRef}>
-                            <div className="question-modal-inner am-report-stream-inner" aria-live="polite">
-                                <div className="am-report-stream-content no-select">
-                                    <ReactMarkdown>{detailedReportMarkdownPreview || 'Generating detailed report...'}</ReactMarkdown>
+                        <div className="combined-report-pdf-body">
+                            <section className="combined-report-pdf-panel">
+                                <div className="combined-report-pdf-panel-header">
+                                    <h3>AM Report PDF</h3>
+                                    <button
+                                        type="button"
+                                        className="btn ghost icon-only-btn"
+                                        onClick={downloadCurrentAmReportPdf}
+                                        aria-label="Download AM PDF"
+                                        title="Download AM PDF"
+                                        disabled={!amReportPdfBlob}
+                                    >
+                                        <span className="material-symbols-outlined" aria-hidden="true">
+                                            download
+                                        </span>
+                                    </button>
                                 </div>
-                            </div>
+                                <div className="am-report-pdf-body">
+                                    {amReportPdfPreviewUrl ? (
+                                        <iframe
+                                            title="AM Feedback PDF Preview"
+                                            src={amReportPdfPreviewUrl}
+                                            className="am-report-pdf-iframe"
+                                        />
+                                    ) : (
+                                        <p className="muted combined-report-pdf-empty">AM PDF not available.</p>
+                                    )}
+                                </div>
+                            </section>
+                            <section className="combined-report-pdf-panel">
+                                <div className="combined-report-pdf-panel-header">
+                                    <h3>Detailed Report PDF</h3>
+                                    <button
+                                        type="button"
+                                        className="btn ghost icon-only-btn"
+                                        onClick={downloadCurrentDetailedReportPdf}
+                                        aria-label="Download Detailed PDF"
+                                        title="Download Detailed PDF"
+                                        disabled={!detailedReportPdfBlob}
+                                    >
+                                        <span className="material-symbols-outlined" aria-hidden="true">
+                                            download
+                                        </span>
+                                    </button>
+                                </div>
+                                <div className="am-report-pdf-body">
+                                    {detailedReportPdfPreviewUrl ? (
+                                        <iframe
+                                            title="Detailed Interview Report PDF Preview"
+                                            src={detailedReportPdfPreviewUrl}
+                                            className="am-report-pdf-iframe"
+                                        />
+                                    ) : (
+                                        <p className="muted combined-report-pdf-empty">Detailed PDF not available.</p>
+                                    )}
+                                </div>
+                            </section>
                         </div>
                     </div>
                 </div>
             )}
 
-            {detailedReportPdfPreviewOpen && (
-                <div
-                    className="overlay"
-                    role="presentation"
-                    onPointerDown={(event) => {
-                        if (event.target === event.currentTarget) {
-                            requestCloseDetailedReportPdfPreview()
-                        }
-                    }}
-                >
-                    <div
-                        className="modal question-modal am-report-pdf-modal"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="detailed-report-pdf-title"
-                        onClick={(event) => event.stopPropagation()}
-                    >
-                        <div className="history-modal-header">
-                            <h2 id="detailed-report-pdf-title">Detailed Interview Report PDF</h2>
-                            <div className="summary-header-actions">
-                                <button
-                                    type="button"
-                                    className="btn ghost history-close-btn icon-only-btn"
-                                    onClick={downloadCurrentDetailedReportPdf}
-                                    aria-label="Download PDF"
-                                    title="Download PDF"
-                                >
-                                    <span className="material-symbols-outlined" aria-hidden="true">
-                                        download
-                                    </span>
-                                </button>
-                                <button
-                                    type="button"
-                                    className="btn ghost history-close-btn"
-                                    onClick={requestCloseDetailedReportPdfPreview}
-                                    aria-label="Close"
-                                    title="Close"
-                                >
-                                    X
-                                </button>
-                            </div>
-                        </div>
-                        <div className="am-report-pdf-body">
-                            {detailedReportPdfPreviewUrl ? (
-                                <iframe
-                                    title="Detailed Interview Report PDF Preview"
-                                    src={detailedReportPdfPreviewUrl}
-                                    className="am-report-pdf-iframe"
-                                />
-                            ) : (
-                                <p className="muted">Could not render PDF preview.</p>
-                            )}
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {confirmCloseAmReportPdfOpen && (
+            {confirmCloseCombinedReportPdfOpen && (
                 <div className="overlay" role="presentation">
                     <div
                         className="modal compact"
                         role="dialog"
                         aria-modal="true"
-                        aria-labelledby="am-pdf-close-title"
+                        aria-labelledby="combined-pdf-close-title"
                     >
-                        <h2 id="am-pdf-close-title">Exit PDF preview?</h2>
+                        <h2 id="combined-pdf-close-title">Exit PDF preview?</h2>
                         <p className="muted">
-                            If you exit now, the generated PDF will not be saved and will be discarded.
+                            If you exit now, both generated PDFs will be discarded.
                         </p>
                         <div className="actions">
                             <button
                                 type="button"
                                 className="btn danger"
-                                onClick={closeAmReportPdfPreviewConfirmed}
+                                onClick={closeCombinedReportPdfPreviewConfirmed}
                             >
                                 Exit
                             </button>
                             <button
                                 type="button"
                                 className="btn ghost"
-                                onClick={() => setConfirmCloseAmReportPdfOpen(false)}
-                            >
-                                Stay
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {confirmCloseDetailedReportPdfOpen && (
-                <div className="overlay" role="presentation">
-                    <div
-                        className="modal compact"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="detailed-pdf-close-title"
-                    >
-                        <h2 id="detailed-pdf-close-title">Exit PDF preview?</h2>
-                        <p className="muted">
-                            If you exit now, the generated PDF will not be saved and will be discarded.
-                        </p>
-                        <div className="actions">
-                            <button
-                                type="button"
-                                className="btn danger"
-                                onClick={closeDetailedReportPdfPreviewConfirmed}
-                            >
-                                Exit
-                            </button>
-                            <button
-                                type="button"
-                                className="btn ghost"
-                                onClick={() => setConfirmCloseDetailedReportPdfOpen(false)}
+                                onClick={() => setConfirmCloseCombinedReportPdfOpen(false)}
                             >
                                 Stay
                             </button>
@@ -8283,26 +8964,30 @@ function App() {
             )}
 
             {generateQuestionsCountModalOpen && (
-                <div className="overlay" role="presentation">
+                <div
+                    className="overlay"
+                    role="presentation"
+                    onPointerDown={(event) => {
+                        if (event.target === event.currentTarget) {
+                            closeGenerateQuestionsCountModal()
+                        }
+                    }}
+                >
                     <div
-                        className="modal compact"
+                        className="modal compact question-count-modal"
                         role="dialog"
                         aria-modal="true"
                         aria-labelledby="question-count-title"
+                        onClick={(event) => event.stopPropagation()}
                     >
-                        <h2 id="question-count-title">How many questions?</h2>
-                        <p className="muted">
-                            Enter how many interview questions to generate.
-                        </p>
-                        <label htmlFor="question-count-input" className="label">
-                            Question count
-                        </label>
+                        <h2 id="question-count-title">Number of Interview Questions to Generate</h2>
                         <input
                             id="question-count-input"
                             type="number"
                             className="field"
-                            min={3}
-                            max={40}
+                            aria-label="Number of interview questions to generate"
+                            min={4}
+                            max={25}
                             step={1}
                             value={generateQuestionsCountInput}
                             onChange={(event) => setGenerateQuestionsCountInput(event.target.value)}
@@ -8341,7 +9026,9 @@ function App() {
                                 ? 'Delete question?'
                                 : pendingDeleteAction.kind === 'previous-answer'
                                     ? 'Delete previous answer?'
-                                    : 'Delete answer from summary?'}
+                                    : pendingDeleteAction.kind === 'summary-answer'
+                                        ? 'Delete answer from summary?'
+                                        : 'Clear all answers from summary?'}
                         </h2>
                         <p className="muted">
                             {pendingDeleteAction.kind === 'parsed-question'
@@ -8351,7 +9038,9 @@ function App() {
                                         PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE
                                         ? 'This will remove the selected answer from local storage history.'
                                         : `This will remove the selected answer and move linked saved files into ${RECYCLE_BIN_FOLDER_NAME} under the selected folder.`
-                                    : 'This will remove the selected answer from Answer Summary only. Saved folder files will not be deleted.'}
+                                    : pendingDeleteAction.kind === 'summary-answer'
+                                        ? 'This will remove the selected answer from Answer Summary only. Saved folder files will not be deleted.'
+                                        : 'This will remove all answers from Answer Summary for this session only.'}
                         </p>
                         <div className="actions">
                             <button
@@ -8359,7 +9048,7 @@ function App() {
                                 className="btn danger"
                                 onClick={confirmPendingDeleteAction}
                             >
-                                Delete
+                                {pendingDeleteAction.kind === 'summary-all' ? 'Clear All' : 'Delete'}
                             </button>
                             <button
                                 type="button"

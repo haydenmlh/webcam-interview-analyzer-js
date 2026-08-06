@@ -19,6 +19,27 @@ Use this template for future releases:
 -
 ```
 
+## [1.9.0] - 2026-08-06
+
+### Added
+- Added a guided mock-interview turn flow: `Start Mock Interview` transitions into `Reading Question (TTS)` and `Done Current Question`, with automatic next-question progression.
+- Added early-end handling for active mock interviews so ending mid-run finalizes the current answer and stops subsequent question progression.
+- Added an `Ending...` processing state for the mock end action while transcript/metrics finalization completes.
+
+### Changed
+- Updated mock question generation UX to hide Questions List during generation and show live button progress as `Generating (n/X)` from streamed question rows.
+- Updated the mock question action text to switch from `Generate Questions` to `Re-generate Questions` once questions exist.
+- Updated mock control gating so `Start Mock Interview` stays disabled until generation fully completes and questions are available.
+- Updated mock control gating so `End Interview` and `Generate Reports` require a started interview state, with reports requiring the interview to be ended first.
+- Updated the center control layout with a dedicated `Show/Hide Current Question` action next to `Start Mock Interview`.
+- Updated mock question overlay behavior to default hidden, support explicit show/hide toggling, and auto-hide on each question transition.
+- Updated end-action labeling to show `End Interview Early` on non-final questions and keep `End Interview` on the last question.
+
+### Fixed
+- Fixed mock auto-advance after `Done Current Question` so the next question TTS/recording transition no longer aborts due to stale busy-state checks.
+- Fixed `Show/Hide Current Question` availability so it remains usable during active mock interview turns.
+- Fixed detailed-report PDF pagination so `Question 1` also starts on a new page (with each following question continuing on its own page).
+
 ## [1.8.29] - 2026-08-06
 
 ### Added
