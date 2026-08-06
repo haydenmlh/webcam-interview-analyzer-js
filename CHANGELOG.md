@@ -19,6 +19,14 @@ Use this template for future releases:
 -
 ```
 
+## [1.8.28] - 2026-08-06
+
+### Added
+- Added an unsaved LLM settings confirmation when closing Settings: users can `Save LLM Settings`, `Discard`, or `Stay`.
+
+### Changed
+- Settings close actions (overlay click, `X`, and `Esc`) now prompt before closing when LLM settings inputs have unsaved edits.
+
 ## [1.8.27] - 2026-08-06
 
 ### Changed

@@ -1770,6 +1770,7 @@ function App() {
     const [confirmRemoveOpen, setConfirmRemoveOpen] = useState(false)
     const [confirmFolderSelectOpen, setConfirmFolderSelectOpen] = useState(false)
     const [confirmRegenerateQuestionsOpen, setConfirmRegenerateQuestionsOpen] = useState(false)
+    const [confirmCloseSettingsUnsavedLlmOpen, setConfirmCloseSettingsUnsavedLlmOpen] = useState(false)
     const [generateQuestionsCountModalOpen, setGenerateQuestionsCountModalOpen] = useState(false)
     const [generateQuestionsCountInput, setGenerateQuestionsCountInput] = useState(
         String(DEFAULT_GENERATED_QUESTION_COUNT),
@@ -2083,6 +2084,37 @@ function App() {
         Boolean(questionInput.trim()) ||
         Boolean(questionsBulkInput.trim()) ||
         interviewSummaries.length > 0
+
+    const hasUnsavedLlmSettingsChanges = useMemo(() => {
+        const normalizedProviderModeInput = normalizeLlmProviderMode(llmProviderModeInput)
+        const normalizedOpenrouterApiKeyInput = openrouterApiKeyInput.trim()
+        const normalizedOpenrouterModelInput = openrouterModelInput.trim()
+        const normalizedNimApiKeyInput = nimApiKeyInput.trim()
+        const normalizedNimModelInput = nimModelInput.trim()
+        const normalizedNimBaseUrlInput = nimBaseUrlInput.trim()
+
+        return (
+            normalizedProviderModeInput !== llmProviderMode ||
+            normalizedOpenrouterApiKeyInput !== openrouterApiKey ||
+            normalizedOpenrouterModelInput !== openrouterModel ||
+            normalizedNimApiKeyInput !== nimApiKey ||
+            normalizedNimModelInput !== nimModel ||
+            normalizedNimBaseUrlInput !== nimBaseUrl
+        )
+    }, [
+        llmProviderModeInput,
+        openrouterApiKeyInput,
+        openrouterModelInput,
+        nimApiKeyInput,
+        nimModelInput,
+        nimBaseUrlInput,
+        llmProviderMode,
+        openrouterApiKey,
+        openrouterModel,
+        nimApiKey,
+        nimModel,
+        nimBaseUrl,
+    ])
 
     useEffect(() => {
         if (!toast) return undefined
@@ -3753,6 +3785,10 @@ function App() {
                 setConfirmRegenerateQuestionsOpen(false)
                 return
             }
+            if (confirmCloseSettingsUnsavedLlmOpen) {
+                setConfirmCloseSettingsUnsavedLlmOpen(false)
+                return
+            }
             if (generateQuestionsCountModalOpen) {
                 closeGenerateQuestionsCountModal()
                 return
@@ -3762,7 +3798,7 @@ function App() {
                 return
             }
             if (settingsOpen) {
-                setSettingsOpen(false)
+                closeSettings()
                 return
             }
             if (historyModalOpen) {
@@ -3776,10 +3812,12 @@ function App() {
         confirmRemoveOpen,
         confirmFolderSelectOpen,
         confirmRegenerateQuestionsOpen,
+        confirmCloseSettingsUnsavedLlmOpen,
         generateQuestionsCountModalOpen,
         closeGenerateQuestionsCountModal,
         pendingDeleteAction,
         settingsOpen,
+        closeSettings,
         historyModalOpen,
         closePreviousAnswersModal,
         questionsDrawerOpen,
@@ -4238,7 +4276,20 @@ function App() {
     }
 
     function closeSettings() {
+        if (hasUnsavedLlmSettingsChanges) {
+            setConfirmCloseSettingsUnsavedLlmOpen(true)
+            return
+        }
+
         setSettingsOpen(false)
+        setFieldError('')
+        setShowKey(false)
+        setLlmSettingsError('')
+    }
+
+    function closeSettingsConfirmed() {
+        setSettingsOpen(false)
+        setConfirmCloseSettingsUnsavedLlmOpen(false)
         setFieldError('')
         setShowKey(false)
         setLlmSettingsError('')
@@ -4254,18 +4305,18 @@ function App() {
 
         if (!trimmedOpenrouterModel || !trimmedNimModel) {
             setLlmSettingsError('Model is required. Select a model or enter a custom model name.')
-            return
+            return false
         }
 
         if (!trimmedNimBaseUrl) {
             setLlmSettingsError('NVIDIA NIM Base URL is required.')
-            return
+            return false
         }
 
         const nimBaseUrlValidationError = validateLlmProviderApiBaseUrl(trimmedNimBaseUrl)
         if (nimBaseUrlValidationError) {
             setLlmSettingsError(nimBaseUrlValidationError)
-            return
+            return false
         }
 
         setLlmProviderMode(normalizedProviderMode)
@@ -4286,6 +4337,17 @@ function App() {
         setSavedValue(STORAGE_NIM_API_KEY, trimmedNimKey)
 
         setToast('LLM settings saved.')
+        return true
+    }
+
+    function saveLlmSettingsAndCloseSettings() {
+        const didSave = saveLlmSettings()
+        if (!didSave) return
+        closeSettingsConfirmed()
+    }
+
+    function discardUnsavedLlmSettingsAndClose() {
+        closeSettingsConfirmed()
     }
 
     function saveOpenrouterKeyOnly() {
@@ -6595,8 +6657,8 @@ function App() {
                                     <button
                                         type="button"
                                         className={`btn ghost history-source-btn${previousAnswersSource === PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE
-                                                ? ' active'
-                                                : ''
+                                            ? ' active'
+                                            : ''
                                             }`}
                                         onClick={() => {
                                             if (
@@ -6622,8 +6684,8 @@ function App() {
                                     <button
                                         type="button"
                                         className={`btn ghost history-source-btn${previousAnswersSource === PREVIOUS_ANSWERS_SOURCE_FOLDER
-                                                ? ' active'
-                                                : ''
+                                            ? ' active'
+                                            : ''
                                             }`}
                                         onClick={() => {
                                             if (
@@ -7848,6 +7910,45 @@ function App() {
                                 </div>
                             )}
 
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {confirmCloseSettingsUnsavedLlmOpen && (
+                <div className="overlay" role="presentation">
+                    <div
+                        className="modal compact"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="settings-unsaved-llm-title"
+                    >
+                        <h2 id="settings-unsaved-llm-title">Save LLM changes?</h2>
+                        <p className="muted">
+                            You have unsaved LLM settings. Save LLM settings before closing, or discard changes.
+                        </p>
+                        <div className="actions">
+                            <button
+                                type="button"
+                                className="btn"
+                                onClick={saveLlmSettingsAndCloseSettings}
+                            >
+                                Save LLM Settings
+                            </button>
+                            <button
+                                type="button"
+                                className="btn danger"
+                                onClick={discardUnsavedLlmSettingsAndClose}
+                            >
+                                Discard
+                            </button>
+                            <button
+                                type="button"
+                                className="btn ghost"
+                                onClick={() => setConfirmCloseSettingsUnsavedLlmOpen(false)}
+                            >
+                                Stay
+                            </button>
                         </div>
                     </div>
                 </div>
