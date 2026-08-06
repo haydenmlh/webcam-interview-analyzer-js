@@ -17,6 +17,41 @@ import {
     sendInterviewChatMessage,
     validateLlmProviderApiKey,
 } from './llm/providers'
+import ChangelogModal from './components/modals/ChangelogModal'
+import ConfirmActionModal from './components/modals/ConfirmActionModal'
+import GenerateQuestionsCountModal from './components/modals/GenerateQuestionsCountModal'
+import PendingDeleteModal from './components/modals/PendingDeleteModal'
+import {
+    buildModelOptionsWithCurrent,
+    getModelSelectValue,
+    normalizeEnumValue,
+    truncateText,
+} from './utils/appHelpers'
+import { parseRecentChangelogReleases } from './utils/changelog'
+import {
+    getImportedQuestionsFromCurrentUrl,
+    normalizeQuestionKey,
+    parseQuestionsFromBulkInput,
+} from './utils/questions'
+import {
+    buildSessionDateFolderName,
+    buildSessionFileBaseName,
+    formatReadableCapturedDate,
+} from './utils/sessionFormatting'
+import {
+    formatFileSize,
+    formatMetricDisplayValue,
+} from './utils/displayFormatting'
+import {
+    parseSessionJsonReport,
+    splitFileName,
+} from './utils/historyParsing'
+import { useHistoryAnswers } from './hooks/useHistoryAnswers'
+import { useLlmSettings } from './hooks/useLlmSettings'
+import { useMockInterviewFlow } from './hooks/useMockInterviewFlow'
+import { useQuestionGeneration } from './hooks/useQuestionGeneration'
+import { useReportGeneration } from './hooks/useReportGeneration'
+import { buildAnswerSummaryMarkdown } from './utils/summaryMarkdown'
 import { jsPDF } from 'jspdf'
 import { marked } from 'marked'
 import ReactMarkdown from 'react-markdown'
@@ -60,8 +95,17 @@ const OVERALL_SUMMARY_VIEW_ID = '__overall__'
 const LLM_PROVIDER_MODE_AUTO = 'auto'
 const LLM_PROVIDER_MODE_OPENROUTER_ONLY = 'openrouter-only'
 const LLM_PROVIDER_MODE_NIM_ONLY = 'nim-only'
+const LLM_PROVIDER_MODES = [
+    LLM_PROVIDER_MODE_AUTO,
+    LLM_PROVIDER_MODE_OPENROUTER_ONLY,
+    LLM_PROVIDER_MODE_NIM_ONLY,
+]
 const PREVIOUS_ANSWERS_SOURCE_FOLDER = 'folder'
 const PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE = 'local-storage'
+const PREVIOUS_ANSWERS_SOURCES = [
+    PREVIOUS_ANSWERS_SOURCE_FOLDER,
+    PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE,
+]
 const CAMERA_WORKFLOW_MODE_PRACTICE = 'practice'
 const CAMERA_WORKFLOW_MODE_MOCK_INTERVIEW = 'mock-interview'
 const DEFAULT_GENERATED_QUESTION_COUNT = 10
@@ -114,56 +158,6 @@ const NIM_MODEL_PRESETS = [
         label: 'OpenAI GPT OSS 20B [openai/gpt-oss-20b]',
     },
 ]
-
-function buildModelOptionsWithCurrent(presets) {
-    const uniquePresets = presets.filter(
-        (preset, index) =>
-            preset?.value && presets.findIndex((entry) => entry.value === preset.value) === index,
-    )
-
-    const options = [...uniquePresets]
-    options.push({
-        value: CUSTOM_MODEL_OPTION_VALUE,
-        label: 'Custom model...',
-    })
-    return options
-}
-
-function getModelSelectValue(currentModel, presets) {
-    const normalizedCurrent = String(currentModel || '').trim()
-    if (!normalizedCurrent) return CUSTOM_MODEL_OPTION_VALUE
-    if (presets.some((preset) => preset.value === normalizedCurrent)) {
-        return normalizedCurrent
-    }
-    return CUSTOM_MODEL_OPTION_VALUE
-}
-
-function normalizeLlmProviderMode(value) {
-    if (
-        value === LLM_PROVIDER_MODE_AUTO ||
-        value === LLM_PROVIDER_MODE_OPENROUTER_ONLY ||
-        value === LLM_PROVIDER_MODE_NIM_ONLY
-    ) {
-        return value
-    }
-
-    return LLM_PROVIDER_MODE_AUTO
-}
-
-function normalizePreviousAnswersSource(value) {
-    if (value === PREVIOUS_ANSWERS_SOURCE_FOLDER || value === PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE) {
-        return value
-    }
-
-    return PREVIOUS_ANSWERS_SOURCE_FOLDER
-}
-
-function truncateText(value, maxLength) {
-    const normalized = String(value || '').trim().replace(/\s+/g, ' ')
-    if (!normalized) return ''
-    if (normalized.length <= maxLength) return normalized
-    return `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`
-}
 
 const DEFAULT_WASM_URL =
     'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
@@ -250,68 +244,6 @@ function createDefaultCameraUiMetrics() {
         gazeDirectionCounts: { ...EMPTY_GAZE_DIRECTION_COUNTS },
         prolongedClosureCount: 0,
     }
-}
-
-function parseRecentChangelogReleases(markdown, limit = 10) {
-    const lines = markdown.split(/\r?\n/)
-    const releases = []
-    let currentRelease = null
-    let currentSection = ''
-
-    for (const line of lines) {
-        const releaseMatch = line.match(/^## \[([^\]]+)\] - (.+)$/)
-        if (releaseMatch) {
-            if (currentRelease) {
-                releases.push(currentRelease)
-            }
-
-            if (releaseMatch[1] === 'X.Y.Z') {
-                currentRelease = null
-                currentSection = ''
-                continue
-            }
-
-            currentRelease = {
-                version: releaseMatch[1],
-                date: releaseMatch[2],
-                sections: [],
-            }
-            currentSection = ''
-            continue
-        }
-
-        if (!currentRelease) continue
-
-        const sectionMatch = line.match(/^###\s+(.+)$/)
-        if (sectionMatch) {
-            currentSection = sectionMatch[1]
-            currentRelease.sections.push({
-                title: currentSection,
-                bullets: [],
-            })
-            continue
-        }
-
-        const bulletMatch = line.match(/^-\s+(.+)$/)
-        if (!bulletMatch) continue
-
-        if (!currentSection) {
-            currentSection = 'Notes'
-            currentRelease.sections.push({
-                title: currentSection,
-                bullets: [],
-            })
-        }
-
-        const targetSection = currentRelease.sections[currentRelease.sections.length - 1]
-        targetSection.bullets.push(bulletMatch[1])
-    }
-
-    if (currentRelease) {
-        releases.push(currentRelease)
-    }
-
-    return releases.slice(0, limit)
 }
 
 function validateKeyFormat(rawValue) {
@@ -863,140 +795,6 @@ function sanitizeDisplayText(value, fallback = '') {
     return trimmed || fallback
 }
 
-function formatSessionTimestamp(dateValue) {
-    const date = new Date(dateValue)
-    const safeDate = Number.isNaN(date.getTime()) ? new Date() : date
-    const year = safeDate.getFullYear()
-    const month = String(safeDate.getMonth() + 1).padStart(2, '0')
-    const day = String(safeDate.getDate()).padStart(2, '0')
-    const hours = String(safeDate.getHours()).padStart(2, '0')
-    const minutes = String(safeDate.getMinutes()).padStart(2, '0')
-    const seconds = String(safeDate.getSeconds()).padStart(2, '0')
-    return `${year}${month}${day}_${hours}${minutes}${seconds}`
-}
-
-function sanitizeQuestionForFileName(question) {
-    const safeText = sanitizeDisplayText(question, 'question')
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '_')
-        .replace(/^_+|_+$/g, '')
-    return (safeText || 'question').slice(0, 30)
-}
-
-function parseQuestionsFromUrlSearch(search) {
-    if (!search) return []
-
-    const params = new URLSearchParams(search)
-    const candidates = []
-
-    // Preferred format: ?questions=Q1%0AQ2%0AQ3 (newline-separated)
-    const packedQuestions = sanitizeDisplayText(params.get('questions'), '')
-    if (packedQuestions) {
-        candidates.push(
-            ...packedQuestions
-                .split(/\r?\n|\|\|/)
-                .map((item) => sanitizeDisplayText(item, '').trim())
-                .filter(Boolean),
-        )
-    }
-
-    // Alternate format: ?q=Question%201&q=Question%202
-    const repeatedQuestions = params.getAll('q')
-    for (const question of repeatedQuestions) {
-        const normalized = sanitizeDisplayText(question, '').trim()
-        if (normalized) candidates.push(normalized)
-    }
-
-    const unique = []
-    const seen = new Set()
-    for (const question of candidates) {
-        const key = normalizeQuestionKey(question)
-        if (!key || seen.has(key)) continue
-        seen.add(key)
-        unique.push(question)
-    }
-
-    return unique
-}
-
-function getImportedQuestionsFromCurrentUrl() {
-    if (typeof window === 'undefined') return []
-    return parseQuestionsFromUrlSearch(window.location.search)
-}
-
-function normalizeQuestionKey(questionText) {
-    return sanitizeDisplayText(questionText, '')
-        .toLowerCase()
-        .replace(/\s+/g, ' ')
-        .trim()
-}
-
-function buildSessionFileBaseName(capturedAtIso, question) {
-    const stamp = formatSessionTimestamp(capturedAtIso)
-    const safeQuestion = sanitizeQuestionForFileName(question)
-    return `${stamp}_${safeQuestion}`
-}
-
-function buildSessionDateFolderName(capturedAtIso) {
-    const source = capturedAtIso || new Date().toISOString()
-    const parsed = new Date(source)
-    const safeDate = Number.isNaN(parsed.getTime()) ? new Date() : parsed
-    const year = safeDate.getFullYear()
-    const month = String(safeDate.getMonth() + 1).padStart(2, '0')
-    const day = String(safeDate.getDate()).padStart(2, '0')
-    return `${year}-${month}-${day}`
-}
-
-function formatReadableCapturedDate(value) {
-    const parsed = new Date(value)
-    if (Number.isNaN(parsed.getTime())) {
-        return sanitizeDisplayText(value, 'unknown-date')
-    }
-
-    const month = parsed.toLocaleString('en-US', { month: 'short' })
-    const day = parsed.getDate()
-    const year = parsed.getFullYear()
-    return `${month}/${day}/${year}`
-}
-
-function formatMetricDisplayValue(key, value) {
-    if (value == null) return 'n/a'
-
-    if (key === 'gazeDeviationDirectionCounts' && typeof value === 'object') {
-        const left = Number(value.left) || 0
-        const right = Number(value.right) || 0
-        const up = Number(value.up) || 0
-        const down = Number(value.down) || 0
-        return `L ${left} / R ${right} / U ${up} / D ${down}`
-    }
-
-    if (Array.isArray(value)) {
-        return value.length ? value.join(', ') : 'none'
-    }
-
-    if (typeof value === 'object') {
-        return JSON.stringify(value)
-    }
-
-    return String(value)
-}
-
-function formatFileSize(bytes) {
-    if (!Number.isFinite(bytes) || bytes < 0) return 'n/a'
-    if (bytes < 1024) return `${bytes} B`
-
-    const units = ['KB', 'MB', 'GB', 'TB']
-    let value = bytes / 1024
-    let unitIndex = 0
-    while (value >= 1024 && unitIndex < units.length - 1) {
-        value /= 1024
-        unitIndex += 1
-    }
-
-    const precision = value >= 100 ? 0 : value >= 10 ? 1 : 2
-    return `${value.toFixed(precision)} ${units[unitIndex]}`
-}
-
 async function calculateDirectorySizeBytes(directoryHandle) {
     let totalBytes = 0
     for await (const [, entryHandle] of directoryHandle.entries()) {
@@ -1026,107 +824,6 @@ function getSummaryFingerprint(entry) {
                 ? entry.metrics
                 : null,
     })
-}
-
-function splitFileName(fileName) {
-    const safeName = sanitizeDisplayText(fileName, 'unknown')
-    const lastDot = safeName.lastIndexOf('.')
-    if (lastDot <= 0) return { baseName: safeName, extension: '' }
-    return {
-        baseName: safeName.slice(0, lastDot),
-        extension: safeName.slice(lastDot + 1).toLowerCase(),
-    }
-}
-
-function parseSessionJsonReport(fileName, content, fallbackDateIso, sortTime, folderPath = '') {
-    try {
-        const parsed = JSON.parse(content)
-        const { baseName } = splitFileName(fileName)
-        const parsedTextFileName = sanitizeDisplayText(parsed?.savedFiles?.textFileName, '')
-        const sourcePath = folderPath ? `${folderPath}/${fileName}` : fileName
-        return {
-            id: `${sourcePath}-${sortTime}-json`,
-            baseName,
-            source: sanitizeDisplayText(sourcePath, 'unknown-file'),
-            reportFileName: fileName,
-            folderPath,
-            capturedAt: sanitizeDisplayText(
-                parsed?.generatedAt ?? parsed?.capturedAt,
-                fallbackDateIso,
-            ),
-            question: sanitizeDisplayText(parsed?.question, '(none)'),
-            transcript: sanitizeDisplayText(
-                parsed?.transcript ?? parsed?.answer,
-                '(no transcript captured)',
-            ),
-            metrics:
-                parsed?.interviewMetrics && typeof parsed.interviewMetrics === 'object'
-                    ? parsed.interviewMetrics
-                    : parsed?.metrics && typeof parsed.metrics === 'object'
-                        ? parsed.metrics
-                        : null,
-            metricsText: sanitizeDisplayText(parsed?.outputText, ''),
-            audioFileName: sanitizeDisplayText(
-                parsed?.audioFileName ?? parsed?.savedFiles?.audioFileName,
-                '',
-            ),
-            videoFileName: sanitizeDisplayText(
-                parsed?.videoFileName ?? parsed?.savedFiles?.videoFileName,
-                '',
-            ),
-            textFileName: parsedTextFileName || `${baseName}.txt`,
-            audioHandle: null,
-            videoHandle: null,
-            textHandle: null,
-            sortTime,
-        }
-    } catch {
-        return null
-    }
-}
-
-function buildAnswerSummaryMarkdown(interviewSummaries, overallInterviewSummary) {
-    const totals = overallInterviewSummary
-    const sections = [
-        '# Interview Summary for Gemini',
-        '',
-        `Generated: ${new Date().toISOString()}`,
-        '',
-        '## Total Metrics',
-        `- Total answers: ${totals.totalAnswers}`,
-        `- Average WPM: ${totals.averageWpm}`,
-        `- Average answer length (sec): ${totals.averageAnswerLengthSec}`,
-        `- Average hesitations: ${totals.averageHesitations}`,
-        `- Average gaze center (%): ${totals.averageGazeCenterPct}`,
-        '',
-        '## Answers',
-    ]
-
-    interviewSummaries.forEach((item, index) => {
-        const answerNumber = interviewSummaries.length - index
-        sections.push(`### Answer ${answerNumber}`)
-        sections.push(`- Captured: ${formatReadableCapturedDate(item.capturedAt)}`)
-        sections.push(`- Question: ${item.question}`)
-        sections.push('')
-        sections.push('Transcript:')
-        sections.push('```text')
-        sections.push(item.transcript || '(no transcript captured)')
-        sections.push('```')
-        sections.push('')
-        sections.push('Metrics:')
-
-        const metricEntries = Object.entries(item.metrics || {})
-        if (!metricEntries.length) {
-            sections.push('- n/a')
-        } else {
-            metricEntries.forEach(([key, value]) => {
-                sections.push(`- ${key}: ${String(value ?? 'n/a')}`)
-            })
-        }
-        sections.push('')
-    })
-
-    return sections.join('\n')
 }
 
 async function downloadInterviewReportPdf({
@@ -1816,17 +1513,8 @@ function App() {
     const [settingsOpen, setSettingsOpen] = useState(false)
     const [confirmRemoveOpen, setConfirmRemoveOpen] = useState(false)
     const [confirmFolderSelectOpen, setConfirmFolderSelectOpen] = useState(false)
-    const [confirmRegenerateQuestionsOpen, setConfirmRegenerateQuestionsOpen] = useState(false)
-    const [confirmGenerateQuestionsClearSummaryOpen, setConfirmGenerateQuestionsClearSummaryOpen] = useState(false)
     const [confirmStartNewMockInterviewOpen, setConfirmStartNewMockInterviewOpen] = useState(false)
     const [confirmCloseSettingsUnsavedLlmOpen, setConfirmCloseSettingsUnsavedLlmOpen] = useState(false)
-    const [generateQuestionsCountModalOpen, setGenerateQuestionsCountModalOpen] = useState(false)
-    const [generateQuestionsCountInput, setGenerateQuestionsCountInput] = useState(
-        String(DEFAULT_GENERATED_QUESTION_COUNT),
-    )
-    const [pendingGenerateQuestionsOptions, setPendingGenerateQuestionsOptions] = useState(null)
-    const [pendingRegenerateQuestionsOptions, setPendingRegenerateQuestionsOptions] = useState(null)
-    const [pendingGenerateQuestionsClearSummaryOptions, setPendingGenerateQuestionsClearSummaryOptions] = useState(null)
     const [pendingDeleteAction, setPendingDeleteAction] = useState(null)
     const [savedKey, setSavedKey] = useState(() => getSavedValue(STORAGE_KEY))
     const [lastValidatedAt, setLastValidatedAt] = useState(() =>
@@ -1930,11 +1618,18 @@ function App() {
         DEFAULT_GENERATED_QUESTION_COUNT,
     )
     const [generatedQuestionProgressCount, setGeneratedQuestionProgressCount] = useState(0)
-    const [isMockQuestionOverlayVisible, setIsMockQuestionOverlayVisible] = useState(false)
-    const [isMockInterviewStarted, setIsMockInterviewStarted] = useState(false)
-    const [hasMockInterviewStartedOnce, setHasMockInterviewStartedOnce] = useState(false)
-    const [isEndingMockInterview, setIsEndingMockInterview] = useState(false)
-    const [answeredQuestionKeys, setAnsweredQuestionKeys] = useState([])
+    const {
+        isMockQuestionOverlayVisible,
+        setIsMockQuestionOverlayVisible,
+        isMockInterviewStarted,
+        setIsMockInterviewStarted,
+        hasMockInterviewStartedOnce,
+        setHasMockInterviewStartedOnce,
+        isEndingMockInterview,
+        setIsEndingMockInterview,
+        answeredQuestionKeys,
+        setAnsweredQuestionKeys,
+    } = useMockInterviewFlow()
     const [cvText, setCvText] = useState(() => getSavedValue(STORAGE_CV_TEXT))
     const [jdText, setJdText] = useState(() => getSavedValue(STORAGE_JD_TEXT))
     const [companyNameInput, setCompanyNameInput] = useState(() =>
@@ -1976,82 +1671,171 @@ function App() {
         prolongedClosureCount,
     } = cameraUiMetrics
 
-    const [previousAnswers, setPreviousAnswers] = useState([])
-    const [isLoadingPreviousAnswers, setIsLoadingPreviousAnswers] = useState(false)
-    const [previousAnswersError, setPreviousAnswersError] = useState('')
-    const [previousAnswersSource, setPreviousAnswersSource] = useState(() =>
-        normalizePreviousAnswersSource(getSavedValue(STORAGE_PREVIOUS_ANSWERS_SOURCE)),
-    )
-    const [historyModalOpen, setHistoryModalOpen] = useState(false)
-    const [selectedPreviousAnswerId, setSelectedPreviousAnswerId] = useState('')
-    const [selectedHistoryMedia, setSelectedHistoryMedia] = useState({
-        audioUrl: '',
-        videoUrl: '',
-    })
+    const {
+        previousAnswers,
+        setPreviousAnswers,
+        isLoadingPreviousAnswers,
+        setIsLoadingPreviousAnswers,
+        previousAnswersError,
+        setPreviousAnswersError,
+        previousAnswersSource,
+        setPreviousAnswersSource,
+        historyModalOpen,
+        setHistoryModalOpen,
+        selectedPreviousAnswerId,
+        setSelectedPreviousAnswerId,
+        selectedHistoryMedia,
+        setSelectedHistoryMedia,
+        historyPlaybackRate,
+        setHistoryPlaybackRate,
+        selectedPreviousAnswerFileSizes,
+        setSelectedPreviousAnswerFileSizes,
+        selectedPreviousAnswerTotalSizeBytes,
+        setSelectedPreviousAnswerTotalSizeBytes,
+        recycleBinSizeBytes,
+        setRecycleBinSizeBytes,
+        recordingsFolderSizeBytes,
+        setRecordingsFolderSizeBytes,
+        isRecycleBinBusy,
+        setIsRecycleBinBusy,
+    } = useHistoryAnswers(() => ({
+        previousAnswers: [],
+        isLoadingPreviousAnswers: false,
+        previousAnswersError: '',
+        previousAnswersSource: normalizeEnumValue(
+            getSavedValue(STORAGE_PREVIOUS_ANSWERS_SOURCE),
+            PREVIOUS_ANSWERS_SOURCES,
+            PREVIOUS_ANSWERS_SOURCE_FOLDER,
+        ),
+        historyModalOpen: false,
+        selectedPreviousAnswerId: '',
+        selectedHistoryMedia: {
+            audioUrl: '',
+            videoUrl: '',
+        },
+        historyPlaybackRate: 1,
+        selectedPreviousAnswerFileSizes: {
+            report: '',
+            text: '',
+            audio: '',
+            video: '',
+        },
+        selectedPreviousAnswerTotalSizeBytes: 0,
+        recycleBinSizeBytes: 0,
+        recordingsFolderSizeBytes: 0,
+        isRecycleBinBusy: false,
+    }))
     const [isGeneratingQuestions, setIsGeneratingQuestions] = useState(false)
-    const [isGeneratingAmReport, setIsGeneratingAmReport] = useState(false)
-    const [isGeneratingDetailedReport, setIsGeneratingDetailedReport] = useState(false)
-    const [combinedReportModalOpen, setCombinedReportModalOpen] = useState(false)
-    const [amReportMarkdownPreview, setAmReportMarkdownPreview] = useState('')
-    const [detailedReportMarkdownPreview, setDetailedReportMarkdownPreview] = useState('')
-    const [combinedReportPdfPreviewOpen, setCombinedReportPdfPreviewOpen] = useState(false)
-    const [amReportPdfPreviewUrl, setAmReportPdfPreviewUrl] = useState('')
-    const [amReportPdfBlob, setAmReportPdfBlob] = useState(null)
-    const [amReportPdfFileName, setAmReportPdfFileName] = useState('')
-    const [detailedReportPdfPreviewUrl, setDetailedReportPdfPreviewUrl] = useState('')
-    const [detailedReportPdfBlob, setDetailedReportPdfBlob] = useState(null)
-    const [detailedReportPdfFileName, setDetailedReportPdfFileName] = useState('')
-    const [confirmCloseCombinedReportPdfOpen, setConfirmCloseCombinedReportPdfOpen] = useState(false)
-    const [llmProviderMode, setLlmProviderMode] = useState(() =>
-        normalizeLlmProviderMode(getSavedValue(STORAGE_LLM_PROVIDER_MODE)),
-    )
-    const [openrouterApiKey, setOpenrouterApiKey] = useState(() =>
-        getSavedValue(STORAGE_OPENROUTER_API_KEY),
-    )
-    const [openrouterModel, setOpenrouterModel] = useState(() =>
-        getSavedValue(STORAGE_OPENROUTER_MODEL) || LLM_PROVIDER_ENV_CONFIG.openrouter.model,
-    )
-    const [nimApiKey, setNimApiKey] = useState(() =>
-        getSavedValue(STORAGE_NIM_API_KEY),
-    )
-    const [nimModel, setNimModel] = useState(() =>
-        getSavedValue(STORAGE_NIM_MODEL) || LLM_PROVIDER_ENV_CONFIG.nim.model,
-    )
-    const [nimBaseUrl, setNimBaseUrl] = useState(() =>
-        getSavedValue(STORAGE_NIM_BASE_URL) || DEFAULT_NIM_BASE_URL,
-    )
-    const [openrouterApiKeyInput, setOpenrouterApiKeyInput] = useState(openrouterApiKey)
-    const [openrouterModelInput, setOpenrouterModelInput] = useState(openrouterModel)
-    const [openrouterCustomModelInput, setOpenrouterCustomModelInput] = useState(() => {
-        const normalized = String(openrouterModel || '').trim()
-        return OPENROUTER_MODEL_PRESETS.some((preset) => preset.value === normalized)
+    const {
+        isGeneratingAmReport,
+        setIsGeneratingAmReport,
+        isGeneratingDetailedReport,
+        setIsGeneratingDetailedReport,
+        combinedReportModalOpen,
+        setCombinedReportModalOpen,
+        amReportMarkdownPreview,
+        setAmReportMarkdownPreview,
+        detailedReportMarkdownPreview,
+        setDetailedReportMarkdownPreview,
+        combinedReportPdfPreviewOpen,
+        setCombinedReportPdfPreviewOpen,
+        amReportPdfPreviewUrl,
+        setAmReportPdfPreviewUrl,
+        amReportPdfBlob,
+        setAmReportPdfBlob,
+        amReportPdfFileName,
+        setAmReportPdfFileName,
+        detailedReportPdfPreviewUrl,
+        setDetailedReportPdfPreviewUrl,
+        detailedReportPdfBlob,
+        setDetailedReportPdfBlob,
+        detailedReportPdfFileName,
+        setDetailedReportPdfFileName,
+        confirmCloseCombinedReportPdfOpen,
+        setConfirmCloseCombinedReportPdfOpen,
+    } = useReportGeneration()
+
+    const {
+        llmProviderMode,
+        setLlmProviderMode,
+        openrouterApiKey,
+        setOpenrouterApiKey,
+        openrouterModel,
+        setOpenrouterModel,
+        nimApiKey,
+        setNimApiKey,
+        nimModel,
+        setNimModel,
+        nimBaseUrl,
+        setNimBaseUrl,
+        openrouterApiKeyInput,
+        setOpenrouterApiKeyInput,
+        openrouterModelInput,
+        setOpenrouterModelInput,
+        openrouterCustomModelInput,
+        setOpenrouterCustomModelInput,
+        nimApiKeyInput,
+        setNimApiKeyInput,
+        nimModelInput,
+        setNimModelInput,
+        nimBaseUrlInput,
+        setNimBaseUrlInput,
+        nimCustomModelInput,
+        setNimCustomModelInput,
+        llmProviderModeInput,
+        setLlmProviderModeInput,
+        llmSettingsError,
+        setLlmSettingsError,
+        isSavingOpenrouterKey,
+        setIsSavingOpenrouterKey,
+        isSavingNimKey,
+        setIsSavingNimKey,
+    } = useLlmSettings(() => {
+        const persistedLlmProviderMode = normalizeEnumValue(
+            getSavedValue(STORAGE_LLM_PROVIDER_MODE),
+            LLM_PROVIDER_MODES,
+            LLM_PROVIDER_MODE_AUTO,
+        )
+        const persistedOpenrouterApiKey = getSavedValue(STORAGE_OPENROUTER_API_KEY)
+        const persistedOpenrouterModel =
+            getSavedValue(STORAGE_OPENROUTER_MODEL) || LLM_PROVIDER_ENV_CONFIG.openrouter.model
+        const persistedNimApiKey = getSavedValue(STORAGE_NIM_API_KEY)
+        const persistedNimModel =
+            getSavedValue(STORAGE_NIM_MODEL) || LLM_PROVIDER_ENV_CONFIG.nim.model
+        const persistedNimBaseUrl = getSavedValue(STORAGE_NIM_BASE_URL) || DEFAULT_NIM_BASE_URL
+
+        const initialOpenrouterCustomModelInput = OPENROUTER_MODEL_PRESETS.some(
+            (preset) => preset.value === String(persistedOpenrouterModel || '').trim(),
+        )
             ? ''
-            : normalized
-    })
-    const [nimApiKeyInput, setNimApiKeyInput] = useState(nimApiKey)
-    const [nimModelInput, setNimModelInput] = useState(nimModel)
-    const [nimBaseUrlInput, setNimBaseUrlInput] = useState(nimBaseUrl)
-    const [nimCustomModelInput, setNimCustomModelInput] = useState(() => {
-        const normalized = String(nimModel || '').trim()
-        return NIM_MODEL_PRESETS.some((preset) => preset.value === normalized)
+            : String(persistedOpenrouterModel || '').trim()
+
+        const initialNimCustomModelInput = NIM_MODEL_PRESETS.some(
+            (preset) => preset.value === String(persistedNimModel || '').trim(),
+        )
             ? ''
-            : normalized
+            : String(persistedNimModel || '').trim()
+
+        return {
+            llmProviderMode: persistedLlmProviderMode,
+            openrouterApiKey: persistedOpenrouterApiKey,
+            openrouterModel: persistedOpenrouterModel,
+            nimApiKey: persistedNimApiKey,
+            nimModel: persistedNimModel,
+            nimBaseUrl: persistedNimBaseUrl,
+            openrouterApiKeyInput: persistedOpenrouterApiKey,
+            openrouterModelInput: persistedOpenrouterModel,
+            openrouterCustomModelInput: initialOpenrouterCustomModelInput,
+            nimApiKeyInput: persistedNimApiKey,
+            nimModelInput: persistedNimModel,
+            nimBaseUrlInput: persistedNimBaseUrl,
+            nimCustomModelInput: initialNimCustomModelInput,
+            llmProviderModeInput: persistedLlmProviderMode,
+            llmSettingsError: '',
+            isSavingOpenrouterKey: false,
+            isSavingNimKey: false,
+        }
     })
-    const [llmProviderModeInput, setLlmProviderModeInput] = useState(llmProviderMode)
-    const [llmSettingsError, setLlmSettingsError] = useState('')
-    const [isSavingOpenrouterKey, setIsSavingOpenrouterKey] = useState(false)
-    const [isSavingNimKey, setIsSavingNimKey] = useState(false)
-    const [historyPlaybackRate, setHistoryPlaybackRate] = useState(1)
-    const [selectedPreviousAnswerFileSizes, setSelectedPreviousAnswerFileSizes] = useState({
-        report: '',
-        text: '',
-        audio: '',
-        video: '',
-    })
-    const [selectedPreviousAnswerTotalSizeBytes, setSelectedPreviousAnswerTotalSizeBytes] = useState(0)
-    const [recycleBinSizeBytes, setRecycleBinSizeBytes] = useState(0)
-    const [recordingsFolderSizeBytes, setRecordingsFolderSizeBytes] = useState(0)
-    const [isRecycleBinBusy, setIsRecycleBinBusy] = useState(false)
     const historyVideoRef = useRef(null)
     const historyAudioRef = useRef(null)
     const selectedHistoryMediaRef = useRef({ audioUrl: '', videoUrl: '' })
@@ -2097,22 +1881,22 @@ function App() {
     }, [customInterviewerImageDataUrl, interviewerImageId])
 
     const openrouterModelOptions = useMemo(
-        () => buildModelOptionsWithCurrent(OPENROUTER_MODEL_PRESETS),
+        () => buildModelOptionsWithCurrent(OPENROUTER_MODEL_PRESETS, CUSTOM_MODEL_OPTION_VALUE),
         [],
     )
 
     const nimModelOptions = useMemo(
-        () => buildModelOptionsWithCurrent(NIM_MODEL_PRESETS),
+        () => buildModelOptionsWithCurrent(NIM_MODEL_PRESETS, CUSTOM_MODEL_OPTION_VALUE),
         [],
     )
 
     const openrouterModelSelectValue = useMemo(
-        () => getModelSelectValue(openrouterModelInput, OPENROUTER_MODEL_PRESETS),
+        () => getModelSelectValue(openrouterModelInput, OPENROUTER_MODEL_PRESETS, CUSTOM_MODEL_OPTION_VALUE),
         [openrouterModelInput],
     )
 
     const nimModelSelectValue = useMemo(
-        () => getModelSelectValue(nimModelInput, NIM_MODEL_PRESETS),
+        () => getModelSelectValue(nimModelInput, NIM_MODEL_PRESETS, CUSTOM_MODEL_OPTION_VALUE),
         [nimModelInput],
     )
 
@@ -2143,7 +1927,11 @@ function App() {
         interviewSummaries.length > 0
 
     const hasUnsavedLlmSettingsChanges = useMemo(() => {
-        const normalizedProviderModeInput = normalizeLlmProviderMode(llmProviderModeInput)
+        const normalizedProviderModeInput = normalizeEnumValue(
+            llmProviderModeInput,
+            LLM_PROVIDER_MODES,
+            LLM_PROVIDER_MODE_AUTO,
+        )
         const normalizedOpenrouterApiKeyInput = openrouterApiKeyInput.trim()
         const normalizedOpenrouterModelInput = openrouterModelInput.trim()
         const normalizedNimApiKeyInput = nimApiKeyInput.trim()
@@ -2189,6 +1977,19 @@ function App() {
         const timerId = window.setTimeout(() => setToast(''), timeoutMs)
         return () => window.clearTimeout(timerId)
     }, [toast])
+
+    useEffect(() => {
+        if (!banner) return undefined
+
+        const isNoTranscriptBanner = /No transcript was returned(?: by Deepgram)?/i.test(banner)
+        if (!isNoTranscriptBanner) return undefined
+
+        const timerId = window.setTimeout(() => {
+            setBanner((currentBanner) => (currentBanner === banner ? '' : currentBanner))
+        }, 5000)
+
+        return () => window.clearTimeout(timerId)
+    }, [banner])
 
     useEffect(() => {
         function onBeforeUnload(event) {
@@ -2386,7 +2187,7 @@ function App() {
                     }
 
                     if (entryHandle.kind !== 'file') continue
-                    const parts = splitFileName(entryName)
+                    const parts = splitFileName(entryName, sanitizeDisplayText)
                     const scopedNameKey = `${folderPath}/${entryName}`
                     const scopedBaseKey = `${folderPath}/${parts.baseName}`
 
@@ -2439,6 +2240,7 @@ function App() {
                     fallbackDateIso,
                     file.lastModified || 0,
                     entry.folderPath,
+                    sanitizeDisplayText,
                 )
                 if (!parsed) continue
 
@@ -2999,6 +2801,40 @@ function App() {
         setChangelogModalOpen(false)
     }
 
+    const {
+        confirmRegenerateQuestionsOpen,
+        confirmGenerateQuestionsClearSummaryOpen,
+        generateQuestionsCountModalOpen,
+        generateQuestionsCountInput,
+        setGenerateQuestionsCountInput,
+        openGenerateQuestionsCountModal,
+        confirmGenerateQuestionsClearSummary,
+        cancelGenerateQuestionsClearSummary,
+        confirmGenerateQuestionsCountSelection,
+        closeGenerateQuestionsCountModal,
+        generateQuestionsInBackground,
+        requestGenerateQuestionsFromQuestionsModal,
+        confirmRegenerateQuestions,
+        cancelRegenerateQuestions,
+        handleQuestionGenerationEscape,
+    } = useQuestionGeneration({
+        isGeneratingQuestions,
+        hasQuestionsInList: parsedDrawerQuestions.length > 0,
+        hasSummaryEntries: interviewSummaries.length > 0,
+        defaultQuestionCount: DEFAULT_GENERATED_QUESTION_COUNT,
+        minQuestionCount: 2,
+        maxQuestionCount: 25,
+        onGenerateQuestions: (options) => {
+            void generateQuestionsFromCvJd(options)
+        },
+        onClearSummaryBeforeGenerate: () => {
+            setInterviewSummaries([])
+            setSelectedSummaryId('')
+            closeSummaryModal()
+        },
+        onToast: setToast,
+    })
+
     function buildCvJdForGeminiMarkdown() {
         const companyName = companyNameInput.trim()
         const candidateCv = cvText.trim()
@@ -3321,6 +3157,7 @@ function App() {
         const summaryMarkdown = buildAnswerSummaryMarkdown(
             interviewSummaries,
             overallInterviewSummary,
+            (value) => formatReadableCapturedDate(value, sanitizeDisplayText),
         )
 
         const metricSummary = [
@@ -3459,6 +3296,7 @@ function App() {
         const summaryMarkdown = buildAnswerSummaryMarkdown(
             interviewSummaries,
             overallInterviewSummary,
+            (value) => formatReadableCapturedDate(value, sanitizeDisplayText),
         )
 
         const metricSummary = [
@@ -3597,6 +3435,7 @@ function App() {
         const summaryMarkdown = buildAnswerSummaryMarkdown(
             interviewSummaries,
             overallInterviewSummary,
+            (value) => formatReadableCapturedDate(value, sanitizeDisplayText),
         )
 
         const metricSummary = [
@@ -3918,87 +3757,8 @@ function App() {
         }
     }
 
-    function parseQuestionsFromBulkInput(rawBulkInput) {
-        return rawBulkInput
-            .split(/\r?\n/)
-            .map((line) => line.trim())
-            .filter(Boolean)
-    }
-
     function hasCvAndJdContext() {
         return Boolean(cvText.trim()) && Boolean(jdText.trim())
-    }
-
-    function openGenerateQuestionsCountModal(options = {}) {
-        if (isGeneratingQuestions) return
-        setPendingGenerateQuestionsOptions(options)
-        setGenerateQuestionsCountInput(String(DEFAULT_GENERATED_QUESTION_COUNT))
-        setGenerateQuestionsCountModalOpen(true)
-    }
-
-    function requestGenerateQuestionsFlow(options = {}) {
-        if (isGeneratingQuestions) return
-
-        if (interviewSummaries.length) {
-            setPendingGenerateQuestionsClearSummaryOptions(options)
-            setConfirmGenerateQuestionsClearSummaryOpen(true)
-            return
-        }
-
-        openGenerateQuestionsCountModal(options)
-    }
-
-    function confirmGenerateQuestionsClearSummary() {
-        const options = pendingGenerateQuestionsClearSummaryOptions || {}
-        setConfirmGenerateQuestionsClearSummaryOpen(false)
-        setPendingGenerateQuestionsClearSummaryOptions(null)
-        openGenerateQuestionsCountModal({
-            ...options,
-            clearSummaryOnGenerate: true,
-        })
-    }
-
-    function cancelGenerateQuestionsClearSummary() {
-        setConfirmGenerateQuestionsClearSummaryOpen(false)
-        setPendingGenerateQuestionsClearSummaryOptions(null)
-    }
-
-    function confirmGenerateQuestionsCountSelection() {
-        const parsedCount = Number.parseInt(generateQuestionsCountInput, 10)
-        if (!Number.isInteger(parsedCount) || parsedCount < 2 || parsedCount > 25) {
-            setToast('Enter a question count between 2 and 25.')
-            return
-        }
-
-        const options = pendingGenerateQuestionsOptions || {}
-        const { clearSummaryOnGenerate = false, ...generateOptions } = options
-
-        if (clearSummaryOnGenerate) {
-            setInterviewSummaries([])
-            setSelectedSummaryId('')
-            closeSummaryModal()
-        }
-
-        setGenerateQuestionsCountModalOpen(false)
-        setPendingGenerateQuestionsOptions(null)
-        void generateQuestionsFromCvJd({
-            ...generateOptions,
-            questionCount: parsedCount,
-        })
-    }
-
-    function closeGenerateQuestionsCountModal() {
-        setGenerateQuestionsCountModalOpen(false)
-        setPendingGenerateQuestionsOptions(null)
-    }
-
-    function generateQuestionsInBackground() {
-        if (isGeneratingQuestions) return
-        setToast('Generating questions in background...')
-        requestGenerateQuestionsFlow({
-            openQuestionsDrawer: false,
-            runInBackground: true,
-        })
     }
 
     function handleQuestionsBulkInputChange(rawBulkInput) {
@@ -4034,30 +3794,6 @@ function App() {
         setToast('Questions list cleared.')
     }
 
-    function requestGenerateQuestionsFromQuestionsModal(options = {}) {
-        if (isGeneratingQuestions) return
-
-        if (parsedDrawerQuestions.length) {
-            setPendingRegenerateQuestionsOptions(options)
-            setConfirmRegenerateQuestionsOpen(true)
-            return
-        }
-
-        requestGenerateQuestionsFlow(options)
-    }
-
-    function confirmRegenerateQuestions() {
-        const options = pendingRegenerateQuestionsOptions || {}
-        setConfirmRegenerateQuestionsOpen(false)
-        setPendingRegenerateQuestionsOptions(null)
-        requestGenerateQuestionsFlow(options)
-    }
-
-    function cancelRegenerateQuestions() {
-        setConfirmRegenerateQuestionsOpen(false)
-        setPendingRegenerateQuestionsOptions(null)
-    }
-
     function getCurrentMockQuestionIndex() {
         if (!parsedDrawerQuestions.length) return -1
 
@@ -4074,6 +3810,29 @@ function App() {
         )
 
         return currentIndexFromInput >= 0 ? currentIndexFromInput : 0
+    }
+
+    async function ensureMicrophonePermissionForMockInterviewStart() {
+        if (!navigator?.mediaDevices?.getUserMedia) {
+            setBanner('Microphone access is unavailable in this browser.')
+            setToast('Allow microphone access to start mock interview.')
+            return false
+        }
+
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                audio: true,
+                video: false,
+            })
+            for (const track of stream.getTracks()) {
+                track.stop()
+            }
+            return true
+        } catch {
+            setBanner('Microphone access is required to start mock interview.')
+            setToast('Allow microphone access to start mock interview.')
+            return false
+        }
     }
 
     async function startMockInterviewQuestionAt(index, options = {}) {
@@ -4129,6 +3888,11 @@ function App() {
         const startIndex = getCurrentMockQuestionIndex()
         if (startIndex < 0) {
             setToast('Generate questions first.')
+            return
+        }
+
+        const hasMicrophonePermission = await ensureMicrophonePermissionForMockInterviewStart()
+        if (!hasMicrophonePermission) {
             return
         }
 
@@ -4365,14 +4129,7 @@ function App() {
                 setConfirmFolderSelectOpen(false)
                 return
             }
-            if (confirmRegenerateQuestionsOpen) {
-                setConfirmRegenerateQuestionsOpen(false)
-                setPendingRegenerateQuestionsOptions(null)
-                return
-            }
-            if (confirmGenerateQuestionsClearSummaryOpen) {
-                setConfirmGenerateQuestionsClearSummaryOpen(false)
-                setPendingGenerateQuestionsClearSummaryOptions(null)
+            if (handleQuestionGenerationEscape()) {
                 return
             }
             if (confirmStartNewMockInterviewOpen) {
@@ -4381,10 +4138,6 @@ function App() {
             }
             if (confirmCloseSettingsUnsavedLlmOpen) {
                 setConfirmCloseSettingsUnsavedLlmOpen(false)
-                return
-            }
-            if (generateQuestionsCountModalOpen) {
-                closeGenerateQuestionsCountModal()
                 return
             }
             if (pendingDeleteAction) {
@@ -4405,12 +4158,9 @@ function App() {
     }, [
         confirmRemoveOpen,
         confirmFolderSelectOpen,
-        confirmRegenerateQuestionsOpen,
-        confirmGenerateQuestionsClearSummaryOpen,
+        handleQuestionGenerationEscape,
         confirmStartNewMockInterviewOpen,
         confirmCloseSettingsUnsavedLlmOpen,
-        generateQuestionsCountModalOpen,
-        closeGenerateQuestionsCountModal,
         pendingDeleteAction,
         settingsOpen,
         closeSettings,
@@ -4892,7 +4642,11 @@ function App() {
     }
 
     function saveLlmSettings() {
-        const normalizedProviderMode = normalizeLlmProviderMode(llmProviderModeInput)
+        const normalizedProviderMode = normalizeEnumValue(
+            llmProviderModeInput,
+            LLM_PROVIDER_MODES,
+            LLM_PROVIDER_MODE_AUTO,
+        )
         const trimmedOpenrouterModel = openrouterModelInput.trim()
         const trimmedNimModel = nimModelInput.trim()
         const trimmedNimBaseUrl = nimBaseUrlInput.trim()
@@ -5208,6 +4962,7 @@ function App() {
         const summaryMarkdown = buildAnswerSummaryMarkdown(
             interviewSummaries,
             overallInterviewSummary,
+            (value) => formatReadableCapturedDate(value, sanitizeDisplayText),
         )
 
         try {
@@ -5818,7 +5573,7 @@ function App() {
             return null
         }
 
-        const baseName = buildSessionFileBaseName(capturedAtIso, question)
+        const baseName = buildSessionFileBaseName(capturedAtIso, question, sanitizeDisplayText)
         const jsonFileName = `${baseName}.json`
         const textFileName = `${baseName}.txt`
         const audioExt =
@@ -6370,6 +6125,7 @@ function App() {
         : CAMERA_DISPLAY_MODE_SELF_ONLY
     const isPracticeMode = cameraWorkflowMode === CAMERA_WORKFLOW_MODE_PRACTICE
     const isCameraAccessAllowed = hasCameraAccess || cameraPermissionState === 'granted'
+    const isMockInterviewFocusMode = !isPracticeMode && isMockInterviewStarted
 
     function handleThemeModeToggle() {
         setDarkMode((prev) => !prev)
@@ -6435,7 +6191,7 @@ function App() {
     }, [isCameraOverlayMenuOpen])
 
     return (
-        <div className="app-shell">
+        <div className={`app-shell${isMockInterviewFocusMode ? ' mock-interview-focus-mode' : ''}`}>
             <header className="topbar">
                 <div className="topbar-inner">
                     <div className="topbar-title-row">
@@ -7369,75 +7125,11 @@ function App() {
                 </main>
             </div>
 
-            {changelogModalOpen && (
-                <div
-                    className="overlay changelog-overlay"
-                    role="presentation"
-                    onPointerDown={(event) => {
-                        if (event.target === event.currentTarget) {
-                            closeChangelogModal()
-                        }
-                    }}
-                >
-                    <div
-                        id="changelog-modal"
-                        className="modal question-modal changelog-modal"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="changelog-title"
-                        onClick={(event) => event.stopPropagation()}
-                    >
-                        <div className="history-modal-header">
-                            <h2 id="changelog-title">Changelog (Last 10 Releases)</h2>
-                            <div className="summary-header-actions">
-                                <button
-                                    type="button"
-                                    className="btn ghost history-close-btn"
-                                    onClick={closeChangelogModal}
-                                    aria-label="Close"
-                                    title="Close"
-                                >
-                                    X
-                                </button>
-                            </div>
-                        </div>
-
-                        <div className="question-modal-body changelog-modal-body">
-                            <div className="question-modal-inner changelog-modal-inner">
-                                {recentChangelogEntries.length ? (
-                                    <div className="changelog-release-list">
-                                        {recentChangelogEntries.map((release) => (
-                                            <article key={`${release.version}-${release.date}`} className="changelog-release-card">
-                                                <h3>
-                                                    {release.version} <span className="muted">{release.date}</span>
-                                                </h3>
-                                                {release.sections.length ? (
-                                                    release.sections.map((section) => (
-                                                        <section key={`${release.version}-${section.title}`} className="changelog-section">
-                                                            <p className="label changelog-section-title">{section.title}</p>
-                                                            {section.bullets.length ? (
-                                                                <ul className="changelog-bullet-list">
-                                                                    {section.bullets.map((item, index) => (
-                                                                        <li key={`${release.version}-${section.title}-${index}`}>{item}</li>
-                                                                    ))}
-                                                                </ul>
-                                                            ) : null}
-                                                        </section>
-                                                    ))
-                                                ) : (
-                                                    <p className="muted">No changes listed.</p>
-                                                )}
-                                            </article>
-                                        ))}
-                                    </div>
-                                ) : (
-                                    <p className="muted">No changelog entries found.</p>
-                                )}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <ChangelogModal
+                isOpen={changelogModalOpen}
+                onClose={closeChangelogModal}
+                recentChangelogEntries={recentChangelogEntries}
+            />
 
             {historyModalOpen && (
                 <div
@@ -7586,7 +7278,7 @@ function App() {
                                             onClick={() => selectPreviousAnswer(item)}
                                         >
                                             <strong>{item.question}</strong>
-                                            <span>{formatReadableCapturedDate(item.capturedAt)}</span>
+                                            <span>{formatReadableCapturedDate(item.capturedAt, sanitizeDisplayText)}</span>
                                             {item.folderPath ? (
                                                 <span className="history-folder-chip">{item.folderPath}</span>
                                             ) : (
@@ -7613,7 +7305,7 @@ function App() {
                                                 <p className="metric-label history-detail-meta">
                                                     {selectedPreviousAnswer.folderPath ? `${selectedPreviousAnswer.folderPath} · ` : ''}
                                                     {selectedPreviousAnswer.source} ·{' '}
-                                                    {formatReadableCapturedDate(selectedPreviousAnswer.capturedAt)}
+                                                    {formatReadableCapturedDate(selectedPreviousAnswer.capturedAt, sanitizeDisplayText)}
                                                 </p>
                                                 {selectedPreviousAnswer.source !==
                                                     PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE && (
@@ -7887,7 +7579,7 @@ function App() {
                                             onClick={() => setSelectedSummaryId(item.id)}
                                         >
                                             <strong>{item.question}</strong>
-                                            <span>{formatReadableCapturedDate(item.capturedAt)}</span>
+                                            <span>{formatReadableCapturedDate(item.capturedAt, sanitizeDisplayText)}</span>
                                         </button>
                                     ))}
                                     {!interviewSummaries.length && (
@@ -7942,7 +7634,7 @@ function App() {
                                             <div className="history-detail-title-block">
                                                 <h3>{selectedSummary.question}</h3>
                                                 <p className="metric-label history-detail-meta">
-                                                    {formatReadableCapturedDate(selectedSummary.capturedAt)}
+                                                    {formatReadableCapturedDate(selectedSummary.capturedAt, sanitizeDisplayText)}
                                                 </p>
                                             </div>
                                             <div className="history-detail-actions">
@@ -8303,8 +7995,16 @@ function App() {
                                 Add your Deepgram API key to enable live transcription. Your key is stored only in this browser.
                             </p>
 
-                            <label htmlFor="deepgram-key" className="label">
-                                Deepgram API Key
+                            <label htmlFor="deepgram-key" className="label label-with-link">
+                                <span>Deepgram API Key</span>
+                                <a
+                                    className="settings-provider-link"
+                                    href="https://deepgram.com/"
+                                    target="_blank"
+                                    rel="noreferrer"
+                                >
+                                    (Get API Key)
+                                </a>
                             </label>
                             <div className="key-input-row">
                                 <input
@@ -8388,7 +8088,11 @@ function App() {
                                     value={llmProviderModeInput}
                                     onChange={(event) =>
                                         setLlmProviderModeInput(
-                                            normalizeLlmProviderMode(event.target.value),
+                                            normalizeEnumValue(
+                                                event.target.value,
+                                                LLM_PROVIDER_MODES,
+                                                LLM_PROVIDER_MODE_AUTO,
+                                            ),
                                         )
                                     }
                                 >
@@ -8400,7 +8104,17 @@ function App() {
                                     Auto mode tries OpenRouter first, then retries with NVIDIA NIM if OpenRouter fails.
                                 </p>
 
-                                <label className="label">OpenRouter API Key</label>
+                                <label className="label label-with-link">
+                                    <span>OpenRouter API Key</span>
+                                    <a
+                                        className="settings-provider-link"
+                                        href="https://openrouter.ai/"
+                                        target="_blank"
+                                        rel="noreferrer"
+                                    >
+                                        (Get API Key)
+                                    </a>
+                                </label>
                                 <div className="key-input-row">
                                     <input
                                         className="field"
@@ -8446,7 +8160,17 @@ function App() {
                                     />
                                 )}
 
-                                <label className="label">NVIDIA NIM API Key</label>
+                                <label className="label label-with-link">
+                                    <span>NVIDIA NIM API Key</span>
+                                    <a
+                                        className="settings-provider-link"
+                                        href="https://build.nvidia.com/explore/discover"
+                                        target="_blank"
+                                        rel="noreferrer"
+                                    >
+                                        (Get API Key)
+                                    </a>
+                                </label>
                                 <div className="key-input-row">
                                     <input
                                         className="field"
@@ -8921,286 +8645,91 @@ function App() {
                 </div>
             )}
 
-            {confirmCloseCombinedReportPdfOpen && (
-                <div className="overlay" role="presentation">
-                    <div
-                        className="modal compact"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="combined-pdf-close-title"
-                    >
-                        <h2 id="combined-pdf-close-title">Exit PDF preview?</h2>
-                        <p className="muted">
-                            If you exit now, both generated PDFs will be discarded.
-                        </p>
-                        <div className="actions">
-                            <button
-                                type="button"
-                                className="btn danger"
-                                onClick={closeCombinedReportPdfPreviewConfirmed}
-                            >
-                                Exit
-                            </button>
-                            <button
-                                type="button"
-                                className="btn ghost"
-                                onClick={() => setConfirmCloseCombinedReportPdfOpen(false)}
-                            >
-                                Stay
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <ConfirmActionModal
+                isOpen={confirmCloseCombinedReportPdfOpen}
+                title="Exit PDF preview?"
+                message="If you exit now, both generated PDFs will be discarded."
+                confirmLabel="Exit"
+                cancelLabel="Stay"
+                onConfirm={closeCombinedReportPdfPreviewConfirmed}
+                onCancel={() => setConfirmCloseCombinedReportPdfOpen(false)}
+                titleId="combined-pdf-close-title"
+            />
 
-            {confirmRemoveOpen && (
-                <div className="overlay" role="presentation">
-                    <div
-                        className="modal compact"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="remove-title"
-                    >
-                        <h2 id="remove-title">Remove Deepgram key?</h2>
-                        <p className="muted">Transcription will be disabled until a new key is added.</p>
-                        <div className="actions">
-                            <button type="button" className="btn danger" onClick={removeKey}>
-                                Remove key
-                            </button>
-                            <button
-                                type="button"
-                                className="btn ghost"
-                                onClick={() => setConfirmRemoveOpen(false)}
-                            >
-                                Keep key
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <ConfirmActionModal
+                isOpen={confirmRemoveOpen}
+                title="Remove Deepgram key?"
+                message="Transcription will be disabled until a new key is added."
+                confirmLabel="Remove key"
+                cancelLabel="Keep key"
+                onConfirm={removeKey}
+                onCancel={() => setConfirmRemoveOpen(false)}
+                titleId="remove-title"
+            />
 
-            {confirmFolderSelectOpen && (
-                <div className="overlay" role="presentation">
-                    <div
-                        className="modal compact"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="folder-select-title"
-                    >
-                        <h2 id="folder-select-title">Select Save Folder</h2>
-                        <p className="muted">
-                            Choose a local folder to automatically save transcripts and video/audio recordings. You can change this folder anytime in Settings.
-                        </p>
-                        <div className="actions">
-                            <button type="button" className="btn" onClick={selectRecordingsFolder}>
-                                Select Folder
-                            </button>
-                            <button
-                                type="button"
-                                className="btn ghost"
-                                onClick={() => setConfirmFolderSelectOpen(false)}
-                            >
-                                Cancel
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <ConfirmActionModal
+                isOpen={confirmFolderSelectOpen}
+                title="Select Save Folder"
+                message="Choose a local folder to automatically save transcripts and video/audio recordings. You can change this folder anytime in Settings."
+                confirmLabel="Select Folder"
+                cancelLabel="Cancel"
+                onConfirm={selectRecordingsFolder}
+                onCancel={() => setConfirmFolderSelectOpen(false)}
+                confirmClassName="btn"
+                titleId="folder-select-title"
+            />
 
-            {confirmRegenerateQuestionsOpen && (
-                <div className="overlay" role="presentation">
-                    <div
-                        className="modal compact"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="regenerate-questions-title"
-                    >
-                        <h2 id="regenerate-questions-title">Re-generate questions?</h2>
-                        <p className="muted">
-                            Existing questions in this list will be overwritten.
-                        </p>
-                        <div className="actions">
-                            <button
-                                type="button"
-                                className="btn danger"
-                                onClick={confirmRegenerateQuestions}
-                            >
-                                Re-generate
-                            </button>
-                            <button
-                                type="button"
-                                className="btn ghost"
-                                onClick={cancelRegenerateQuestions}
-                            >
-                                Cancel
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <ConfirmActionModal
+                isOpen={confirmRegenerateQuestionsOpen}
+                title="Re-generate questions?"
+                message="Existing questions in this list will be overwritten."
+                confirmLabel="Re-generate"
+                cancelLabel="Cancel"
+                onConfirm={confirmRegenerateQuestions}
+                onCancel={cancelRegenerateQuestions}
+                titleId="regenerate-questions-title"
+            />
 
-            {confirmGenerateQuestionsClearSummaryOpen && (
-                <div className="overlay" role="presentation">
-                    <div
-                        className="modal compact"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="generate-questions-clear-summary-title"
-                    >
-                        <h2 id="generate-questions-clear-summary-title">Generate new questions?</h2>
-                        <p className="muted">
-                            Generating new questions will clear the current Answer Summary.
-                        </p>
-                        <div className="actions">
-                            <button
-                                type="button"
-                                className="btn danger"
-                                onClick={confirmGenerateQuestionsClearSummary}
-                            >
-                                Continue
-                            </button>
-                            <button
-                                type="button"
-                                className="btn ghost"
-                                onClick={cancelGenerateQuestionsClearSummary}
-                            >
-                                Cancel
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <ConfirmActionModal
+                isOpen={confirmGenerateQuestionsClearSummaryOpen}
+                title="Generate new questions?"
+                message="Generating new questions will clear the current Answer Summary."
+                confirmLabel="Continue"
+                cancelLabel="Cancel"
+                onConfirm={confirmGenerateQuestionsClearSummary}
+                onCancel={cancelGenerateQuestionsClearSummary}
+                titleId="generate-questions-clear-summary-title"
+            />
 
-            {confirmStartNewMockInterviewOpen && (
-                <div className="overlay" role="presentation">
-                    <div
-                        className="modal compact"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="restart-mock-title"
-                    >
-                        <h2 id="restart-mock-title">Start a new mock interview?</h2>
-                        <p className="muted">
-                            Starting a new mock interview will clear the current Answer Summary.
-                        </p>
-                        <div className="actions">
-                            <button
-                                type="button"
-                                className="btn danger"
-                                onClick={confirmStartNewMockInterview}
-                            >
-                                Start New Interview
-                            </button>
-                            <button
-                                type="button"
-                                className="btn ghost"
-                                onClick={cancelStartNewMockInterview}
-                            >
-                                Cancel
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <ConfirmActionModal
+                isOpen={confirmStartNewMockInterviewOpen}
+                title="Start a new mock interview?"
+                message="Starting a new mock interview will clear the current Answer Summary."
+                confirmLabel="Start New Interview"
+                cancelLabel="Cancel"
+                onConfirm={confirmStartNewMockInterview}
+                onCancel={cancelStartNewMockInterview}
+                titleId="restart-mock-title"
+            />
 
-            {generateQuestionsCountModalOpen && (
-                <div
-                    className="overlay"
-                    role="presentation"
-                    onPointerDown={(event) => {
-                        if (event.target === event.currentTarget) {
-                            closeGenerateQuestionsCountModal()
-                        }
-                    }}
-                >
-                    <div
-                        className="modal compact question-count-modal"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="question-count-title"
-                        onClick={(event) => event.stopPropagation()}
-                    >
-                        <h2 id="question-count-title">Number of Interview Questions to Generate</h2>
-                        <input
-                            id="question-count-input"
-                            type="number"
-                            className="field"
-                            aria-label="Number of interview questions to generate"
-                            min={2}
-                            max={25}
-                            step={1}
-                            value={generateQuestionsCountInput}
-                            onChange={(event) => setGenerateQuestionsCountInput(event.target.value)}
-                            autoFocus
-                        />
-                        <div className="actions">
-                            <button
-                                type="button"
-                                className="btn"
-                                onClick={confirmGenerateQuestionsCountSelection}
-                            >
-                                Generate Questions
-                            </button>
-                            <button
-                                type="button"
-                                className="btn ghost"
-                                onClick={closeGenerateQuestionsCountModal}
-                            >
-                                Cancel
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <GenerateQuestionsCountModal
+                isOpen={generateQuestionsCountModalOpen}
+                value={generateQuestionsCountInput}
+                onValueChange={setGenerateQuestionsCountInput}
+                onConfirm={confirmGenerateQuestionsCountSelection}
+                onClose={closeGenerateQuestionsCountModal}
+                min={2}
+                max={25}
+            />
 
-            {pendingDeleteAction && (
-                <div className="overlay" role="presentation">
-                    <div
-                        className="modal compact"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="delete-confirm-title"
-                    >
-                        <h2 id="delete-confirm-title">
-                            {pendingDeleteAction.kind === 'parsed-question'
-                                ? 'Delete question?'
-                                : pendingDeleteAction.kind === 'previous-answer'
-                                    ? 'Delete previous answer?'
-                                    : pendingDeleteAction.kind === 'summary-answer'
-                                        ? 'Delete answer from summary?'
-                                        : 'Clear all answers from summary?'}
-                        </h2>
-                        <p className="muted">
-                            {pendingDeleteAction.kind === 'parsed-question'
-                                ? 'This question will be removed from the Questions Import list.'
-                                : pendingDeleteAction.kind === 'previous-answer'
-                                    ? selectedPreviousAnswer?.source ===
-                                        PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE
-                                        ? 'This will remove the selected answer from local storage history.'
-                                        : `This will remove the selected answer and move linked saved files into ${RECYCLE_BIN_FOLDER_NAME} under the selected folder.`
-                                    : pendingDeleteAction.kind === 'summary-answer'
-                                        ? 'This will remove the selected answer from Answer Summary only. Saved folder files will not be deleted.'
-                                        : 'This will remove all answers from Answer Summary for this session only.'}
-                        </p>
-                        <div className="actions">
-                            <button
-                                type="button"
-                                className="btn danger"
-                                onClick={confirmPendingDeleteAction}
-                            >
-                                {pendingDeleteAction.kind === 'summary-all' ? 'Clear All' : 'Delete'}
-                            </button>
-                            <button
-                                type="button"
-                                className="btn ghost"
-                                onClick={() => setPendingDeleteAction(null)}
-                            >
-                                Cancel
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <PendingDeleteModal
+                pendingDeleteAction={pendingDeleteAction}
+                selectedPreviousAnswerSource={selectedPreviousAnswer?.source}
+                localStorageSourceValue={PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE}
+                recycleBinFolderName={RECYCLE_BIN_FOLDER_NAME}
+                onConfirm={confirmPendingDeleteAction}
+                onCancel={() => setPendingDeleteAction(null)}
+            />
 
             <div className="sr-only" aria-live="polite">
                 {activePopupMessage}

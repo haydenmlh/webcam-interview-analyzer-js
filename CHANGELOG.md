@@ -19,6 +19,43 @@ Use this template for future releases:
 -
 ```
 
+## [1.10.2] - 2026-08-06
+
+### Added
+- Added a microphone-permission preflight when starting a mock interview, so permission is requested before the first TTS question is read.
+
+### Changed
+- Updated no-transcript banner notifications (including Deepgram no-transcript wording) to auto-dismiss after 5 seconds.
+
+## [1.10.1] - 2026-08-06
+
+### Added
+- Added provider quick links next to API key labels in Settings: Deepgram, OpenRouter, and NVIDIA NIM (`Get API Key`).
+
+### Changed
+- Added mock-interview focus mode dimming with a smooth fade-in/out transition.
+- Increased focus mode dim intensity and refined light-mode layering so camera panel/frame chrome no longer appears above the dim overlay.
+- Restricted focus-mode interaction so only `Start Mock Interview`, `Show Current Question`, and `End Interview` remain clickable.
+
+## [1.10.0] - 2026-08-06
+
+### Added
+- Added reducer-backed domain hooks for question generation, mock interview flow, report generation, history answers, and LLM settings.
+- Added reusable modal components for confirmation dialogs, pending-delete confirmation, changelog display, and question-count generation prompts.
+
+### Changed
+- Refactored `App.jsx` by moving shared logic into dedicated `utils` modules (questions, session formatting, history parsing, display formatting, changelog parsing, summary markdown, and app helpers).
+- Rewired app orchestration to consume extracted hooks/components while preserving existing mock interview and report-generation behavior.
+
+## [1.9.4] - 2026-08-06
+
+### Changed
+- Updated the changelog modal header row to use a dedicated class for changelog-specific styling.
+- Increased left/right padding for the changelog header row while keeping vertical spacing compact.
+
+### Fixed
+- Removed extra bottom margin from the `Changelog (Last 10 Releases)` title to tighten header-row alignment.
+
 ## [1.9.3] - 2026-08-06
 
 ### Added

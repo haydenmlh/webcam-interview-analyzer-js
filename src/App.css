@@ -3,10 +3,75 @@ body {
 }
 
 .app-shell {
+    position: relative;
     min-height: 100vh;
     color: var(--ink-900);
     display: grid;
     grid-template-rows: auto 1fr;
+}
+
+.app-shell::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.75);
+    opacity: 0;
+    transition: opacity 1000ms ease;
+    pointer-events: none;
+    z-index: 14;
+}
+
+.app-shell.mock-interview-focus-mode::before {
+    opacity: 1;
+}
+
+.app-shell.mock-interview-focus-mode .camera-panel {
+    position: relative;
+    z-index: 15;
+    box-shadow: none;
+    border-color: rgba(0, 0, 0, 0.55);
+}
+
+.camera-panel::before {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    border-radius: inherit;
+    background: rgba(0, 0, 0, 0.75);
+    opacity: 0;
+    transition: opacity 1000ms ease;
+    pointer-events: none;
+    z-index: 16;
+}
+
+.app-shell.mock-interview-focus-mode .camera-panel::before {
+    opacity: 1;
+}
+
+.app-shell.mock-interview-focus-mode .camera-frame,
+.app-shell.mock-interview-focus-mode .mock-start-interview-btn,
+.app-shell.mock-interview-focus-mode .mock-show-current-question-btn,
+.app-shell.mock-interview-focus-mode .mock-end-interview-btn {
+    position: relative;
+    z-index: 17;
+}
+
+.app-shell.mock-interview-focus-mode .camera-question-overlay {
+    z-index: 18;
+}
+
+.app-shell.mock-interview-focus-mode .camera-frame {
+    border-color: rgba(0, 0, 0, 0.72);
+}
+
+.app-shell.mock-interview-focus-mode :is(button, input, select, textarea, a, [role='button']) {
+    pointer-events: none;
+}
+
+.app-shell.mock-interview-focus-mode .mock-start-interview-btn,
+.app-shell.mock-interview-focus-mode .mock-show-current-question-btn,
+.app-shell.mock-interview-focus-mode .mock-end-interview-btn {
+    pointer-events: auto;
 }
 
 .settings-changelog-link {
@@ -1796,6 +1861,14 @@ h3 {
     gap: 0.75rem;
 }
 
+.changelog-modal-header-row {
+    padding: 0.5rem 1.25rem;
+}
+
+#changelog-title {
+    margin-bottom: 0;
+}
+
 .am-report-stream-modal {
     width: min(920px, 90vw);
     max-width: 90vw;
@@ -1992,6 +2065,31 @@ h3 {
     display: block;
     margin-top: 0.95rem;
     font-weight: 600;
+}
+
+.label-with-link {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+
+.settings-provider-link {
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: var(--action);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.settings-provider-link:hover {
+    color: color-mix(in srgb, var(--action), black 15%);
+}
+
+.settings-provider-link:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+    border-radius: 4px;
 }
 
 .question-row {
