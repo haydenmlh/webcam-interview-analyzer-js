@@ -2,22 +2,38 @@
 
 Mock Interviewer is a React + Vite web app for practicing interview answers with live camera posture cues, audio/video recording, and Deepgram-powered transcription.
 
-Current app version: 1.7.29
+Current app version: 1.8.29
 
 ## Highlights
 
 - Deepgram BYOK settings with local key persistence and optional server-side validation endpoint
-- Live MediaPipe analysis (face, hand, and pose) with feedback metrics
+- LLM model dropdown labels now include model path values in brackets for faster endpoint verification
+- Curated 3-option preset model lists (plus Custom) for OpenRouter and NVIDIA NIM, including `inclusionai/ling-3.0-flash:free`
+- LLM provider HTTP errors now show provider name, status code, and truncated message in a 10-second notification
+- Live MediaPipe face analysis with eye-contact and gaze feedback metrics
 - Start Video Recording and Start Audio Recording workflows
 - Stop and Transcribe flow with transcript and interview metrics
 - Add to Summary action for current answer/transcript
 - Copy Summary for Gem export in Gemini-friendly markdown format
 - Open Gemini topbar action that launches Gemini in a right-side popup panel for quick paste-and-iterate workflow
-- CV/JD modal for storing company name, CV, and job description with Gemini-ready copy action
+- CV/JD modal for storing company name, consultant details, CV, and job description
+- Generate Questions flow from CV/JD/company/job-title context with streaming output
+- Generate Questions now prompts for question count (default 10) before generating
+- Question-count normalization now reliably enforces the supported `3-40` range across browsers
+- Question-count modal now enforces `3-40` directly in UI validation and input bounds
+- Re-generating questions now warns before overwriting existing questions
+- Unified Generate Reports flow that runs AM and detailed report generation in parallel
+- Side-by-side report generation modal (`AM Report` left, `Detailed Report` right)
+- Side-by-side PDF preview modal for AM and detailed outputs with separate download actions
+- Detailed report PDFs now start `Detailed Per-Question Analysis` on a new page and place each question after Question 1 on its own page
+- AM feedback PDF preview with download icon action and exit-confirmation discard warning
+- PDF metric/unit formatting keeps `%`/`°` attached to numbers in generated reports
 - URL-based multi-question import on page load
 - Interviewer mock image mode with optional self-view PiP
 - Camera controls in Settings: Enable Camera, Show Interviewer, Show Self View
-- Allow Camera Access button now hides after first successful permission grant
+- Allow Camera Access button has been removed from the camera panel
+- Camera video toggle defaults to disabled/red when camera access is unavailable
+- Camera empty state now shows `No Camera Access` when permission is not allowed
 - Camera/session panel spacing refined to better use available vertical space
 - Session action controls are placed above the interview question field for faster access
 - Select Save Folder prompt now includes a dismiss (X) control
@@ -25,6 +41,14 @@ Current app version: 1.7.29
 - Key-saved status shown as a bottom-right popup notification
 - Save session files to a selected folder when File System Access is supported
 - Previous Answers modal with recorded media and metrics history
+- Previous Answers source toggle (`Source: Local Storage | Folder`) in the history header
+- Previous Answers `Folder` source option is disabled when browser folder access is unavailable, with automatic fallback to `Local Storage`
+- Completed recording transcript + metrics now persist to browser local storage (latest 20 entries, no media files)
+- Previous Answers local-storage detail view now hides file/media sections (`Total file size`, `Files`, `Recording`) that only apply to folder-backed entries
+- Previous Answers `Delete Answer` now works for local-storage history entries
+- Previous Answers `Copy Transcript and Metrics` now works for local-storage history entries
+- Previous Answers disabled tooltip now layers above webcam imagery and overlay
+- Closing Settings with unsaved LLM changes now prompts users to `Save LLM Settings`, `Discard`, or `Stay`
 - Interview question text-to-speech option
 - Theme toggle and responsive mobile layout improvements
 
@@ -101,9 +125,33 @@ Copy-Item -Recurse -Force dist\* .
 ## Notes
 
 - Deepgram transcription requests are performed from the browser using the user-provided key.
+- LLM generation requests (question generation + AM/detailed report generation) are performed from the browser using user-provided OpenRouter or NVIDIA NIM API keys.
+- NVIDIA NIM direct browser calls can be blocked by CORS. In deployed environments, set `VITE_NIM_BASE_URL` to a proxy endpoint (or use the in-app `NVIDIA NIM Base URL` setting).
+- LLM keys are stored in browser local storage by default; use `Clear keys and reset to defaults` in Settings to remove saved keys and reset provider settings.
 - Interview question playback uses OS/system text-to-speech in the browser.
 - If no Deepgram key is present and missing-key fallback is enabled, transcription falls back to local Whisper (in-browser) and question playback uses OS/system TTS.
 - Folder-based save/history features rely on the browser File System Access API and permission grants.
+
+## LLM generation setup
+
+1. Open Settings.
+2. Under "LLM Chat Providers", enter at least one provider API key.
+3. Configure model and base URL for the provider you want to use.
+4. Save LLM settings.
+5. Use `Generate Questions` or `Generate Reports` from the left-side tabs.
+
+Behavior:
+- If provider settings are missing or invalid, generation returns an actionable error toast.
+- Auto provider mode tries OpenRouter first, then retries with NVIDIA NIM if OpenRouter fails.
+- Generation context can include current question, transcript, interview metrics summary, and optional CV/JD/company/job-title fields.
+
+### NVIDIA NIM on deployed sites
+
+If you see a browser CORS error for `integrate.api.nvidia.com`, configure a proxy URL:
+
+1. In repository secrets, add `VITE_NIM_BASE_URL` with your proxy URL base (for example `https://<your-proxy-domain>/v1`).
+2. Re-run the deploy workflow (`main` or `dev`).
+3. Optionally override at runtime in Settings using `NVIDIA NIM Base URL`.
 
 ## URL question import
 
@@ -133,13 +181,20 @@ Behavior:
 ## GitHub Pages and custom domain
 
 - Deployment workflow: .github/workflows/deploy-pages.yml
-- Target repository: haydenmlh/webcam-interview-analyzer-page
-- Target branch: gh-pages
+- Dev deployment workflow: .github/workflows/deploy-pages-dev.yml
+- Production target repository: haydenmlh/webcam-interview-analyzer-page
+- Production target branch: gh-pages
+- Dev target repository: haydenmlh/webcam-interview-analyzer-js (this source repository)
+- Dev target branch: gh-pages-dev
 - Custom domain file: public/CNAME
 - Configured domain: interview.haydenmlh.com
+- Dev configured domain: dev.interview.haydenmlh.com
 
 ### Required secret in source repository
 
 - PAGES_DEPLOY_TOKEN: Personal Access Token with write access to haydenmlh/webcam-interview-analyzer-page
+- VITE_NIM_BASE_URL: NVIDIA NIM proxy base URL used at build time for deployed pages (for example `https://<your-proxy-domain>/v1`)
 
 After first deploy, enable GitHub Pages on haydenmlh/webcam-interview-analyzer-page with source branch gh-pages, then set your DNS CNAME record for interview.haydenmlh.com to haydenmlh.github.io.
+
+For dev deploys, enable GitHub Pages on haydenmlh/webcam-interview-analyzer-js with source branch gh-pages-dev and set DNS CNAME for dev.interview.haydenmlh.com to haydenmlh.github.io.

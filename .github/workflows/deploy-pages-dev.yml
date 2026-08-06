@@ -1,15 +1,15 @@
-name: Deploy GitHub Pages
+name: Deploy GitHub Pages (Dev)
 
 on:
   push:
-    branches: [main]
+    branches: [dev]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: pages
+  group: pages-dev
   cancel-in-progress: true
 
 jobs:
@@ -36,13 +36,15 @@ jobs:
       - name: Include GPL-3.0 license in published site
         run: cp LICENSE dist/LICENSE
 
-      - name: Publish to external pages repository
+      - name: Set dev CNAME
+        run: echo "dev.interview.haydenmlh.com" > dist/CNAME
+
+      - name: Publish Dev to GitHub Pages branch in this repository
         uses: peaceiris/actions-gh-pages@v4
         with:
-          personal_token: ${{ secrets.PAGES_DEPLOY_TOKEN }}
-          external_repository: haydenmlh/webcam-interview-analyzer-page
-          publish_branch: gh-pages
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages-dev
           publish_dir: ./dist
-          cname: interview.haydenmlh.com
+          cname: dev.interview.haydenmlh.com
           force_orphan: true
-          commit_message: "Deploy from source: ${{ github.sha }}"
+          commit_message: "Deploy dev from source: ${{ github.sha }}"

@@ -19,6 +19,255 @@ Use this template for future releases:
 -
 ```
 
+## [1.8.29] - 2026-08-06
+
+### Added
+- Added a unified `Generate Reports` flow that starts AM and detailed report generation in parallel.
+- Added a split generation preview modal with side-by-side streaming output (`AM Report` on the left, `Detailed Report` on the right).
+- Added a combined PDF preview modal that shows AM and detailed report PDFs side-by-side with independent download actions.
+
+### Changed
+- Replaced the OpenRouter preset `cohere/north-mini-code:free` with `inclusionai/ling-3.0-flash:free`.
+- Replaced separate left-tab actions (`Generate AM Report`, `Generate Detailed Report`) with a single `Generate Reports` action.
+
+## [1.8.28] - 2026-08-06
+
+### Added
+- Added an unsaved LLM settings confirmation when closing Settings: users can `Save LLM Settings`, `Discard`, or `Stay`.
+
+### Changed
+- Settings close actions (overlay click, `X`, and `Esc`) now prompt before closing when LLM settings inputs have unsaved edits.
+
+## [1.8.27] - 2026-08-06
+
+### Changed
+- Updated `Previous Answers` local-storage detail view to hide file/media-only sections that do not apply to local storage entries.
+- Removed `Total file size`, `Files`, and `Recording` sections from local-storage answer detail panels while preserving them for folder-based entries.
+
+## [1.8.26] - 2026-08-06
+
+### Changed
+- Disabled the `Folder` source option in `Previous Answers` when browser folder access is unavailable.
+- Added automatic fallback from persisted `Folder` source to `Local Storage` in unsupported browsers to prevent invalid history mode state.
+
+## [1.8.25] - 2026-08-06
+
+### Added
+- Enabled `Delete Answer` for `Previous Answers` entries loaded from local storage.
+
+### Changed
+- Enabled `Copy Transcript and Metrics` for local-storage history entries by falling back to stored transcript/metrics content when no folder text file handle exists.
+- Updated `Previous Answers` delete confirmation messaging to reflect local-storage deletion behavior.
+
+## [1.8.24] - 2026-08-06
+
+### Changed
+- Updated the question-count modal UI validation and numeric input bounds to match generation rules, enforcing `3-40` in the user-facing prompt.
+
+## [1.8.23] - 2026-08-06
+
+### Fixed
+- Corrected generated-question count normalization to avoid using `Math.clamp` (not available in browser JavaScript runtime), and safely clamp values to the supported `3-40` range.
+
+## [1.8.22] - 2026-08-06
+
+### Added
+- Added a `Previous Answers` source toggle in the history modal header with `Local Storage` and `Folder` options, including a `Source:` label.
+- Added automatic local-storage persistence of completed recording transcript + metrics entries (no media blobs), retaining the most recent 20 entries.
+
+### Changed
+- Updated `Previous Answers` button behavior to always open the history modal directly instead of prompting for folder selection first.
+- Refactored the three LLM `userMessage` payloads into top-level constants near the generation guideline constants for easier manual prompt editing.
+
+### Fixed
+- Restricted `Delete Answer` in `Previous Answers` to folder-backed entries, preventing invalid delete actions for local-storage-only history.
+
+## [1.8.21] - 2026-08-06
+
+### Added
+- Added a configurable `NVIDIA NIM Base URL` field in Settings so deployed environments can point to a CORS-safe proxy endpoint and save it locally.
+
+### Changed
+- Updated default NVIDIA NIM base URL behavior to prefer proxy-style routing (`/api/nim`) instead of direct browser calls to `integrate.api.nvidia.com`.
+- Updated GitHub Pages build workflows (`main` and `dev`) to inject `VITE_NIM_BASE_URL` from repository secrets.
+
+### Fixed
+- Added clearer NVIDIA NIM error messaging when browser CORS blocks direct endpoint calls, including proxy configuration guidance.
+
+## [1.8.20] - 2026-08-06
+
+### Changed
+- Removed the `Allow Camera Access` action button from the camera panel.
+- Updated camera empty-state messaging to show `No Camera Access` when camera permission is unavailable.
+
+### Fixed
+- Camera video toggle now defaults to the disabled/red state when camera access is not allowed.
+
+## [1.8.19] - 2026-08-06
+
+### Changed
+- Updated the Questions modal title to `Questions List` and moved the `Generate Questions` action beside `Clear Questions List` in the header actions row.
+- Added conditional Questions modal action labeling: `Generate Questions` when empty and `Re-generate Questions` when existing questions are present.
+- Added an overwrite warning modal before re-generating questions when a question list already exists.
+- Added a question-count prompt modal to the generate-questions flow with default value `10`, editable numeric input, and increment/decrement controls.
+
+## [1.8.18] - 2026-08-06
+
+### Changed
+- LLM provider HTTP failures now surface a toast that includes provider name, HTTP status code, and a truncated provider error message.
+- LLM provider HTTP error toasts now remain visible for 10 seconds before auto-dismiss.
+
+### Fixed
+- Raised `Previous Answers` disabled-tooltip stacking so its tooltip displays above the webcam image and meeting overlay.
+
+## [1.8.17] - 2026-08-05
+
+### Changed
+- Updated LLM model dropdown labels to include the model path in square brackets after the model name for clearer endpoint visibility.
+- Refreshed OpenRouter preset options to `google/gemma-4-26b-a4b-it:free`, `nvidia/nemotron-3-ultra-550b-a55b:free`, and `cohere/north-mini-code:free`.
+- Refreshed NVIDIA NIM preset options to `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning`, `openai/gpt-oss-120b`, and `openai/gpt-oss-20b`.
+
+## [1.8.16] - 2026-08-05
+
+### Changed
+- Updated detailed-report PDF pagination so `Detailed Per-Question Analysis` starts on a new page, and each `Question N` section after Question 1 starts on its own new page.
+- Updated the summary modal action label from `Copy Summary for Gem` to icon + `Copy All`.
+- Removed the AM/Detailed PDF `Original LLM Output` panel and related report-preview artifacts to restore a single-pane PDF preview.
+
+### Fixed
+- PDF text normalization now keeps degree symbols (`°`) while still sanitizing unsupported glyphs.
+- PDF text normalization now removes spacing between numbers and `%`/`°` so units remain attached (for example, `4%`, `19°`).
+
+## [1.8.15] - 2026-08-05
+
+### Changed
+- Updated AM/Detailed report diagnostic panel (`Original LLM Output`) to display the raw unsanitized LLM response for easier problematic-character debugging.
+- Extended LLM provider response handling to return both normalized text (used for generation pipelines) and raw text (used for diagnostics).
+
+### Fixed
+- Preserved leading/trailing raw response characters in streaming provider output by removing implicit trim from the raw streaming return path.
+
+## [1.8.14] - 2026-08-05
+
+### Added
+- Added a `Generate Detailed Report` flow with streaming preview, PDF generation, and in-app PDF preview, including per-question analysis and suggested improved answers grounded in transcript/metrics/CV/JD context.
+- Added an `Original LLM Output` section below AM/Detailed PDF previews for side-by-side raw-text inspection.
+
+### Changed
+- LLM API key persistence is now always enabled for browser storage; removed the Settings toggle and added `Clear keys and reset to defaults` next to `Save LLM settings`.
+- Repositioned the `Previous Answers` side tab to the bottom of the camera panel.
+- Updated multi-line recording/navigation controls with +3px top padding, and restored equal horizontal padding specifically for the `Generate Questions` button while keeping uneven `Next Question` horizontal padding.
+
+### Fixed
+- Hardened PDF text normalization for additional unsupported Unicode symbols (e.g., approximation/math variants), reducing garbled characters in exported report text.
+
+## [1.8.13] - 2026-08-05
+
+### Changed
+- Updated default LLM model fallbacks to use `google/gemma-4-26b-a4b-it:free` for OpenRouter and `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning` for NVIDIA NIM when no saved or environment override model is present.
+
+## [1.8.12] - 2026-08-05
+
+### Changed
+- Updated question navigation controls to hide `Next Question` and `Previous Question` actions when no imported/generated question list exists.
+- Added context-aware empty-state actions: show `Add JD and CV information` (opens CV/JD modal) when CV/JD is missing, otherwise show `Generate Questions`.
+- `Generate Questions` from the empty-state action now runs in the background without opening the Questions modal and shows a background-generation notification.
+
+## [1.8.11] - 2026-08-05
+
+### Changed
+- Updated repository release prompts so `/patch` and `/minor` skip `npm run lint` and `npm run build` by default, running validation only when explicitly requested.
+
+## [1.8.10] - 2026-08-05
+
+### Changed
+- Updated AM feedback PDF output to include only the generated AM feedback section and removed the Source Answer Summary section from exported documents.
+
+## [1.8.9] - 2026-08-05
+
+### Changed
+- Hardened AM PDF text normalization by mapping unicode punctuation and whitespace variants to safe plain-text equivalents before jsPDF layout.
+
+### Fixed
+- Removed additional hidden C1/control-byte artifacts from AM feedback text rendering, preventing misplaced characters and warped spacing in some copied/generated PDF output lines.
+
+## [1.8.8] - 2026-08-05
+
+### Changed
+- Restored standard top padding for the AM PDF preview modal and aligned the History modal to equal padding on all four sides.
+- Added bottom padding beneath the shared modal history header to improve spacing between the header row and body content.
+
+### Fixed
+- AM feedback PDF rendering now strips hidden ASCII control characters from generated text before layout, resolving warped word spacing in some LLM output lines.
+
+## [1.8.7] - 2026-08-05
+
+### Added
+- Added an in-app AM feedback PDF preview modal that opens immediately after report generation, with a top action bar for icon-only download and close controls.
+- Added an exit-confirmation popup for the AM PDF preview, including outside-click and close-button flows that require explicit confirmation before dismissing.
+
+### Changed
+- Updated AM report modal spacing with 5px top padding for both streaming and PDF preview variants.
+- Updated PDF-exit warning copy to clearly state that undownloaded output will be discarded on exit.
+
+### Fixed
+- Improved AM feedback PDF text rendering by normalizing/sanitizing invisible Unicode spacing and control characters that caused warped line layout in some LLM-generated sections.
+- Restored webcam-toggle persistence on refresh by removing permission-watcher logic that force-enabled camera state when permission was granted.
+
+## [1.8.4] - 2026-08-05
+
+### Added
+- Added a left-side `Generate AM Report` tab between `Answer Summary` and `Previous Answers` to generate account-manager feedback from summary data and CV/JD context.
+- Added AM report streaming preview modal with real-time LLM output, automatic scroll-to-latest behavior, and non-selectable preview text while generation is in progress.
+- Added an explicit `Cancel` action in the AM report streaming modal that aborts the active provider request.
+
+### Changed
+- AM report prompt/guideline wording was updated to target consulting-firm account-manager feedback with concise aggregate sections and no per-question feedback.
+- `Answer Summary` overview entries now show the question title in the top line and no longer show `Q1`/`Q2` numbering.
+- `Invert camera` now defaults to enabled for first-time users, and its Settings popup toggle was moved to the top of Camera Display options.
+
+### Fixed
+- Replaced the AM PDF HTML rendering path with a deterministic markdown-token renderer to prevent blank/empty PDF output.
+- AM PDF export now renders inline markdown emphasis (`**bold**`, `*italic*`) as styled text instead of literal markdown markers.
+- AM PDF export now renders markdown tables as grid tables with wrapped cells, header styling, and repeated headers across page breaks.
+
+## [1.8.2] - 2026-08-05
+
+### Added
+- Added an `Invert camera` toggle inside the webcam quick-settings menu using Material icon toggles.
+- Added a browser unload warning when questions or answer summaries exist to prevent accidental refresh/close loss.
+
+### Changed
+- Answer summaries are now session-only and no longer persist in local storage across page refreshes.
+- Added generation guidelines to the LLM question-generation context payload and prompt context block.
+
+### Fixed
+- Removed the light/dark mode toggle icon offset so the theme icon aligns without vertical nudge.
+
+## [1.8.1] - 2026-08-05
+
+### Changed
+- Moved LLM provider routing control into Settings with `Auto`, `OpenRouter only`, and `NVIDIA NIM only` modes.
+- `Auto` provider mode now attempts OpenRouter first and retries with NVIDIA NIM if OpenRouter fails during question generation.
+- Restored `Questions List` to the original left-side tab trigger and removed the bottom-left questions dock flow.
+
+### Fixed
+- Removed the right-side `AI Feedback` panel/button and all related chat-rail artifacts/logic from the main UI.
+
+## [1.8.0] - 2026-08-05
+
+### Added
+- Added a left-side `Generate Questions` tab between `Input CV/JD` and `Questions List` that opens the questions modal and generates interview questions from CV/JD/company context.
+- Added streaming AI question generation into the Questions Import modal with in-place progress text while responses are received.
+
+### Changed
+- Updated the CV/JD modal actions: renamed the copy action to `Copy` and added `Generate Questions` with a context-generation tooltip.
+- AI Feedback assistant responses now render with Markdown formatting for headings, lists, code blocks, and links.
+
+### Fixed
+- Generated questions now immediately update the webcam question overlay to the first generated question.
+- NVIDIA NIM chat requests now use a dev proxy path to avoid local browser CORS preflight failures.
+
 ## [1.7.29] - 2026-08-04
 
 ### Added

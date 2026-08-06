@@ -12,6 +12,14 @@ import {
 import defaultInterviewerImage from './assets/interviewers/interviewer.jpg'
 import meetingOverlayImage from './assets/meeting-overlay.png'
 import changelogMarkdown from '../CHANGELOG.md?raw'
+import {
+    getLlmProviderConfig,
+    sendInterviewChatMessage,
+    validateLlmProviderApiKey,
+} from './llm/providers'
+import { jsPDF } from 'jspdf'
+import { marked } from 'marked'
+import ReactMarkdown from 'react-markdown'
 import './App.css'
 
 const STORAGE_KEY = 'mia.deepgram.apiKey'
@@ -31,8 +39,16 @@ const STORAGE_DEEPGRAM_DEBUG = 'mia.deepgram.debug'
 const STORAGE_CV_TEXT = 'mia.cvText'
 const STORAGE_JD_TEXT = 'mia.jdText'
 const STORAGE_COMPANY_NAME = 'mia.companyName'
-const STORAGE_SESSION_SUMMARIES = 'mia.sessionSummaries'
-const STORAGE_SELECTED_SUMMARY_ID = 'mia.selectedSummaryId'
+const STORAGE_CONSULTANT_FULL_NAME = 'mia.consultantFullName'
+const STORAGE_JOB_TITLE = 'mia.jobTitle'
+const STORAGE_LLM_PROVIDER_MODE = 'mia.llm.providerMode'
+const STORAGE_OPENROUTER_API_KEY = 'mia.llm.openrouter.apiKey'
+const STORAGE_OPENROUTER_MODEL = 'mia.llm.openrouter.model'
+const STORAGE_NIM_API_KEY = 'mia.llm.nim.apiKey'
+const STORAGE_NIM_MODEL = 'mia.llm.nim.model'
+const STORAGE_NIM_BASE_URL = 'mia.llm.nim.baseUrl'
+const STORAGE_PREVIOUS_ANSWERS_SOURCE = 'mia.previousAnswers.source'
+const STORAGE_PREVIOUS_ANSWERS_LOCAL = 'mia.previousAnswers.local'
 const HANDLE_DB_NAME = 'mia-handle-db'
 const HANDLE_STORE_NAME = 'handles'
 const RECORDINGS_FOLDER_KEY = 'recordings-folder'
@@ -41,6 +57,111 @@ const RECYCLE_BIN_FOLDER_NAME = '_Recycle Bin'
 const VALIDATION_RECOMMEND_DAYS = 30
 const INITIAL_NOW_MS = Date.now()
 const OVERALL_SUMMARY_VIEW_ID = '__overall__'
+const LLM_PROVIDER_MODE_AUTO = 'auto'
+const LLM_PROVIDER_MODE_OPENROUTER_ONLY = 'openrouter-only'
+const LLM_PROVIDER_MODE_NIM_ONLY = 'nim-only'
+const PREVIOUS_ANSWERS_SOURCE_FOLDER = 'folder'
+const PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE = 'local-storage'
+const DEFAULT_GENERATED_QUESTION_COUNT = 10
+const DEFAULT_QUESTION_GENERATION_GUIDELINES =
+    'Generate concise, role-relevant interview questions. Cover technical depth, behavioral examples, and company alignment. Avoid duplicates. Return one question per line.'
+const DEFAULT_AM_REPORT_GENERATION_GUIDELINES =
+    'Generate a report for an account-manager at a consulting firm regarding the Answers provided in context, which were answered by a consultant. Provide feedback grounded in the interview answer transcript, answer metrics, JD and CV. Be specific, concise, and evidence-based. Do not generate per question feedback.'
+const DEFAULT_DETAILED_REPORT_GENERATION_GUIDELINES =
+    'Generate an in-depth report with an executive summary first, then detailed per-question analysis. For each question include strengths, weaknesses, metric interpretation, and a suggested improved answer. Tailor suggested answers to CV/JD/company/job title when relevant, and explicitly state when profile context is not relevant to that specific question.'
+const QUESTION_GENERATION_USER_MESSAGE = (questionCount, jdOnlyQuestionCount) =>
+    `Generate ${questionCount} concise mock interview questions based on the provided CV, job description, and company. If a job description is provided, include at least ${jdOnlyQuestionCount} questions that are derived only from the job description requirements and are not based on the CV. Return only the questions, one per line, no intro or explanation.`
+const AM_REPORT_USER_MESSAGE =
+    'You are an Interview Expert for a Consulting Firm. You are writing feedback for the mock interview answers. Using the provided interview Job Title, Q&A transcript, Q&A metrics, JD and CV, return markdown with sections: 1) Initial Feedback, 2) Overall Rating (out of 10), 3) Answer Strengths, 4) Answer Weaknesses, 5) Future Directions For Improvement. Keep it concise and evidence-based.'
+const DETAILED_REPORT_USER_MESSAGE =
+    'You are an Interview Expert for a Consulting Firm. Using the provided interview context, return markdown with these exact top-level sections in order: 1) Initial Feedback, 2) Overall Rating (out of 10), 3) Answer Strengths, 4) Answer Weaknesses, 5) Future Directions For Improvement, 6) Detailed Per-Question Analysis. In section 6, create one subsection per answer using heading format "### Question N: <question>" and include: Candidate Answer Snapshot, Strengths, Weaknesses, Metric Interpretation, Suggested Improved Answer. The Suggested Improved Answer must describe an ideal answer and tailor it to CV/JD/company/job title context when relevant; if not relevant, explicitly state that no CV/JD tailoring applies. Keep feedback specific, concise, and evidence-based using transcript and metrics.'
+const LLM_PROVIDER_ENV_CONFIG = getLlmProviderConfig(import.meta.env)
+const OPENROUTER_BASE_URL = LLM_PROVIDER_ENV_CONFIG.openrouter.baseUrl
+const DEFAULT_NIM_BASE_URL = LLM_PROVIDER_ENV_CONFIG.nim.baseUrl
+const LLM_HTTP_ERROR_TOAST_PREFIX = 'LLM API HTTP error:'
+const LLM_HTTP_ERROR_TOAST_TIMEOUT_MS = 10000
+const LLM_HTTP_ERROR_MESSAGE_MAX_LENGTH = 180
+const UNSAVED_QA_WARNING_MESSAGE =
+    'Questions and Answer Summaries will not be saved. Please download the reports as needed.'
+const CUSTOM_MODEL_OPTION_VALUE = '__custom__'
+const OPENROUTER_MODEL_PRESETS = [
+    {
+        value: LLM_PROVIDER_ENV_CONFIG.openrouter.model,
+        label: `Default Model [${LLM_PROVIDER_ENV_CONFIG.openrouter.model}]`,
+    },
+    {
+        value: 'nvidia/nemotron-3-ultra-550b-a55b:free',
+        label: 'NVIDIA Nemotron 3 Ultra 550B A55B [nvidia/nemotron-3-ultra-550b-a55b:free]',
+    },
+    {
+        value: 'inclusionai/ling-3.0-flash:free',
+        label: 'InclusionAI Ling 3.0 Flash [inclusionai/ling-3.0-flash:free]',
+    },
+]
+const NIM_MODEL_PRESETS = [
+    {
+        value: LLM_PROVIDER_ENV_CONFIG.nim.model,
+        label: `Default Model [${LLM_PROVIDER_ENV_CONFIG.nim.model}]`,
+    },
+    {
+        value: 'openai/gpt-oss-120b',
+        label: 'OpenAI GPT OSS 120B [openai/gpt-oss-120b]',
+    },
+    {
+        value: 'openai/gpt-oss-20b',
+        label: 'OpenAI GPT OSS 20B [openai/gpt-oss-20b]',
+    },
+]
+
+function buildModelOptionsWithCurrent(presets) {
+    const uniquePresets = presets.filter(
+        (preset, index) =>
+            preset?.value && presets.findIndex((entry) => entry.value === preset.value) === index,
+    )
+
+    const options = [...uniquePresets]
+    options.push({
+        value: CUSTOM_MODEL_OPTION_VALUE,
+        label: 'Custom model...',
+    })
+    return options
+}
+
+function getModelSelectValue(currentModel, presets) {
+    const normalizedCurrent = String(currentModel || '').trim()
+    if (!normalizedCurrent) return CUSTOM_MODEL_OPTION_VALUE
+    if (presets.some((preset) => preset.value === normalizedCurrent)) {
+        return normalizedCurrent
+    }
+    return CUSTOM_MODEL_OPTION_VALUE
+}
+
+function normalizeLlmProviderMode(value) {
+    if (
+        value === LLM_PROVIDER_MODE_AUTO ||
+        value === LLM_PROVIDER_MODE_OPENROUTER_ONLY ||
+        value === LLM_PROVIDER_MODE_NIM_ONLY
+    ) {
+        return value
+    }
+
+    return LLM_PROVIDER_MODE_AUTO
+}
+
+function normalizePreviousAnswersSource(value) {
+    if (value === PREVIOUS_ANSWERS_SOURCE_FOLDER || value === PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE) {
+        return value
+    }
+
+    return PREVIOUS_ANSWERS_SOURCE_FOLDER
+}
+
+function truncateText(value, maxLength) {
+    const normalized = String(value || '').trim().replace(/\s+/g, ' ')
+    if (!normalized) return ''
+    if (normalized.length <= maxLength) return normalized
+    return `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`
+}
 
 const DEFAULT_WASM_URL =
     'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
@@ -260,6 +381,10 @@ function getSavedValue(keyName) {
     }
 }
 
+function getSavedBoolean(keyName) {
+    return getSavedValue(keyName) === 'true'
+}
+
 function setSavedValue(keyName, value) {
     try {
         localStorage.setItem(keyName, value)
@@ -273,6 +398,55 @@ function clearSavedValue(keyName) {
         localStorage.removeItem(keyName)
     } catch {
         // Local storage can fail in private mode or restrictive policies.
+    }
+}
+
+function appendRecordingToPreviousAnswersLocalStorage(entry) {
+    try {
+        const raw = localStorage.getItem(STORAGE_PREVIOUS_ANSWERS_LOCAL) || ''
+        const parsed = JSON.parse(raw || '[]')
+        const existingEntries = Array.isArray(parsed) ? parsed : []
+
+        const normalizedEntry = {
+            id: sanitizeDisplayText(entry?.id, crypto.randomUUID()),
+            capturedAt: sanitizeDisplayText(entry?.capturedAt, new Date().toISOString()),
+            question: sanitizeDisplayText(entry?.question, '(no question)'),
+            transcript: sanitizeDisplayText(entry?.transcript, '(no transcript captured)'),
+            metrics:
+                entry?.metrics && typeof entry.metrics === 'object'
+                    ? entry.metrics
+                    : null,
+            metricsText: sanitizeDisplayText(entry?.metricsText, ''),
+        }
+
+        const nextEntries = [normalizedEntry, ...existingEntries].slice(0, 20)
+        localStorage.setItem(STORAGE_PREVIOUS_ANSWERS_LOCAL, JSON.stringify(nextEntries))
+    } catch {
+        // Ignore local storage persistence issues.
+    }
+}
+
+function removeRecordingFromPreviousAnswersLocalStorage(answerId) {
+    const normalizedId = sanitizeDisplayText(answerId, '')
+    if (!normalizedId) return false
+
+    try {
+        const raw = localStorage.getItem(STORAGE_PREVIOUS_ANSWERS_LOCAL) || ''
+        const parsed = JSON.parse(raw || '[]')
+        const existingEntries = Array.isArray(parsed) ? parsed : []
+
+        const nextEntries = existingEntries.filter(
+            (entry) => sanitizeDisplayText(entry?.id, '') !== normalizedId,
+        )
+
+        if (nextEntries.length === existingEntries.length) {
+            return false
+        }
+
+        localStorage.setItem(STORAGE_PREVIOUS_ANSWERS_LOCAL, JSON.stringify(nextEntries))
+        return true
+    } catch {
+        return false
     }
 }
 
@@ -909,6 +1083,644 @@ function parseSessionJsonReport(fileName, content, fallbackDateIso, sortTime, fo
     }
 }
 
+function buildAnswerSummaryMarkdown(interviewSummaries, overallInterviewSummary) {
+    const totals = overallInterviewSummary
+    const sections = [
+        '# Interview Summary for Gemini',
+        '',
+        `Generated: ${new Date().toISOString()}`,
+        '',
+        '## Total Metrics',
+        `- Total answers: ${totals.totalAnswers}`,
+        `- Average WPM: ${totals.averageWpm}`,
+        `- Average answer length (sec): ${totals.averageAnswerLengthSec}`,
+        `- Average hesitations: ${totals.averageHesitations}`,
+        `- Average gaze center (%): ${totals.averageGazeCenterPct}`,
+        '',
+        '## Answers',
+    ]
+
+    interviewSummaries.forEach((item, index) => {
+        const answerNumber = interviewSummaries.length - index
+        sections.push(`### Answer ${answerNumber}`)
+        sections.push(`- Captured: ${formatReadableCapturedDate(item.capturedAt)}`)
+        sections.push(`- Question: ${item.question}`)
+        sections.push('')
+        sections.push('Transcript:')
+        sections.push('```text')
+        sections.push(item.transcript || '(no transcript captured)')
+        sections.push('```')
+        sections.push('')
+        sections.push('Metrics:')
+
+        const metricEntries = Object.entries(item.metrics || {})
+        if (!metricEntries.length) {
+            sections.push('- n/a')
+        } else {
+            metricEntries.forEach(([key, value]) => {
+                sections.push(`- ${key}: ${String(value ?? 'n/a')}`)
+            })
+        }
+        sections.push('')
+    })
+
+    return sections.join('\n')
+}
+
+async function downloadInterviewReportPdf({
+    companyName,
+    consultantFullName,
+    jobTitle,
+    feedbackText,
+    reportTitle = 'Account Manager Interview Feedback Report',
+    feedbackSectionTitle = 'AM Feedback Output',
+    fileNamePrefix = 'interview-report',
+}) {
+    const doc = new jsPDF({ unit: 'pt', format: 'a4' })
+    const margin = 36
+    const pageWidth = doc.internal.pageSize.getWidth()
+    const pageHeight = doc.internal.pageSize.getHeight()
+    const maxTextWidth = pageWidth - margin * 2
+    const defaultLineHeight = 14
+    let cursorY = margin
+
+    const PDF_SAFE_REPLACEMENTS = [
+        [/\u00A0/g, ' '],
+        [/\u2000|\u2001|\u2002|\u2003|\u2004|\u2005|\u2006|\u2007|\u2008|\u2009|\u200A|\u202F|\u205F|\u3000/g, ' '],
+        [/\u2010|\u2011|\u2012|\u2013|\u2014|\u2015|\u2212/g, '-'],
+        [/\u2018|\u2019|\u201A|\u201B/g, "'"],
+        [/\u201C|\u201D|\u201E|\u201F/g, '"'],
+        [/\u2026/g, '...'],
+        [/\u2248|\u223C|\u02DC/g, '~'],
+        [/\u2264/g, '<='],
+        [/\u2265/g, '>='],
+        [/\u2260/g, '!='],
+        [/\u00B1/g, '+/-'],
+        [/\u00D7/g, 'x'],
+        [/\u00F7/g, '/'],
+        [/\u2022/g, '- '],
+    ]
+
+    function normalizePdfTypography(value) {
+        let output = String(value || '')
+        PDF_SAFE_REPLACEMENTS.forEach(([pattern, replacement]) => {
+            output = output.replace(pattern, replacement)
+        })
+
+        // jsPDF core Helvetica rendering can garble unsupported Unicode glyphs.
+        // Keep printable ASCII plus tabs/newlines to ensure stable output.
+        output = output
+            .normalize('NFKD')
+            .replace(/[\u0300-\u036F]/g, '')
+            // Keep degree symbol for angle/temperature metrics while removing other unsupported glyphs.
+            .replace(/[^\x09\x0A\x20-\x7E\u00B0]/g, '')
+            // Keep unit symbols attached to numeric values (e.g. 4%, 19°).
+            .replace(/(\d)\s+([%°])/g, '$1$2')
+
+        return output
+    }
+
+    function removeUnsafeControlChars(value) {
+        return String(value || '')
+            .split('')
+            .filter((char) => {
+                const code = char.charCodeAt(0)
+                // Keep tab/newline; drop other C0 controls and DEL.
+                if (code === 9 || code === 10) return true
+                if (code <= 31 || code === 127 || (code >= 128 && code <= 159)) return false
+                return true
+            })
+            .join('')
+    }
+
+    function sanitizeMarkdownForPdf(value) {
+        return removeUnsafeControlChars(normalizePdfTypography(value))
+            .normalize('NFKC')
+            .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g, '')
+            .replace(/\r\n?/g, '\n')
+    }
+
+    function normalizeRunTextForPdf(value) {
+        return removeUnsafeControlChars(normalizePdfTypography(value))
+            .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g, '')
+    }
+
+    function ensureRoom(heightNeeded = defaultLineHeight) {
+        if (cursorY + heightNeeded <= pageHeight - margin) return
+        doc.addPage()
+        cursorY = margin
+    }
+
+    function writeTextBlock(text, options = {}) {
+        const {
+            fontSize = 11,
+            fontStyle = 'normal',
+            indent = 0,
+            spacingBefore = 0,
+            spacingAfter = 6,
+            lineHeight = Math.max(14, Math.round(fontSize * 1.3)),
+        } = options
+
+        const normalizedText = String(text || '').trim()
+        if (!normalizedText) {
+            cursorY += spacingAfter
+            return
+        }
+
+        cursorY += spacingBefore
+        const textWidth = Math.max(40, maxTextWidth - indent)
+        const lines = doc.splitTextToSize(normalizedText, textWidth)
+        doc.setFont('helvetica', fontStyle)
+        doc.setFontSize(fontSize)
+
+        for (const line of lines) {
+            ensureRoom(lineHeight)
+            doc.text(line, margin + indent, cursorY)
+            cursorY += lineHeight
+        }
+
+        cursorY += spacingAfter
+    }
+
+    function tokenizeInlineRuns(tokens = [], inheritedStyle = {}) {
+        const runs = []
+        const style = {
+            bold: Boolean(inheritedStyle.bold),
+            italic: Boolean(inheritedStyle.italic),
+            code: Boolean(inheritedStyle.code),
+        }
+
+        function appendRun(text, runStyle = style) {
+            const value = normalizeRunTextForPdf(text)
+            if (!value) return
+
+            const nextRun = {
+                text: value,
+                style: {
+                    bold: Boolean(runStyle.bold),
+                    italic: Boolean(runStyle.italic),
+                    code: Boolean(runStyle.code),
+                },
+            }
+
+            const previousRun = runs[runs.length - 1]
+            if (
+                previousRun &&
+                previousRun.style.bold === nextRun.style.bold &&
+                previousRun.style.italic === nextRun.style.italic &&
+                previousRun.style.code === nextRun.style.code
+            ) {
+                previousRun.text += nextRun.text
+            } else {
+                runs.push(nextRun)
+            }
+        }
+
+        function visit(tokenList, activeStyle = style) {
+            tokenList.forEach((token) => {
+                if (!token) return
+
+                if (token.type === 'text' || token.type === 'escape') {
+                    appendRun(token.text || token.raw || '', activeStyle)
+                    return
+                }
+
+                if (token.type === 'strong') {
+                    visit(token.tokens || [], { ...activeStyle, bold: true })
+                    return
+                }
+
+                if (token.type === 'em') {
+                    visit(token.tokens || [], { ...activeStyle, italic: true })
+                    return
+                }
+
+                if (token.type === 'codespan') {
+                    appendRun(token.text || token.raw || '', { ...activeStyle, code: true })
+                    return
+                }
+
+                if (token.type === 'link' || token.type === 'del') {
+                    visit(token.tokens || [], activeStyle)
+                    return
+                }
+
+                if (token.type === 'br') {
+                    appendRun('\n', activeStyle)
+                    return
+                }
+
+                if (Array.isArray(token.tokens)) {
+                    visit(token.tokens, activeStyle)
+                    return
+                }
+
+                appendRun(token.text || '', activeStyle)
+            })
+        }
+
+        visit(tokens, style)
+        return runs
+    }
+
+    function applyRunFont(runStyle, fontSize) {
+        if (runStyle?.code) {
+            doc.setFont('courier', 'normal')
+            doc.setFontSize(Math.max(10, fontSize - 1))
+            return
+        }
+
+        let fontStyle = 'normal'
+        if (runStyle?.bold && runStyle?.italic) fontStyle = 'bolditalic'
+        else if (runStyle?.bold) fontStyle = 'bold'
+        else if (runStyle?.italic) fontStyle = 'italic'
+
+        doc.setFont('helvetica', fontStyle)
+        doc.setFontSize(fontSize)
+    }
+
+    function measureRunText(text, runStyle, fontSize) {
+        applyRunFont(runStyle, fontSize)
+        return doc.getTextWidth(text)
+    }
+
+    function writeRichTextBlock(runs, options = {}) {
+        const {
+            fontSize = 11,
+            indent = 0,
+            spacingBefore = 0,
+            spacingAfter = 6,
+            lineHeight = Math.max(14, Math.round(fontSize * 1.3)),
+        } = options
+
+        if (!Array.isArray(runs) || !runs.length) {
+            cursorY += spacingAfter
+            return
+        }
+
+        cursorY += spacingBefore
+        const textWidth = Math.max(40, maxTextWidth - indent)
+
+        const explicitLines = []
+        let currentExplicitLine = []
+        runs.forEach((run) => {
+            const parts = String(run.text || '').split('\n')
+            parts.forEach((part, index) => {
+                if (part) {
+                    currentExplicitLine.push({ text: part, style: run.style })
+                }
+                if (index < parts.length - 1) {
+                    explicitLines.push(currentExplicitLine)
+                    currentExplicitLine = []
+                }
+            })
+        })
+        explicitLines.push(currentExplicitLine)
+
+        function flushStyledLine(styledLine) {
+            if (!styledLine.length) return
+            ensureRoom(lineHeight)
+            let cursorX = margin + indent
+            styledLine.forEach((segment) => {
+                if (!segment.text) return
+                applyRunFont(segment.style, fontSize)
+                doc.text(segment.text, cursorX, cursorY)
+                cursorX += measureRunText(segment.text, segment.style, fontSize)
+            })
+            cursorY += lineHeight
+        }
+
+        explicitLines.forEach((lineRuns) => {
+            const lineSegments = []
+            let lineWidth = 0
+
+            function flushLine() {
+                flushStyledLine(lineSegments)
+                lineSegments.length = 0
+                lineWidth = 0
+            }
+
+            lineRuns.forEach((run) => {
+                const chunks = String(run.text || '').split(/(\s+)/)
+                chunks.forEach((chunk) => {
+                    if (!chunk) return
+
+                    const isWhitespace = /^\s+$/.test(chunk)
+                    if (isWhitespace && !lineSegments.length) return
+
+                    const chunkWidth = measureRunText(chunk, run.style, fontSize)
+                    const exceedsLine =
+                        !isWhitespace &&
+                        lineSegments.length > 0 &&
+                        lineWidth + chunkWidth > textWidth
+
+                    if (exceedsLine) {
+                        flushLine()
+                    }
+
+                    const finalChunk = lineSegments.length === 0 ? chunk.replace(/^\s+/, '') : chunk
+                    if (!finalChunk) return
+
+                    const finalWidth = measureRunText(finalChunk, run.style, fontSize)
+                    lineSegments.push({ text: finalChunk, style: run.style })
+                    lineWidth += finalWidth
+                })
+            })
+
+            flushLine()
+        })
+
+        cursorY += spacingAfter
+    }
+
+    function flattenTokenText(token) {
+        if (!token) return ''
+        if (typeof token.text === 'string') return token.text
+        if (typeof token.raw === 'string') return token.raw
+        if (Array.isArray(token.tokens)) {
+            return token.tokens.map((innerToken) => flattenTokenText(innerToken)).join('')
+        }
+        return ''
+    }
+
+    function extractInlineTextFromCell(cellToken) {
+        if (!cellToken) return ''
+        const runs = tokenizeInlineRuns(cellToken.tokens || [])
+        const fromRuns = runs.map((run) => run.text || '').join('')
+        const fallback = fromRuns || cellToken.text || flattenTokenText(cellToken)
+        return String(fallback || '').replace(/\s+/g, ' ').trim()
+    }
+
+    function drawMarkdownTable(tableToken, indent = 0) {
+        const headerCells = Array.isArray(tableToken?.header) ? tableToken.header : []
+        const bodyRows = Array.isArray(tableToken?.rows) ? tableToken.rows : []
+        const columnCount = Math.max(
+            headerCells.length,
+            ...bodyRows.map((row) => (Array.isArray(row) ? row.length : 0)),
+        )
+
+        if (!columnCount) return
+
+        const tableWidth = Math.max(120, maxTextWidth - indent)
+        const colWidth = tableWidth / columnCount
+        const cellPaddingX = 5
+        const cellPaddingY = 4
+        const lineHeight = 12
+        const startX = margin + indent
+
+        function toRowTextLines(row, isHeader) {
+            const nextRow = []
+
+            for (let colIndex = 0; colIndex < columnCount; colIndex += 1) {
+                const cellToken = Array.isArray(row) ? row[colIndex] : null
+                const rawText = extractInlineTextFromCell(cellToken)
+                const safeText = rawText || (isHeader ? `Column ${colIndex + 1}` : '-')
+
+                doc.setFont('helvetica', isHeader ? 'bold' : 'normal')
+                doc.setFontSize(10.5)
+                const wrapped = doc.splitTextToSize(safeText, Math.max(20, colWidth - cellPaddingX * 2))
+                nextRow.push(wrapped.length ? wrapped : [''])
+            }
+
+            return nextRow
+        }
+
+        function measureRowHeight(rowLines) {
+            const tallestCellLines = rowLines.reduce(
+                (maxLines, cellLines) => Math.max(maxLines, cellLines.length || 1),
+                1,
+            )
+            return tallestCellLines * lineHeight + cellPaddingY * 2
+        }
+
+        function drawRow(rowLines, rowHeight, isHeader) {
+            ensureRoom(rowHeight)
+
+            let cellX = startX
+            for (let colIndex = 0; colIndex < columnCount; colIndex += 1) {
+                const cellLines = rowLines[colIndex] || ['']
+
+                if (isHeader) {
+                    doc.setFillColor(241, 245, 249)
+                    doc.rect(cellX, cursorY, colWidth, rowHeight, 'F')
+                }
+
+                doc.setDrawColor(190)
+                doc.rect(cellX, cursorY, colWidth, rowHeight)
+
+                doc.setFont('helvetica', isHeader ? 'bold' : 'normal')
+                doc.setFontSize(10.5)
+                doc.setTextColor(15, 23, 42)
+
+                let textY = cursorY + cellPaddingY + lineHeight - 2
+                cellLines.forEach((line) => {
+                    doc.text(String(line), cellX + cellPaddingX, textY)
+                    textY += lineHeight
+                })
+
+                cellX += colWidth
+            }
+
+            cursorY += rowHeight
+        }
+
+        const headerLineRows = toRowTextLines(headerCells, true)
+        const headerRowHeight = measureRowHeight(headerLineRows)
+
+        ensureRoom(headerRowHeight)
+        drawRow(headerLineRows, headerRowHeight, true)
+
+        bodyRows.forEach((row) => {
+            const rowLines = toRowTextLines(row, false)
+            const rowHeight = measureRowHeight(rowLines)
+
+            // Repeat table header when content continues on a new page.
+            if (cursorY + rowHeight > pageHeight - margin) {
+                doc.addPage()
+                cursorY = margin
+                drawRow(headerLineRows, headerRowHeight, true)
+            }
+
+            drawRow(rowLines, rowHeight, false)
+        })
+
+        cursorY += 8
+    }
+
+    const detailedPdfPaginationState = {
+        inDetailedSection: false,
+        questionHeadingCount: 0,
+    }
+
+    function renderTokens(tokens, indent = 0) {
+        if (!Array.isArray(tokens)) return
+
+        tokens.forEach((token, index) => {
+            if (!token) return
+
+            if (token.type === 'space') {
+                cursorY += 4
+                return
+            }
+
+            if (token.type === 'heading') {
+                const headingLevel = Number(token.depth) || 2
+                const headingSize = headingLevel <= 1 ? 17 : headingLevel === 2 ? 15 : 13
+                const headingText = flattenTokenText(token).replace(/\s+/g, ' ').trim()
+
+                if (headingLevel === 2 && /^Detailed Per-Question Analysis$/i.test(headingText)) {
+                    detailedPdfPaginationState.inDetailedSection = true
+                    detailedPdfPaginationState.questionHeadingCount = 0
+                    if (cursorY > margin) {
+                        doc.addPage()
+                        cursorY = margin
+                    }
+                } else if (
+                    detailedPdfPaginationState.inDetailedSection &&
+                    headingLevel >= 3 &&
+                    /^Question\s+\d+\b/i.test(headingText)
+                ) {
+                    if (detailedPdfPaginationState.questionHeadingCount >= 1) {
+                        doc.addPage()
+                        cursorY = margin
+                    }
+                    detailedPdfPaginationState.questionHeadingCount += 1
+                }
+
+                const headingRuns = tokenizeInlineRuns(token.tokens || [
+                    { type: 'text', text: flattenTokenText(token) },
+                ])
+                writeRichTextBlock(headingRuns, {
+                    fontSize: headingSize,
+                    spacingBefore: index === 0 ? 0 : 4,
+                    spacingAfter: 6,
+                    indent,
+                })
+                return
+            }
+
+            if (token.type === 'paragraph') {
+                const paragraphRuns = tokenizeInlineRuns(token.tokens || [
+                    { type: 'text', text: flattenTokenText(token) },
+                ])
+                writeRichTextBlock(paragraphRuns, { indent })
+                return
+            }
+
+            if (token.type === 'list') {
+                token.items?.forEach((item, itemIndex) => {
+                    const bulletPrefix = token.ordered ? `${itemIndex + 1}. ` : '• '
+                    const itemParagraphToken = Array.isArray(item.tokens)
+                        ? item.tokens.find((nestedToken) => nestedToken.type === 'text' || nestedToken.type === 'paragraph')
+                        : null
+                    const inlineSourceTokens =
+                        itemParagraphToken?.tokens ||
+                        item.tokens ||
+                        [{ type: 'text', text: flattenTokenText(item).trim() }]
+                    const itemRuns = tokenizeInlineRuns(inlineSourceTokens)
+                    const prefixedRuns = [
+                        {
+                            text: bulletPrefix,
+                            style: { bold: false, italic: false, code: false },
+                        },
+                        ...itemRuns,
+                    ]
+
+                    writeRichTextBlock(prefixedRuns, { indent: indent + 10, spacingAfter: 4 })
+
+                    if (Array.isArray(item.tokens)) {
+                        const nestedTokens = item.tokens.filter(
+                            (nestedToken) => nestedToken !== itemParagraphToken,
+                        )
+                        if (nestedTokens.length) {
+                            renderTokens(nestedTokens, indent + 20)
+                        }
+                    }
+                })
+                cursorY += 2
+                return
+            }
+
+            if (token.type === 'blockquote') {
+                renderTokens(token.tokens || [], indent + 14)
+                return
+            }
+
+            if (token.type === 'table') {
+                drawMarkdownTable(token, indent)
+                return
+            }
+
+            if (token.type === 'code') {
+                writeTextBlock(token.text || '', {
+                    fontSize: 10,
+                    fontStyle: 'normal',
+                    indent: indent + 10,
+                    spacingBefore: 2,
+                    spacingAfter: 8,
+                    lineHeight: 13,
+                })
+                return
+            }
+
+            if (token.type === 'hr') {
+                ensureRoom(16)
+                doc.setDrawColor(180)
+                doc.line(margin + indent, cursorY, pageWidth - margin, cursorY)
+                cursorY += 10
+                return
+            }
+
+            const fallbackText = flattenTokenText(token)
+            if (fallbackText.trim()) {
+                writeTextBlock(fallbackText, { indent })
+            }
+        })
+    }
+
+    const stamp = new Date().toISOString()
+    const safeCompanyName = companyName || 'Unknown company'
+    const safeConsultantFullName = consultantFullName || '(not provided)'
+    const safeJobTitle = jobTitle || '(not provided)'
+    const safeFeedbackMarkdown = sanitizeMarkdownForPdf(
+        String(feedbackText || '(no feedback output)').replace(/<[^>]*>/g, ''),
+    )
+
+    writeTextBlock(reportTitle, {
+        fontSize: 18,
+        fontStyle: 'bold',
+        spacingAfter: 4,
+    })
+    writeTextBlock(`Generated: ${stamp}`, {
+        fontSize: 10,
+        spacingAfter: 2,
+    })
+    writeTextBlock(`Company: ${safeCompanyName}`, {
+        fontSize: 10,
+        spacingAfter: 2,
+    })
+    writeTextBlock(`Consultant Full Name: ${safeConsultantFullName}`, {
+        fontSize: 10,
+        spacingAfter: 2,
+    })
+    writeTextBlock(`Job Title: ${safeJobTitle}`, {
+        fontSize: 10,
+        spacingAfter: 10,
+    })
+
+    writeTextBlock(feedbackSectionTitle, {
+        fontSize: 14,
+        fontStyle: 'bold',
+        spacingAfter: 4,
+    })
+    renderTokens(marked.lexer(safeFeedbackMarkdown), 0)
+
+    const fileDateStamp = stamp.replace(/[:.]/g, '-').replace('T', '_').replace('Z', '')
+    const fileName = `${fileNamePrefix}-${fileDateStamp}.pdf`
+    const blob = doc.output('blob')
+    return { blob, fileName }
+}
+
 function App() {
     const videoRef = useRef(null)
     const overlayRef = useRef(null)
@@ -944,6 +1756,8 @@ function App() {
     const prolongedClosureTotalMsRef = useRef(0)
     const prolongedClosureTimestampsSecRef = useRef([])
     const deepgramKeyInputRef = useRef(null)
+    const amReportAbortControllerRef = useRef(null)
+    const detailedReportAbortControllerRef = useRef(null)
 
     const blinkTrackerRef = useRef({
         closed: false,
@@ -955,6 +1769,13 @@ function App() {
     const [settingsOpen, setSettingsOpen] = useState(false)
     const [confirmRemoveOpen, setConfirmRemoveOpen] = useState(false)
     const [confirmFolderSelectOpen, setConfirmFolderSelectOpen] = useState(false)
+    const [confirmRegenerateQuestionsOpen, setConfirmRegenerateQuestionsOpen] = useState(false)
+    const [confirmCloseSettingsUnsavedLlmOpen, setConfirmCloseSettingsUnsavedLlmOpen] = useState(false)
+    const [generateQuestionsCountModalOpen, setGenerateQuestionsCountModalOpen] = useState(false)
+    const [generateQuestionsCountInput, setGenerateQuestionsCountInput] = useState(
+        String(DEFAULT_GENERATED_QUESTION_COUNT),
+    )
+    const [pendingGenerateQuestionsOptions, setPendingGenerateQuestionsOptions] = useState(null)
     const [pendingDeleteAction, setPendingDeleteAction] = useState(null)
     const [savedKey, setSavedKey] = useState(() => getSavedValue(STORAGE_KEY))
     const [lastValidatedAt, setLastValidatedAt] = useState(() =>
@@ -994,7 +1815,7 @@ function App() {
     )
     const [debugEnabled, setDebugEnabled] = useState(false)
     const [invertCamera, setInvertCamera] = useState(
-        () => getSavedValue(STORAGE_INVERT_CAMERA) === 'true',
+        () => getSavedValue(STORAGE_INVERT_CAMERA) !== 'false',
     )
     const [showPiP, setShowPiP] = useState(
         () => getSavedValue(STORAGE_SHOW_PIP) !== 'false',
@@ -1059,6 +1880,12 @@ function App() {
     const [companyNameInput, setCompanyNameInput] = useState(() =>
         getSavedValue(STORAGE_COMPANY_NAME),
     )
+    const [consultantFullNameInput, setConsultantFullNameInput] = useState(() =>
+        getSavedValue(STORAGE_CONSULTANT_FULL_NAME),
+    )
+    const [jobTitleInput, setJobTitleInput] = useState(() =>
+        getSavedValue(STORAGE_JOB_TITLE),
+    )
 
     const [cameraUiMetrics, setCameraUiMetrics] = useState(() => createDefaultCameraUiMetrics())
 
@@ -1078,19 +1905,8 @@ function App() {
     const [recordedAudioBlob, setRecordedAudioBlob] = useState(null)
     const [recordedVideoBlob, setRecordedVideoBlob] = useState(null)
     const [recordingsFolderName, setRecordingsFolderName] = useState('')
-    const [interviewSummaries, setInterviewSummaries] = useState(() => {
-        const saved = getSavedValue(STORAGE_SESSION_SUMMARIES)
-        if (!saved) return []
-        try {
-            const parsed = JSON.parse(saved)
-            return Array.isArray(parsed) ? parsed : []
-        } catch {
-            return []
-        }
-    })
-    const [selectedSummaryId, setSelectedSummaryId] = useState(
-        () => getSavedValue(STORAGE_SELECTED_SUMMARY_ID),
-    )
+    const [interviewSummaries, setInterviewSummaries] = useState([])
+    const [selectedSummaryId, setSelectedSummaryId] = useState('')
     const {
         facesDetected,
         eyeContactScore,
@@ -1103,12 +1919,71 @@ function App() {
     const [previousAnswers, setPreviousAnswers] = useState([])
     const [isLoadingPreviousAnswers, setIsLoadingPreviousAnswers] = useState(false)
     const [previousAnswersError, setPreviousAnswersError] = useState('')
+    const [previousAnswersSource, setPreviousAnswersSource] = useState(() =>
+        normalizePreviousAnswersSource(getSavedValue(STORAGE_PREVIOUS_ANSWERS_SOURCE)),
+    )
     const [historyModalOpen, setHistoryModalOpen] = useState(false)
     const [selectedPreviousAnswerId, setSelectedPreviousAnswerId] = useState('')
     const [selectedHistoryMedia, setSelectedHistoryMedia] = useState({
         audioUrl: '',
         videoUrl: '',
     })
+    const [isGeneratingQuestions, setIsGeneratingQuestions] = useState(false)
+    const [isGeneratingAmReport, setIsGeneratingAmReport] = useState(false)
+    const [isGeneratingDetailedReport, setIsGeneratingDetailedReport] = useState(false)
+    const [amReportModalOpen, setAmReportModalOpen] = useState(false)
+    const [amReportMarkdownPreview, setAmReportMarkdownPreview] = useState('')
+    const [detailedReportModalOpen, setDetailedReportModalOpen] = useState(false)
+    const [detailedReportMarkdownPreview, setDetailedReportMarkdownPreview] = useState('')
+    const [amReportPdfPreviewOpen, setAmReportPdfPreviewOpen] = useState(false)
+    const [amReportPdfPreviewUrl, setAmReportPdfPreviewUrl] = useState('')
+    const [amReportPdfBlob, setAmReportPdfBlob] = useState(null)
+    const [amReportPdfFileName, setAmReportPdfFileName] = useState('')
+    const [detailedReportPdfPreviewOpen, setDetailedReportPdfPreviewOpen] = useState(false)
+    const [detailedReportPdfPreviewUrl, setDetailedReportPdfPreviewUrl] = useState('')
+    const [detailedReportPdfBlob, setDetailedReportPdfBlob] = useState(null)
+    const [detailedReportPdfFileName, setDetailedReportPdfFileName] = useState('')
+    const [confirmCloseAmReportPdfOpen, setConfirmCloseAmReportPdfOpen] = useState(false)
+    const [confirmCloseDetailedReportPdfOpen, setConfirmCloseDetailedReportPdfOpen] = useState(false)
+    const [llmProviderMode, setLlmProviderMode] = useState(() =>
+        normalizeLlmProviderMode(getSavedValue(STORAGE_LLM_PROVIDER_MODE)),
+    )
+    const [openrouterApiKey, setOpenrouterApiKey] = useState(() =>
+        getSavedValue(STORAGE_OPENROUTER_API_KEY),
+    )
+    const [openrouterModel, setOpenrouterModel] = useState(() =>
+        getSavedValue(STORAGE_OPENROUTER_MODEL) || LLM_PROVIDER_ENV_CONFIG.openrouter.model,
+    )
+    const [nimApiKey, setNimApiKey] = useState(() =>
+        getSavedValue(STORAGE_NIM_API_KEY),
+    )
+    const [nimModel, setNimModel] = useState(() =>
+        getSavedValue(STORAGE_NIM_MODEL) || LLM_PROVIDER_ENV_CONFIG.nim.model,
+    )
+    const [nimBaseUrl, setNimBaseUrl] = useState(() =>
+        getSavedValue(STORAGE_NIM_BASE_URL) || DEFAULT_NIM_BASE_URL,
+    )
+    const [openrouterApiKeyInput, setOpenrouterApiKeyInput] = useState(openrouterApiKey)
+    const [openrouterModelInput, setOpenrouterModelInput] = useState(openrouterModel)
+    const [openrouterCustomModelInput, setOpenrouterCustomModelInput] = useState(() => {
+        const normalized = String(openrouterModel || '').trim()
+        return OPENROUTER_MODEL_PRESETS.some((preset) => preset.value === normalized)
+            ? ''
+            : normalized
+    })
+    const [nimApiKeyInput, setNimApiKeyInput] = useState(nimApiKey)
+    const [nimModelInput, setNimModelInput] = useState(nimModel)
+    const [nimBaseUrlInput, setNimBaseUrlInput] = useState(nimBaseUrl)
+    const [nimCustomModelInput, setNimCustomModelInput] = useState(() => {
+        const normalized = String(nimModel || '').trim()
+        return NIM_MODEL_PRESETS.some((preset) => preset.value === normalized)
+            ? ''
+            : normalized
+    })
+    const [llmProviderModeInput, setLlmProviderModeInput] = useState(llmProviderMode)
+    const [llmSettingsError, setLlmSettingsError] = useState('')
+    const [isSavingOpenrouterKey, setIsSavingOpenrouterKey] = useState(false)
+    const [isSavingNimKey, setIsSavingNimKey] = useState(false)
     const [historyPlaybackRate, setHistoryPlaybackRate] = useState(1)
     const [selectedPreviousAnswerFileSizes, setSelectedPreviousAnswerFileSizes] = useState({
         report: '',
@@ -1164,6 +2039,26 @@ function App() {
         return matchedBuiltIn?.src || defaultInterviewerImage
     }, [customInterviewerImageDataUrl, interviewerImageId])
 
+    const openrouterModelOptions = useMemo(
+        () => buildModelOptionsWithCurrent(OPENROUTER_MODEL_PRESETS),
+        [],
+    )
+
+    const nimModelOptions = useMemo(
+        () => buildModelOptionsWithCurrent(NIM_MODEL_PRESETS),
+        [],
+    )
+
+    const openrouterModelSelectValue = useMemo(
+        () => getModelSelectValue(openrouterModelInput, OPENROUTER_MODEL_PRESETS),
+        [openrouterModelInput],
+    )
+
+    const nimModelSelectValue = useMemo(
+        () => getModelSelectValue(nimModelInput, NIM_MODEL_PRESETS),
+        [nimModelInput],
+    )
+
     const needsRevalidation = useMemo(() => {
         if (!lastValidatedAt) return false
 
@@ -1185,12 +2080,71 @@ function App() {
         () => parseRecentChangelogReleases(changelogMarkdown, 10),
         [],
     )
+    const shouldWarnOnPageLeave =
+        Boolean(questionInput.trim()) ||
+        Boolean(questionsBulkInput.trim()) ||
+        interviewSummaries.length > 0
+
+    const hasUnsavedLlmSettingsChanges = useMemo(() => {
+        const normalizedProviderModeInput = normalizeLlmProviderMode(llmProviderModeInput)
+        const normalizedOpenrouterApiKeyInput = openrouterApiKeyInput.trim()
+        const normalizedOpenrouterModelInput = openrouterModelInput.trim()
+        const normalizedNimApiKeyInput = nimApiKeyInput.trim()
+        const normalizedNimModelInput = nimModelInput.trim()
+        const normalizedNimBaseUrlInput = nimBaseUrlInput.trim()
+
+        return (
+            normalizedProviderModeInput !== llmProviderMode ||
+            normalizedOpenrouterApiKeyInput !== openrouterApiKey ||
+            normalizedOpenrouterModelInput !== openrouterModel ||
+            normalizedNimApiKeyInput !== nimApiKey ||
+            normalizedNimModelInput !== nimModel ||
+            normalizedNimBaseUrlInput !== nimBaseUrl
+        )
+    }, [
+        llmProviderModeInput,
+        openrouterApiKeyInput,
+        openrouterModelInput,
+        nimApiKeyInput,
+        nimModelInput,
+        nimBaseUrlInput,
+        llmProviderMode,
+        openrouterApiKey,
+        openrouterModel,
+        nimApiKey,
+        nimModel,
+        nimBaseUrl,
+    ])
 
     useEffect(() => {
         if (!toast) return undefined
-        const timerId = window.setTimeout(() => setToast(''), 3500)
+        const providerUsageToastPrefixA = 'Generating Questions, LLM API used:'
+        const providerUsageToastPrefixB = 'Generating AM Report, LLM API used:'
+        const providerUsageToastPrefixC = 'Generating Detailed Report, LLM API used:'
+        const timeoutMs =
+            toast.startsWith(providerUsageToastPrefixA) ||
+                toast.startsWith(providerUsageToastPrefixB) ||
+                toast.startsWith(providerUsageToastPrefixC)
+                ? 5000
+                : toast.startsWith(LLM_HTTP_ERROR_TOAST_PREFIX)
+                    ? LLM_HTTP_ERROR_TOAST_TIMEOUT_MS
+                    : 3500
+        const timerId = window.setTimeout(() => setToast(''), timeoutMs)
         return () => window.clearTimeout(timerId)
     }, [toast])
+
+    useEffect(() => {
+        function onBeforeUnload(event) {
+            if (!shouldWarnOnPageLeave) return undefined
+
+            event.preventDefault()
+            event.returnValue = UNSAVED_QA_WARNING_MESSAGE
+            return UNSAVED_QA_WARNING_MESSAGE
+        }
+
+        window.addEventListener('beforeunload', onBeforeUnload)
+        return () => window.removeEventListener('beforeunload', onBeforeUnload)
+    }, [shouldWarnOnPageLeave])
 
     useEffect(() => {
         setSavedValue(
@@ -1226,22 +2180,12 @@ function App() {
     }, [companyNameInput])
 
     useEffect(() => {
-        if (!interviewSummaries.length) {
-            clearSavedValue(STORAGE_SESSION_SUMMARIES)
-            return
-        }
-
-        setSavedValue(STORAGE_SESSION_SUMMARIES, JSON.stringify(interviewSummaries))
-    }, [interviewSummaries])
+        setSavedValue(STORAGE_CONSULTANT_FULL_NAME, consultantFullNameInput)
+    }, [consultantFullNameInput])
 
     useEffect(() => {
-        if (!selectedSummaryId) {
-            clearSavedValue(STORAGE_SELECTED_SUMMARY_ID)
-            return
-        }
-
-        setSavedValue(STORAGE_SELECTED_SUMMARY_ID, selectedSummaryId)
-    }, [selectedSummaryId])
+        setSavedValue(STORAGE_JOB_TITLE, jobTitleInput)
+    }, [jobTitleInput])
 
     useEffect(() => {
         if (!showKeyStatus) return undefined
@@ -1299,6 +2243,10 @@ function App() {
         )
     }, [fallbackWithoutDeepgramKey])
 
+    useEffect(() => {
+        setSavedValue(STORAGE_PREVIOUS_ANSWERS_SOURCE, previousAnswersSource)
+    }, [previousAnswersSource])
+
     const revokeHistoryMediaUrls = useCallback((urls) => {
         if (urls.audioUrl) URL.revokeObjectURL(urls.audioUrl)
         if (urls.videoUrl) URL.revokeObjectURL(urls.videoUrl)
@@ -1335,7 +2283,7 @@ function App() {
         replaceHistoryMediaUrls({ audioUrl, videoUrl })
     }
 
-    const loadPreviousAnswers = useCallback(async () => {
+    const loadPreviousAnswersFromFolder = useCallback(async () => {
         if (isIphoneClient) {
             setPreviousAnswers([])
             setPreviousAnswersError('')
@@ -1478,6 +2426,93 @@ function App() {
             setIsLoadingPreviousAnswers(false)
         }
     }, [fileSystemAccessSupported, isIphoneClient])
+
+    const loadPreviousAnswersFromLocalStorage = useCallback(async () => {
+        setIsLoadingPreviousAnswers(true)
+        setPreviousAnswersError('')
+
+        try {
+            const raw = getSavedValue(STORAGE_PREVIOUS_ANSWERS_LOCAL)
+            if (!raw.trim()) {
+                setPreviousAnswers([])
+                return []
+            }
+
+            const parsed = JSON.parse(raw)
+            if (!Array.isArray(parsed)) {
+                setPreviousAnswers([])
+                return []
+            }
+
+            const normalized = parsed
+                .map((entry, index) => {
+                    const capturedAt = sanitizeDisplayText(entry?.capturedAt, '')
+                    const sortTime = Number.isFinite(new Date(capturedAt).getTime())
+                        ? new Date(capturedAt).getTime()
+                        : Date.now() - index
+
+                    return {
+                        id: sanitizeDisplayText(entry?.id, `local-${sortTime}-${index}`),
+                        baseName: '',
+                        source: 'local-storage',
+                        reportFileName: '',
+                        folderPath: '',
+                        capturedAt: capturedAt || new Date(sortTime).toISOString(),
+                        question: sanitizeDisplayText(entry?.question, '(no question)'),
+                        transcript: sanitizeDisplayText(
+                            entry?.transcript,
+                            '(no transcript captured)',
+                        ),
+                        metrics:
+                            entry?.metrics && typeof entry.metrics === 'object'
+                                ? entry.metrics
+                                : null,
+                        metricsText: sanitizeDisplayText(entry?.metricsText, ''),
+                        audioFileName: '',
+                        videoFileName: '',
+                        textFileName: '',
+                        audioHandle: null,
+                        videoHandle: null,
+                        textHandle: null,
+                        reportHandle: null,
+                        sortTime,
+                    }
+                })
+                .sort((a, b) => b.sortTime - a.sortTime)
+                .slice(0, 100)
+
+            setPreviousAnswers(normalized)
+            return normalized
+        } catch {
+            setPreviousAnswers([])
+            setPreviousAnswersError('Could not read previous answers from local storage.')
+            return []
+        } finally {
+            setIsLoadingPreviousAnswers(false)
+        }
+    }, [])
+
+    const loadPreviousAnswers = useCallback(async () => {
+        if (previousAnswersSource === PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE) {
+            return loadPreviousAnswersFromLocalStorage()
+        }
+        return loadPreviousAnswersFromFolder()
+    }, [loadPreviousAnswersFromFolder, loadPreviousAnswersFromLocalStorage, previousAnswersSource])
+
+    useEffect(() => {
+        if (!isFolderFeatureDisabled) return
+        if (previousAnswersSource !== PREVIOUS_ANSWERS_SOURCE_FOLDER) return
+
+        setPreviousAnswersSource(PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE)
+        setSelectedPreviousAnswerId('')
+        replaceHistoryMediaUrls({ audioUrl: '', videoUrl: '' })
+        void loadPreviousAnswersFromLocalStorage()
+    }, [
+        isFolderFeatureDisabled,
+        previousAnswersSource,
+        loadPreviousAnswersFromLocalStorage,
+        replaceHistoryMediaUrls,
+    ])
 
     async function openPreviousAnswersModal() {
         const items = await loadPreviousAnswers()
@@ -1622,6 +2657,8 @@ function App() {
             ? formatFileSize(selectedPreviousAnswerTotalSizeBytes)
             : 'n/a'
     }, [selectedPreviousAnswer, selectedPreviousAnswerTotalSizeBytes])
+    const amReportPreviewScrollRef = useRef(null)
+    const detailedReportPreviewScrollRef = useRef(null)
 
     const isVideoStartDisabled =
         isTranscribing || isPreparingRecording || cameraStatus !== 'ready'
@@ -1630,18 +2667,15 @@ function App() {
     const isImportQuestionDisabled =
         isRecording || isTranscribing || isSpeakingQuestion || isPreparingRecording
 
-    const shouldPromptFolderFromPreviousAnswers =
-        !isFolderFeatureDisabled && !recordingsFolderName
-    const isPreviousAnswersViewDisabled =
-        isFolderFeatureDisabled || isLoadingPreviousAnswers
+    const isPreviousAnswersViewDisabled = isLoadingPreviousAnswers
     const previousAnswersViewDisabledReason =
-        isIphoneClient
-            ? 'Previous answers are unavailable because folder access is not allowed on iPhone browsers.'
-            : !fileSystemAccessSupported
-                ? 'Previous answers are unavailable because folder access is not allowed in this browser.'
-                : !recordingsFolderName
-                    ? 'No save folder selected. Click Previous Answers to choose a save folder first.'
-                    : ''
+        isLoadingPreviousAnswers
+            ? 'Loading previous answers...'
+            : ''
+    const isSummaryViewDisabled = !interviewSummaries.length
+    const summaryViewDisabledReason = isSummaryViewDisabled
+        ? 'Record and transcribe at least one answer first.'
+        : ''
 
     function suppressDisabledTooltipPointerDefault(event, isDisabled) {
         if (!isDisabled) return
@@ -1747,11 +2781,11 @@ function App() {
     const shouldPromptQuestionImport =
         !parsedDrawerQuestions.length
 
+    const hasQuestionsInList = parsedDrawerQuestions.length > 0
+    const canPromptGenerateQuestionsFromCvJd = hasCvAndJdContext()
+
     const showNoNextQuestionTooltip =
         shouldPromptQuestionImport && !isImportQuestionDisabled
-
-    const noNextQuestionTooltipText =
-        'No next question, click to add new questions.'
 
     const nextQuestionTitle =
         isImportQuestionDisabled
@@ -1781,6 +2815,36 @@ function App() {
     ])
 
     const activePopupMessage = toast || warningPopupMessage
+
+    useEffect(() => {
+        if (!amReportModalOpen) return
+        const container = amReportPreviewScrollRef.current
+        if (!container) return
+        container.scrollTop = container.scrollHeight
+    }, [amReportMarkdownPreview, amReportModalOpen])
+
+    useEffect(() => {
+        if (!detailedReportModalOpen) return
+        const container = detailedReportPreviewScrollRef.current
+        if (!container) return
+        container.scrollTop = container.scrollHeight
+    }, [detailedReportMarkdownPreview, detailedReportModalOpen])
+
+    useEffect(() => {
+        return () => {
+            if (amReportPdfPreviewUrl) {
+                URL.revokeObjectURL(amReportPdfPreviewUrl)
+            }
+        }
+    }, [amReportPdfPreviewUrl])
+
+    useEffect(() => {
+        return () => {
+            if (detailedReportPdfPreviewUrl) {
+                URL.revokeObjectURL(detailedReportPdfPreviewUrl)
+            }
+        }
+    }, [detailedReportPdfPreviewUrl])
 
     const overallInterviewSummary = useMemo(() => {
         if (!interviewSummaries.length) {
@@ -1896,6 +2960,574 @@ function App() {
         }
     }
 
+    function parseGeneratedQuestions(rawText) {
+        const normalizedLines = String(rawText || '')
+            .split(/\r?\n/)
+            .map((line) =>
+                line
+                    .trim()
+                    .replace(/^[-*•]\s+/, '')
+                    .replace(/^\d+\s*[.)-:]\s*/, '')
+                    .trim(),
+            )
+            .filter(Boolean)
+
+        if (normalizedLines.length > 1) {
+            return normalizedLines
+        }
+
+        const singleLine = normalizedLines[0] || ''
+        const splitByQuestionMarks = singleLine
+            .split(/\?\s+/)
+            .map((part) => part.trim())
+            .filter(Boolean)
+            .map((part) => (part.endsWith('?') ? part : `${part}?`))
+
+        return splitByQuestionMarks.length > 1 ? splitByQuestionMarks : normalizedLines
+    }
+
+    function getLlmProviderCandidatesForCurrentMode() {
+        const providerCandidates = []
+        if (llmProviderMode === LLM_PROVIDER_MODE_OPENROUTER_ONLY) {
+            if (openrouterApiKey.trim()) {
+                providerCandidates.push({
+                    providerId: 'openrouter',
+                    apiKey: openrouterApiKey,
+                    model: openrouterModel,
+                    baseUrl: OPENROUTER_BASE_URL,
+                })
+            }
+            return providerCandidates
+        }
+
+        if (llmProviderMode === LLM_PROVIDER_MODE_NIM_ONLY) {
+            if (nimApiKey.trim()) {
+                providerCandidates.push({
+                    providerId: 'nim',
+                    apiKey: nimApiKey,
+                    model: nimModel,
+                    baseUrl: nimBaseUrl,
+                })
+            }
+            return providerCandidates
+        }
+
+        if (openrouterApiKey.trim()) {
+            providerCandidates.push({
+                providerId: 'openrouter',
+                apiKey: openrouterApiKey,
+                model: openrouterModel,
+                baseUrl: OPENROUTER_BASE_URL,
+            })
+        }
+        if (nimApiKey.trim()) {
+            providerCandidates.push({
+                providerId: 'nim',
+                apiKey: nimApiKey,
+                model: nimModel,
+                baseUrl: nimBaseUrl,
+            })
+        }
+
+        return providerCandidates
+    }
+
+    function showLlmProviderMissingKeyToast() {
+        if (llmProviderMode === LLM_PROVIDER_MODE_OPENROUTER_ONLY) {
+            setToast('OpenRouter API key is required for OpenRouter only mode.')
+            return
+        }
+
+        if (llmProviderMode === LLM_PROVIDER_MODE_NIM_ONLY) {
+            setToast('NVIDIA NIM API key is required for NVIDIA NIM only mode.')
+            return
+        }
+
+        setToast('Add an OpenRouter or NVIDIA NIM API key in Settings first.')
+    }
+
+    function getLlmProviderUsageLabel(providerId) {
+        return providerId === 'nim' ? 'NVIDIA NIM' : 'OpenRouter'
+    }
+
+    function formatLlmProviderHttpErrorToast(error, providerId) {
+        if (error?.code !== 'provider-http-error') return ''
+
+        const statusCode = Number(error?.status)
+        if (!Number.isInteger(statusCode) || statusCode <= 0) return ''
+
+        const resolvedProviderId = providerId || error?.providerId
+        const providerLabel = getLlmProviderUsageLabel(resolvedProviderId)
+        const fallbackMessage = error?.message || 'Request failed.'
+        const rawProviderMessage = error?.providerMessage || fallbackMessage
+        const message = truncateText(rawProviderMessage, LLM_HTTP_ERROR_MESSAGE_MAX_LENGTH)
+
+        return `${LLM_HTTP_ERROR_TOAST_PREFIX} ${providerLabel} (${statusCode}) ${message}`
+    }
+
+    function showLlmProviderHttpErrorToast(error, providerId) {
+        const toastMessage = formatLlmProviderHttpErrorToast(error, providerId)
+        if (!toastMessage) return false
+        setToast(toastMessage)
+        return true
+    }
+
+    async function generateQuestionsFromCvJd(options = {}) {
+        const {
+            closeCvJd = false,
+            openQuestionsDrawer = true,
+            runInBackground = false,
+            questionCount = DEFAULT_GENERATED_QUESTION_COUNT,
+        } = options
+        if (isGeneratingQuestions) return
+
+        const normalizedQuestionCount = Math.max(
+            3,
+            Math.min(40, Number.parseInt(questionCount, 10) || DEFAULT_GENERATED_QUESTION_COUNT),
+        )
+        const jdOnlyQuestionCount = Math.floor(0.4 * normalizedQuestionCount)
+
+        const cv = cvText.trim()
+        const jobDescription = jdText.trim()
+        const companyName = companyNameInput.trim()
+        const jobTitle = jobTitleInput.trim()
+
+        if (!cv && !jobDescription && !companyName && !jobTitle) {
+            setToast('Add CV, JD, company name, or job title before generating questions.')
+            return
+        }
+
+        const providerCandidates = getLlmProviderCandidatesForCurrentMode()
+
+        if (!providerCandidates.length) {
+            showLlmProviderMissingKeyToast()
+            return
+        }
+
+        if (!runInBackground) {
+            closeSummaryModal()
+            closePreviousAnswersModal()
+        }
+        if (closeCvJd) {
+            closeCvJdModal()
+        }
+        if (openQuestionsDrawer) {
+            setQuestionsDrawerOpen(true)
+            setQuestionsBulkInput('Generating questions...')
+        }
+        setActiveQuestionListIndex(null)
+        setNextQuestionCursor(0)
+
+        setIsGeneratingQuestions(true)
+        try {
+            let result = null
+            let lastError = null
+
+            for (let index = 0; index < providerCandidates.length; index += 1) {
+                const providerConfig = providerCandidates[index]
+
+                if (index > 0 && openQuestionsDrawer) {
+                    const retryLabel =
+                        providerConfig.providerId === 'nim' ? 'NVIDIA NIM' : 'OpenRouter'
+                    setQuestionsBulkInput(`Retrying with ${retryLabel}...`)
+                }
+
+                const providerLabel = getLlmProviderUsageLabel(providerConfig.providerId)
+                const providerUsageMessage = `Generating Questions, LLM API used: ${providerLabel}`
+                console.info(providerUsageMessage)
+                setToast(providerUsageMessage)
+
+                try {
+                    result = await sendInterviewChatMessage({
+                        providerId: providerConfig.providerId,
+                        apiKey: providerConfig.apiKey,
+                        model: providerConfig.model,
+                        baseUrl: providerConfig.baseUrl,
+                        userMessage: QUESTION_GENERATION_USER_MESSAGE(
+                            normalizedQuestionCount,
+                            jdOnlyQuestionCount,
+                        ),
+                        stream: true,
+                        onChunk: (fullText) => {
+                            setQuestionsBulkInput(fullText || 'Generating questions...')
+                        },
+                        context: {
+                            question: 'Generate interview questions from profile context.',
+                            answer: 'Use the provided CV/JD/company fields only.',
+                            generationGuidelines: `${DEFAULT_QUESTION_GENERATION_GUIDELINES} If JD is present, include some JD-only questions that are not CV-derived.`,
+                            metricSummary: 'n/a',
+                            companyName,
+                            jobTitle,
+                            cv,
+                            jobDescription,
+                        },
+                    })
+                    break
+                } catch (error) {
+                    showLlmProviderHttpErrorToast(error, providerConfig.providerId)
+                    lastError = error
+                }
+            }
+
+            if (!result) {
+                throw lastError || new Error('Could not generate questions.')
+            }
+
+            const parsedQuestions = parseGeneratedQuestions(result.text)
+            if (!parsedQuestions.length) {
+                setToast('No questions were generated. Try again.')
+                return
+            }
+
+            setQuestionsBulkInput(parsedQuestions.join('\n'))
+            setActiveQuestionListIndex(0)
+            setNextQuestionCursor(0)
+            setQuestionInput(parsedQuestions[0] || '')
+            setToast(`Generated ${parsedQuestions.length} question(s).`)
+        } catch (error) {
+            setQuestionsBulkInput('')
+            if (!showLlmProviderHttpErrorToast(error)) {
+                setToast(error?.message || 'Could not generate questions.')
+            }
+        } finally {
+            setIsGeneratingQuestions(false)
+        }
+    }
+
+    async function generateAmFeedbackReport() {
+        if (isGeneratingAmReport || isGeneratingDetailedReport) return
+
+        if (!interviewSummaries.length) {
+            setToast('Add at least one answer to Answer Summary before generating AM report.')
+            return
+        }
+
+        const cv = cvText.trim()
+        const jobDescription = jdText.trim()
+        const companyName = companyNameInput.trim()
+        const consultantFullName = consultantFullNameInput.trim()
+        const jobTitle = jobTitleInput.trim()
+        if (!cv && !jobDescription && !companyName) {
+            setToast('Add CV, JD, or company name before generating AM report.')
+            return
+        }
+
+        const providerCandidates = getLlmProviderCandidatesForCurrentMode()
+        if (!providerCandidates.length) {
+            showLlmProviderMissingKeyToast()
+            return
+        }
+
+        const summaryMarkdown = buildAnswerSummaryMarkdown(
+            interviewSummaries,
+            overallInterviewSummary,
+        )
+
+        const metricSummary = [
+            `Total answers: ${overallInterviewSummary.totalAnswers}`,
+            `Average WPM: ${overallInterviewSummary.averageWpm}`,
+            `Average answer length (sec): ${overallInterviewSummary.averageAnswerLengthSec}`,
+            `Average hesitations: ${overallInterviewSummary.averageHesitations}`,
+            `Average gaze center (%): ${overallInterviewSummary.averageGazeCenterPct}`,
+        ].join(', ')
+
+        setIsGeneratingAmReport(true)
+        setAmReportModalOpen(true)
+        setAmReportMarkdownPreview('Generating AM report...')
+        setConfirmCloseAmReportPdfOpen(false)
+        setToast('Generating AM feedback report...')
+
+        try {
+            let result = null
+            let lastError = null
+            const controller = new AbortController()
+            amReportAbortControllerRef.current = controller
+
+            for (let index = 0; index < providerCandidates.length; index += 1) {
+                const providerConfig = providerCandidates[index]
+                setAmReportMarkdownPreview('')
+
+                if (controller.signal.aborted) {
+                    const abortError = new Error('AM report generation canceled.')
+                    abortError.code = 'request-aborted'
+                    throw abortError
+                }
+
+                const providerLabel = getLlmProviderUsageLabel(providerConfig.providerId)
+                const providerUsageMessage = `Generating AM Report, LLM API used: ${providerLabel}`
+                console.info(providerUsageMessage)
+                setToast(providerUsageMessage)
+
+                try {
+                    result = await sendInterviewChatMessage({
+                        providerId: providerConfig.providerId,
+                        apiKey: providerConfig.apiKey,
+                        model: providerConfig.model,
+                        baseUrl: providerConfig.baseUrl,
+                        userMessage: AM_REPORT_USER_MESSAGE,
+                        context: {
+                            question: 'Generate concise mock interview feedback and summary for the consultant at consulting firm. Do not include per question feedback.',
+                            answer: summaryMarkdown,
+                            generationGuidelines: DEFAULT_AM_REPORT_GENERATION_GUIDELINES,
+                            metricSummary,
+                            companyName,
+                            consultantFullName,
+                            jobTitle,
+                            jobDescription,
+                            cv
+                        },
+                        stream: true,
+                        onChunk: (fullText) => {
+                            setAmReportMarkdownPreview(fullText || '')
+                        },
+                        signal: controller.signal,
+                    })
+                    break
+                } catch (error) {
+                    if (error?.code === 'request-aborted') {
+                        throw error
+                    }
+                    showLlmProviderHttpErrorToast(error, providerConfig.providerId)
+                    lastError = error
+                }
+            }
+
+            if (!result?.text) {
+                throw lastError || new Error('Could not generate AM report.')
+            }
+
+            const pdfDocument = await downloadInterviewReportPdf({
+                companyName,
+                consultantFullName,
+                jobTitle,
+                feedbackText: result.text,
+                reportTitle: 'Account Manager Interview Feedback Report',
+                feedbackSectionTitle: 'AM Feedback Output',
+                fileNamePrefix: 'am-feedback-report',
+            })
+
+            if (!pdfDocument?.blob) {
+                throw new Error('Could not prepare AM feedback PDF.')
+            }
+
+            const previewUrl = URL.createObjectURL(pdfDocument.blob)
+            setAmReportPdfPreviewUrl(previewUrl)
+            setAmReportPdfBlob(pdfDocument.blob)
+            setAmReportPdfFileName(pdfDocument.fileName || 'am-feedback-report.pdf')
+            setAmReportPdfPreviewOpen(true)
+            setAmReportModalOpen(false)
+            setToast('AM feedback PDF ready. Review or download.')
+        } catch (error) {
+            setAmReportModalOpen(false)
+            if (error?.code === 'request-aborted') {
+                setToast('AM report generation canceled.')
+            } else {
+                if (!showLlmProviderHttpErrorToast(error)) {
+                    setToast(error?.message || 'Could not generate AM report.')
+                }
+            }
+        } finally {
+            amReportAbortControllerRef.current = null
+            setIsGeneratingAmReport(false)
+        }
+    }
+
+    async function generateDetailedInterviewReport() {
+        if (isGeneratingDetailedReport || isGeneratingAmReport) return
+
+        if (!interviewSummaries.length) {
+            setToast('Add at least one answer to Answer Summary before generating a detailed report.')
+            return
+        }
+
+        const cv = cvText.trim()
+        const jobDescription = jdText.trim()
+        const companyName = companyNameInput.trim()
+        const consultantFullName = consultantFullNameInput.trim()
+        const jobTitle = jobTitleInput.trim()
+        if (!cv && !jobDescription && !companyName) {
+            setToast('Add CV, JD, or company name before generating a detailed report.')
+            return
+        }
+
+        const providerCandidates = getLlmProviderCandidatesForCurrentMode()
+        if (!providerCandidates.length) {
+            showLlmProviderMissingKeyToast()
+            return
+        }
+
+        const summaryMarkdown = buildAnswerSummaryMarkdown(
+            interviewSummaries,
+            overallInterviewSummary,
+        )
+
+        const metricSummary = [
+            `Total answers: ${overallInterviewSummary.totalAnswers}`,
+            `Average WPM: ${overallInterviewSummary.averageWpm}`,
+            `Average answer length (sec): ${overallInterviewSummary.averageAnswerLengthSec}`,
+            `Average hesitations: ${overallInterviewSummary.averageHesitations}`,
+            `Average gaze center (%): ${overallInterviewSummary.averageGazeCenterPct}`,
+        ].join(', ')
+
+        setIsGeneratingDetailedReport(true)
+        setDetailedReportModalOpen(true)
+        setDetailedReportMarkdownPreview('Generating detailed report...')
+        setConfirmCloseDetailedReportPdfOpen(false)
+        setToast('Generating detailed interview report...')
+
+        try {
+            let result = null
+            let lastError = null
+            const controller = new AbortController()
+            detailedReportAbortControllerRef.current = controller
+
+            for (let index = 0; index < providerCandidates.length; index += 1) {
+                const providerConfig = providerCandidates[index]
+                setDetailedReportMarkdownPreview('')
+
+                if (controller.signal.aborted) {
+                    const abortError = new Error('Detailed report generation canceled.')
+                    abortError.code = 'request-aborted'
+                    throw abortError
+                }
+
+                const providerLabel = getLlmProviderUsageLabel(providerConfig.providerId)
+                const providerUsageMessage = `Generating Detailed Report, LLM API used: ${providerLabel}`
+                console.info(providerUsageMessage)
+                setToast(providerUsageMessage)
+
+                try {
+                    result = await sendInterviewChatMessage({
+                        providerId: providerConfig.providerId,
+                        apiKey: providerConfig.apiKey,
+                        model: providerConfig.model,
+                        baseUrl: providerConfig.baseUrl,
+                        userMessage: DETAILED_REPORT_USER_MESSAGE,
+                        context: {
+                            question: 'Generate a detailed mock interview report with both overall summary and per-question analysis.',
+                            answer: summaryMarkdown,
+                            generationGuidelines: DEFAULT_DETAILED_REPORT_GENERATION_GUIDELINES,
+                            metricSummary,
+                            companyName,
+                            consultantFullName,
+                            jobTitle,
+                            jobDescription,
+                            cv,
+                        },
+                        stream: true,
+                        onChunk: (fullText) => {
+                            setDetailedReportMarkdownPreview(fullText || '')
+                        },
+                        signal: controller.signal,
+                    })
+                    break
+                } catch (error) {
+                    if (error?.code === 'request-aborted') {
+                        throw error
+                    }
+                    showLlmProviderHttpErrorToast(error, providerConfig.providerId)
+                    lastError = error
+                }
+            }
+
+            if (!result?.text) {
+                throw lastError || new Error('Could not generate detailed report.')
+            }
+
+            const pdfDocument = await downloadInterviewReportPdf({
+                companyName,
+                consultantFullName,
+                jobTitle,
+                feedbackText: result.text,
+                reportTitle: 'Detailed Interview Report',
+                feedbackSectionTitle: 'Detailed Feedback Output',
+                fileNamePrefix: 'detailed-interview-report',
+            })
+
+            if (!pdfDocument?.blob) {
+                throw new Error('Could not prepare detailed report PDF.')
+            }
+
+            const previewUrl = URL.createObjectURL(pdfDocument.blob)
+            setDetailedReportPdfPreviewUrl(previewUrl)
+            setDetailedReportPdfBlob(pdfDocument.blob)
+            setDetailedReportPdfFileName(pdfDocument.fileName || 'detailed-interview-report.pdf')
+            setDetailedReportPdfPreviewOpen(true)
+            setDetailedReportModalOpen(false)
+            setToast('Detailed report PDF ready. Review or download.')
+        } catch (error) {
+            setDetailedReportModalOpen(false)
+            if (error?.code === 'request-aborted') {
+                setToast('Detailed report generation canceled.')
+            } else {
+                if (!showLlmProviderHttpErrorToast(error)) {
+                    setToast(error?.message || 'Could not generate detailed report.')
+                }
+            }
+        } finally {
+            detailedReportAbortControllerRef.current = null
+            setIsGeneratingDetailedReport(false)
+        }
+    }
+
+    function cancelAmReportGeneration() {
+        const controller = amReportAbortControllerRef.current
+        if (controller) {
+            controller.abort()
+        }
+    }
+
+    function cancelDetailedReportGeneration() {
+        const controller = detailedReportAbortControllerRef.current
+        if (controller) {
+            controller.abort()
+        }
+    }
+
+    function downloadCurrentAmReportPdf() {
+        if (!amReportPdfBlob) {
+            setToast('No AM feedback PDF is available to download.')
+            return
+        }
+
+        downloadBlob(amReportPdfBlob, amReportPdfFileName || 'am-feedback-report.pdf')
+        setToast('AM feedback PDF downloaded.')
+    }
+
+    function downloadCurrentDetailedReportPdf() {
+        if (!detailedReportPdfBlob) {
+            setToast('No detailed report PDF is available to download.')
+            return
+        }
+
+        downloadBlob(detailedReportPdfBlob, detailedReportPdfFileName || 'detailed-interview-report.pdf')
+        setToast('Detailed report PDF downloaded.')
+    }
+
+    function requestCloseAmReportPdfPreview() {
+        setConfirmCloseAmReportPdfOpen(true)
+    }
+
+    function requestCloseDetailedReportPdfPreview() {
+        setConfirmCloseDetailedReportPdfOpen(true)
+    }
+
+    function closeAmReportPdfPreviewConfirmed() {
+        setConfirmCloseAmReportPdfOpen(false)
+        setAmReportPdfPreviewOpen(false)
+        setAmReportPdfBlob(null)
+        setAmReportPdfFileName('')
+        setAmReportPdfPreviewUrl('')
+    }
+
+    function closeDetailedReportPdfPreviewConfirmed() {
+        setConfirmCloseDetailedReportPdfOpen(false)
+        setDetailedReportPdfPreviewOpen(false)
+        setDetailedReportPdfBlob(null)
+        setDetailedReportPdfFileName('')
+        setDetailedReportPdfPreviewUrl('')
+    }
+
     function importQuestion(questionText, options = {}) {
         const { closePanel = true, questionIndex = null } = options
         const nextQuestion = questionText.trim()
@@ -1914,6 +3546,47 @@ function App() {
             .split(/\r?\n/)
             .map((line) => line.trim())
             .filter(Boolean)
+    }
+
+    function hasCvAndJdContext() {
+        return Boolean(cvText.trim()) && Boolean(jdText.trim())
+    }
+
+    function openGenerateQuestionsCountModal(options = {}) {
+        if (isGeneratingQuestions) return
+        setPendingGenerateQuestionsOptions(options)
+        setGenerateQuestionsCountInput(String(DEFAULT_GENERATED_QUESTION_COUNT))
+        setGenerateQuestionsCountModalOpen(true)
+    }
+
+    function confirmGenerateQuestionsCountSelection() {
+        const parsedCount = Number.parseInt(generateQuestionsCountInput, 10)
+        if (!Number.isInteger(parsedCount) || parsedCount < 3 || parsedCount > 40) {
+            setToast('Enter a question count between 3 and 40.')
+            return
+        }
+
+        const options = pendingGenerateQuestionsOptions || {}
+        setGenerateQuestionsCountModalOpen(false)
+        setPendingGenerateQuestionsOptions(null)
+        void generateQuestionsFromCvJd({
+            ...options,
+            questionCount: parsedCount,
+        })
+    }
+
+    function closeGenerateQuestionsCountModal() {
+        setGenerateQuestionsCountModalOpen(false)
+        setPendingGenerateQuestionsOptions(null)
+    }
+
+    function generateQuestionsInBackground() {
+        if (isGeneratingQuestions) return
+        setToast('Generating questions in background...')
+        openGenerateQuestionsCountModal({
+            openQuestionsDrawer: false,
+            runInBackground: true,
+        })
     }
 
     function handleQuestionsBulkInputChange(rawBulkInput) {
@@ -1944,6 +3617,22 @@ function App() {
         setActiveQuestionListIndex(null)
         setNextQuestionCursor(0)
         setToast('Questions list cleared.')
+    }
+
+    function requestGenerateQuestionsFromQuestionsModal() {
+        if (isGeneratingQuestions) return
+
+        if (parsedDrawerQuestions.length) {
+            setConfirmRegenerateQuestionsOpen(true)
+            return
+        }
+
+        openGenerateQuestionsCountModal()
+    }
+
+    function confirmRegenerateQuestions() {
+        setConfirmRegenerateQuestionsOpen(false)
+        openGenerateQuestionsCountModal()
     }
 
     function performRemoveParsedQuestionAt(index) {
@@ -2006,6 +3695,42 @@ function App() {
         )
     }
 
+    function handlePreviousQuestionAction() {
+        if (isImportQuestionDisabled) return
+
+        if (!parsedDrawerQuestions.length) {
+            closeSummaryModal()
+            setQuestionsDrawerOpen(true)
+            return
+        }
+
+        const currentIndexFromInput = parsedDrawerQuestionKeys.findIndex(
+            (questionKey) => questionKey === normalizeQuestionKey(questionInput),
+        )
+        const currentIndex =
+            activeQuestionListIndex != null
+                ? activeQuestionListIndex
+                : currentIndexFromInput
+
+        const previousIndex =
+            currentIndex >= 0
+                ? (currentIndex - 1 + parsedDrawerQuestions.length) % parsedDrawerQuestions.length
+                : (parsedDrawerQuestions.length - 1 + nextQuestionCursor) % parsedDrawerQuestions.length
+        const previousQuestion = parsedDrawerQuestions[previousIndex]
+        if (!previousQuestion) return
+
+        importQuestion(previousQuestion, {
+            closePanel: false,
+            questionIndex: previousIndex,
+        })
+
+        setNextQuestionCursor(() =>
+            parsedDrawerQuestions.length
+                ? (previousIndex + 1) % parsedDrawerQuestions.length
+                : 0,
+        )
+    }
+
     useEffect(() => {
         return () => {
             revokeHistoryMediaUrls(selectedHistoryMediaRef.current)
@@ -2056,12 +3781,24 @@ function App() {
                 setConfirmFolderSelectOpen(false)
                 return
             }
+            if (confirmRegenerateQuestionsOpen) {
+                setConfirmRegenerateQuestionsOpen(false)
+                return
+            }
+            if (confirmCloseSettingsUnsavedLlmOpen) {
+                setConfirmCloseSettingsUnsavedLlmOpen(false)
+                return
+            }
+            if (generateQuestionsCountModalOpen) {
+                closeGenerateQuestionsCountModal()
+                return
+            }
             if (pendingDeleteAction) {
                 setPendingDeleteAction(null)
                 return
             }
             if (settingsOpen) {
-                setSettingsOpen(false)
+                closeSettings()
                 return
             }
             if (historyModalOpen) {
@@ -2074,8 +3811,13 @@ function App() {
     }, [
         confirmRemoveOpen,
         confirmFolderSelectOpen,
+        confirmRegenerateQuestionsOpen,
+        confirmCloseSettingsUnsavedLlmOpen,
+        generateQuestionsCountModalOpen,
+        closeGenerateQuestionsCountModal,
         pendingDeleteAction,
         settingsOpen,
+        closeSettings,
         historyModalOpen,
         closePreviousAnswersModal,
         questionsDrawerOpen,
@@ -2109,7 +3851,6 @@ function App() {
                 setCameraPermissionState(permissionStatus.state)
                 if (permissionStatus.state === 'granted') {
                     setHasCameraAccess(true)
-                    setEnableCamera(true)
                 }
 
                 permissionStatus.onchange = () => {
@@ -2117,7 +3858,6 @@ function App() {
                     setCameraPermissionState(nextState)
                     if (nextState === 'granted') {
                         setHasCameraAccess(true)
-                        setEnableCamera(true)
                     }
                 }
             } catch {
@@ -2508,6 +4248,23 @@ function App() {
         setSettingsOpen(true)
         setKeyInput(savedKey)
         setFieldError('')
+        setLlmProviderModeInput(llmProviderMode)
+        setOpenrouterApiKeyInput(openrouterApiKey)
+        setOpenrouterModelInput(openrouterModel)
+        setOpenrouterCustomModelInput(
+            OPENROUTER_MODEL_PRESETS.some((preset) => preset.value === openrouterModel)
+                ? ''
+                : openrouterModel,
+        )
+        setNimApiKeyInput(nimApiKey)
+        setNimModelInput(nimModel)
+        setNimBaseUrlInput(nimBaseUrl)
+        setNimCustomModelInput(
+            NIM_MODEL_PRESETS.some((preset) => preset.value === nimModel)
+                ? ''
+                : nimModel,
+        )
+        setLlmSettingsError('')
     }
 
     function openSettingsAndFocusDeepgramInput() {
@@ -2519,9 +4276,193 @@ function App() {
     }
 
     function closeSettings() {
+        if (hasUnsavedLlmSettingsChanges) {
+            setConfirmCloseSettingsUnsavedLlmOpen(true)
+            return
+        }
+
         setSettingsOpen(false)
         setFieldError('')
         setShowKey(false)
+        setLlmSettingsError('')
+    }
+
+    function closeSettingsConfirmed() {
+        setSettingsOpen(false)
+        setConfirmCloseSettingsUnsavedLlmOpen(false)
+        setFieldError('')
+        setShowKey(false)
+        setLlmSettingsError('')
+    }
+
+    function saveLlmSettings() {
+        const normalizedProviderMode = normalizeLlmProviderMode(llmProviderModeInput)
+        const trimmedOpenrouterModel = openrouterModelInput.trim()
+        const trimmedNimModel = nimModelInput.trim()
+        const trimmedNimBaseUrl = nimBaseUrlInput.trim()
+        const trimmedOpenrouterKey = openrouterApiKeyInput.trim()
+        const trimmedNimKey = nimApiKeyInput.trim()
+
+        if (!trimmedOpenrouterModel || !trimmedNimModel) {
+            setLlmSettingsError('Model is required. Select a model or enter a custom model name.')
+            return false
+        }
+
+        if (!trimmedNimBaseUrl) {
+            setLlmSettingsError('NVIDIA NIM Base URL is required.')
+            return false
+        }
+
+        const nimBaseUrlValidationError = validateLlmProviderApiBaseUrl(trimmedNimBaseUrl)
+        if (nimBaseUrlValidationError) {
+            setLlmSettingsError(nimBaseUrlValidationError)
+            return false
+        }
+
+        setLlmProviderMode(normalizedProviderMode)
+        setOpenrouterApiKey(trimmedOpenrouterKey)
+        setOpenrouterModel(trimmedOpenrouterModel)
+        setNimApiKey(trimmedNimKey)
+        setNimModel(trimmedNimModel)
+        setNimBaseUrl(trimmedNimBaseUrl)
+        setLlmSettingsError('')
+
+        clearSavedValue('mia.llm.persistKeys')
+        setSavedValue(STORAGE_LLM_PROVIDER_MODE, normalizedProviderMode)
+        setSavedValue(STORAGE_OPENROUTER_MODEL, trimmedOpenrouterModel)
+        setSavedValue(STORAGE_NIM_MODEL, trimmedNimModel)
+        setSavedValue(STORAGE_NIM_BASE_URL, trimmedNimBaseUrl)
+
+        setSavedValue(STORAGE_OPENROUTER_API_KEY, trimmedOpenrouterKey)
+        setSavedValue(STORAGE_NIM_API_KEY, trimmedNimKey)
+
+        setToast('LLM settings saved.')
+        return true
+    }
+
+    function saveLlmSettingsAndCloseSettings() {
+        const didSave = saveLlmSettings()
+        if (!didSave) return
+        closeSettingsConfirmed()
+    }
+
+    function discardUnsavedLlmSettingsAndClose() {
+        closeSettingsConfirmed()
+    }
+
+    function saveOpenrouterKeyOnly() {
+        const trimmedOpenrouterKey = openrouterApiKeyInput.trim()
+        if (!trimmedOpenrouterKey) {
+            setToast('OpenRouter API key is required.')
+            return
+        }
+
+        setIsSavingOpenrouterKey(true)
+        setOpenrouterApiKey(trimmedOpenrouterKey)
+        setSavedValue(STORAGE_OPENROUTER_API_KEY, trimmedOpenrouterKey)
+
+        void validateLlmProviderApiKey({
+            providerId: 'openrouter',
+            apiKey: trimmedOpenrouterKey,
+            baseUrl: OPENROUTER_BASE_URL,
+        })
+            .then(() => {
+                setToast('OpenRouter API key saved and validated.')
+            })
+            .catch((error) => {
+                if (!showLlmProviderHttpErrorToast(error, 'openrouter')) {
+                    setToast(`OpenRouter API key saved, but validation failed: ${error?.message || 'Unknown error.'}`)
+                }
+            })
+            .finally(() => {
+                setIsSavingOpenrouterKey(false)
+            })
+    }
+
+    function saveNimKeyOnly() {
+        const trimmedNimKey = nimApiKeyInput.trim()
+        const trimmedNimBaseUrl = nimBaseUrlInput.trim()
+        if (!trimmedNimKey) {
+            setToast('NVIDIA NIM API key is required.')
+            return
+        }
+
+        const nimBaseUrlValidationError = validateLlmProviderApiBaseUrl(trimmedNimBaseUrl)
+        if (nimBaseUrlValidationError) {
+            setToast(nimBaseUrlValidationError)
+            return
+        }
+
+        setIsSavingNimKey(true)
+        setNimApiKey(trimmedNimKey)
+        setSavedValue(STORAGE_NIM_API_KEY, trimmedNimKey)
+
+        void validateLlmProviderApiKey({
+            providerId: 'nim',
+            apiKey: trimmedNimKey,
+            baseUrl: trimmedNimBaseUrl,
+        })
+            .then(() => {
+                setToast('NVIDIA NIM API key saved and validated.')
+            })
+            .catch((error) => {
+                if (!showLlmProviderHttpErrorToast(error, 'nim')) {
+                    setToast(`NVIDIA NIM API key saved, but validation failed: ${error?.message || 'Unknown error.'}`)
+                }
+            })
+            .finally(() => {
+                setIsSavingNimKey(false)
+            })
+    }
+
+    function handleOpenrouterModelSelection(nextValue) {
+        if (nextValue === CUSTOM_MODEL_OPTION_VALUE) {
+            setOpenrouterModelInput(openrouterCustomModelInput.trim())
+            return
+        }
+
+        setOpenrouterModelInput(nextValue)
+    }
+
+    function handleNimModelSelection(nextValue) {
+        if (nextValue === CUSTOM_MODEL_OPTION_VALUE) {
+            setNimModelInput(nimCustomModelInput.trim())
+            return
+        }
+
+        setNimModelInput(nextValue)
+    }
+
+    function resetLlmSettingsToDefaults() {
+        const defaultProviderMode = LLM_PROVIDER_MODE_AUTO
+        const defaultOpenrouterModel = LLM_PROVIDER_ENV_CONFIG.openrouter.model
+        const defaultNimModel = LLM_PROVIDER_ENV_CONFIG.nim.model
+        const defaultNimBaseUrl = DEFAULT_NIM_BASE_URL
+
+        setLlmProviderMode(defaultProviderMode)
+        setOpenrouterApiKey('')
+        setOpenrouterModel(defaultOpenrouterModel)
+        setNimApiKey('')
+        setNimModel(defaultNimModel)
+        setNimBaseUrl(defaultNimBaseUrl)
+
+        setLlmProviderModeInput(defaultProviderMode)
+        setOpenrouterApiKeyInput('')
+        setOpenrouterModelInput(defaultOpenrouterModel)
+        setNimApiKeyInput('')
+        setNimModelInput(defaultNimModel)
+        setNimBaseUrlInput(defaultNimBaseUrl)
+        setLlmSettingsError('')
+
+        clearSavedValue('mia.llm.persistKeys')
+        clearSavedValue(STORAGE_OPENROUTER_API_KEY)
+        clearSavedValue(STORAGE_NIM_API_KEY)
+        setSavedValue(STORAGE_LLM_PROVIDER_MODE, defaultProviderMode)
+        setSavedValue(STORAGE_OPENROUTER_MODEL, defaultOpenrouterModel)
+        setSavedValue(STORAGE_NIM_MODEL, defaultNimModel)
+        setSavedValue(STORAGE_NIM_BASE_URL, defaultNimBaseUrl)
+
+        setToast('LLM settings reset to defaults.')
     }
 
     function openSelectRecordingsFolderModal() {
@@ -2668,134 +4609,16 @@ function App() {
             return
         }
 
-        const totals = overallInterviewSummary
-        const sections = [
-            '# Interview Summary for Gemini',
-            '',
-            `Generated: ${new Date().toISOString()}`,
-            '',
-            '## Total Metrics',
-            `- Total answers: ${totals.totalAnswers}`,
-            `- Average WPM: ${totals.averageWpm}`,
-            `- Average answer length (sec): ${totals.averageAnswerLengthSec}`,
-            `- Average hesitations: ${totals.averageHesitations}`,
-            `- Average gaze center (%): ${totals.averageGazeCenterPct}`,
-            '',
-            '## Answers',
-        ]
-
-        interviewSummaries.forEach((item, index) => {
-            const answerNumber = interviewSummaries.length - index
-            sections.push(`### Answer ${answerNumber}`)
-            sections.push(`- Captured: ${formatReadableCapturedDate(item.capturedAt)}`)
-            sections.push(`- Question: ${item.question}`)
-            sections.push('')
-            sections.push('Transcript:')
-            sections.push('```text')
-            sections.push(item.transcript || '(no transcript captured)')
-            sections.push('```')
-            sections.push('')
-            sections.push('Metrics:')
-
-            const metricEntries = Object.entries(item.metrics || {})
-            if (!metricEntries.length) {
-                sections.push('- n/a')
-            } else {
-                metricEntries.forEach(([key, value]) => {
-                    sections.push(`- ${key}: ${String(value ?? 'n/a')}`)
-                })
-            }
-            sections.push('')
-        })
-
-        const summaryMarkdown = sections.join('\n')
+        const summaryMarkdown = buildAnswerSummaryMarkdown(
+            interviewSummaries,
+            overallInterviewSummary,
+        )
 
         try {
             await navigator.clipboard.writeText(summaryMarkdown)
             setToast('Summary for Gem copied to clipboard.')
         } catch {
             setToast('Could not copy summary to clipboard.')
-        }
-    }
-
-    function buildCurrentOutputForGeminiMarkdown() {
-        const answerTranscript = transcript.trim()
-        if (!answerTranscript || !latestInterviewMetrics || isRecording || isTranscribing) {
-            return null
-        }
-
-        const sections = [
-            '# Current Interview Output for Gemini',
-            '',
-            `Generated: ${new Date().toISOString()}`,
-            `Question: ${questionInput.trim() || '(no question)'}`,
-            '',
-            'Transcript:',
-            '```text',
-            answerTranscript,
-            '```',
-            '',
-            'Metrics:',
-        ]
-
-        const metricEntries = Object.entries(latestInterviewMetrics || {})
-        if (!metricEntries.length) {
-            sections.push('- n/a')
-        } else {
-            metricEntries.forEach(([key, value]) => {
-                sections.push(`- ${key}: ${String(value ?? 'n/a')}`)
-            })
-        }
-
-        return sections.join('\n')
-    }
-
-    async function openGeminiSidePanel() {
-        const width = 400
-        const height = Math.max(700, Math.floor(window.screen.availHeight * 0.9))
-        const left = Math.max(0, window.screenX + window.outerWidth - width)
-        const top = Math.max(0, window.screenY + Math.floor((window.outerHeight - height) / 2))
-
-        // Best-effort cross-browser popup flow: open a blank named window first,
-        // then navigate it to Gemini. This improves popup behavior on macOS browsers.
-        const geminiWindow = window.open(
-            '',
-            'geminiRightPanel',
-            `popup=yes,width=${width},height=${height},left=${left},top=${top}`,
-        )
-
-        if (!geminiWindow) {
-            setToast('Popup blocked. Allow popups to open Gemini side panel.')
-            return
-        }
-
-        // Some browsers return null when noopener/noreferrer are set in features.
-        // Nulling opener here preserves safety without breaking popup detection.
-        try {
-            geminiWindow.opener = null
-        } catch {
-            // Ignore cross-origin restrictions.
-        }
-
-        try {
-            geminiWindow.location.href = 'https://gemini.google.com'
-            geminiWindow.focus()
-        } catch {
-            setToast('Gemini window opened, but navigation was blocked by the browser.')
-            return
-        }
-
-        const outputMarkdown = buildCurrentOutputForGeminiMarkdown()
-        if (!outputMarkdown) {
-            setToast('Gemini opened. Record and transcribe to copy current output.')
-            return
-        }
-
-        try {
-            await navigator.clipboard.writeText(outputMarkdown)
-            setToast('Gemini opened. Current output copied to clipboard.')
-        } catch {
-            setToast('Gemini opened, but copy failed.')
         }
     }
 
@@ -2857,18 +4680,36 @@ function App() {
             return
         }
 
-        if (!selectedPreviousAnswer.textHandle) {
-            setToast('No text file found for this answer.')
-            return
-        }
-
         try {
-            const file = await selectedPreviousAnswer.textHandle.getFile()
-            const textContent = await file.text()
+            let textContent = ''
+
+            if (selectedPreviousAnswer.textHandle) {
+                const file = await selectedPreviousAnswer.textHandle.getFile()
+                textContent = await file.text()
+            } else if (selectedPreviousAnswer.metricsText?.trim()) {
+                textContent = selectedPreviousAnswer.metricsText
+            } else if (
+                selectedPreviousAnswer.transcript?.trim() &&
+                selectedPreviousAnswer.metrics &&
+                typeof selectedPreviousAnswer.metrics === 'object'
+            ) {
+                textContent = buildOutputText({
+                    capturedAt: selectedPreviousAnswer.capturedAt || new Date().toISOString(),
+                    question: selectedPreviousAnswer.question || '(no question)',
+                    answer: selectedPreviousAnswer.transcript,
+                    metrics: selectedPreviousAnswer.metrics,
+                })
+            }
+
+            if (!textContent.trim()) {
+                setToast('No transcript/metrics content found for this answer.')
+                return
+            }
+
             await navigator.clipboard.writeText(textContent)
-            setToast('text output copied to clipboard')
+            setToast('Transcript and metrics copied to clipboard.')
         } catch {
-            setToast('Could not copy text file.')
+            setToast('Could not copy transcript and metrics.')
         }
     }
 
@@ -2929,6 +4770,35 @@ function App() {
     async function performDeleteSelectedPreviousAnswer() {
         if (!selectedPreviousAnswer) {
             setToast('Select an answer first.')
+            return
+        }
+
+        const isLocalStorageAnswer =
+            selectedPreviousAnswer.source === PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE
+
+        if (isLocalStorageAnswer) {
+            const removed = removeRecordingFromPreviousAnswersLocalStorage(selectedPreviousAnswer.id)
+            if (!removed) {
+                setToast('Could not delete this local storage answer.')
+                return
+            }
+
+            const fingerprintToRemove = getSummaryFingerprint(selectedPreviousAnswer)
+            setInterviewSummaries((prev) =>
+                prev.filter((item) => getSummaryFingerprint(item) !== fingerprintToRemove),
+            )
+
+            const refreshedItems = await loadPreviousAnswers()
+            if (refreshedItems.length) {
+                const nextItem = refreshedItems[0]
+                setSelectedPreviousAnswerId(nextItem.id)
+                await loadHistoryMedia(nextItem)
+            } else {
+                setSelectedPreviousAnswerId('')
+                replaceHistoryMediaUrls({ audioUrl: '', videoUrl: '' })
+            }
+
+            setToast('Previous answer removed from local storage.')
             return
         }
 
@@ -3411,6 +5281,28 @@ function App() {
         return result
     }
 
+    function validateLlmProviderApiBaseUrl(baseUrl) {
+        const normalizedBaseUrl = String(baseUrl || '').trim()
+        if (!normalizedBaseUrl) {
+            return 'NVIDIA NIM Base URL is required.'
+        }
+
+        if (normalizedBaseUrl.startsWith('/')) {
+            return ''
+        }
+
+        try {
+            const parsed = new URL(normalizedBaseUrl)
+            if (!/^https?:$/.test(parsed.protocol)) {
+                return 'NVIDIA NIM Base URL must use http or https.'
+            }
+        } catch {
+            return 'NVIDIA NIM Base URL must be a valid URL or a relative path like /api/nim.'
+        }
+
+        return ''
+    }
+
     async function speakQuestionIfEnabled(questionText = questionInput) {
         if (!readQuestionWithTts) return
 
@@ -3733,6 +5625,15 @@ function App() {
                 metrics: interviewMetrics,
             })
 
+            appendRecordingToPreviousAnswersLocalStorage({
+                id: crypto.randomUUID(),
+                capturedAt: capturedAtIso,
+                question: trimmedQuestion || '(no question)',
+                transcript: normalizedTranscript,
+                metrics: interviewMetrics,
+                metricsText: outputBlock,
+            })
+
             setLatestInterviewMetrics(interviewMetrics)
 
             const sessionReport = {
@@ -3844,17 +5745,7 @@ function App() {
             ? CAMERA_DISPLAY_MODE_INTERVIEWER_PLUS_SELF_PIP
             : CAMERA_DISPLAY_MODE_INTERVIEWER_ONLY
         : CAMERA_DISPLAY_MODE_SELF_ONLY
-    const cameraActionButton =
-        !hasCameraAccess && cameraPermissionState !== 'granted' ? (
-            <button
-                type="button"
-                className="btn"
-                onClick={startCamera}
-                disabled={cameraStatus === 'loading'}
-            >
-                {cameraStatus === 'loading' ? 'Starting Camera...' : 'Allow Camera Access'}
-            </button>
-        ) : null
+    const isCameraAccessAllowed = hasCameraAccess || cameraPermissionState === 'granted'
 
     function handleThemeModeToggle() {
         setDarkMode((prev) => !prev)
@@ -3951,601 +5842,721 @@ function App() {
                                 settings
                             </span>
                         </button>
-                        <button
-                            type="button"
-                            className="btn ghost gemini-launch-btn"
-                            onClick={openGeminiSidePanel}
-                            aria-label="Open Gemini in side panel"
-                            title="Open Gemini in side panel"
-                        >
-                            <span className="material-symbols-outlined topbar-icon" aria-hidden="true">
-                                auto_awesome
-                            </span>
-                            <span className="gemini-launch-label">Open Gemini</span>
-                        </button>
                     </div>
                 </div>
             </header>
 
-            <main
-                className={`layout${centerCameraLayout ? ' center-camera-layout' : ''}${isDesktopViewport ? ' session-floating-layout' : ''}`}
-            >
-                <section
-                    className={`panel camera-panel${centerCameraLayout ? ' centered-camera-panel' : ''}`}
+            <div className={`desktop-chat-layout${isDesktopViewport ? ' is-desktop' : ''}`}>
+                <main
+                    className={`layout${centerCameraLayout ? ' center-camera-layout' : ''}`}
                 >
-                    {isDesktopViewport && (
-                        <button
-                            type="button"
-                            className="question-peek-tab"
-                            onClick={() => {
-                                setQuestionsDrawerOpen((prev) => {
-                                    const next = !prev
-                                    if (next) closeSummaryModal()
-                                    if (next) closeCvJdModal()
-                                    return next
-                                })
-                            }}
-                            aria-expanded={questionsDrawerOpen}
-                            aria-controls="questions-modal"
-                            title={
-                                questionsDrawerOpen
-                                    ? parsedDrawerQuestions.length
-                                        ? 'Hide questions list modal'
-                                        : 'Hide questions import modal'
-                                    : parsedDrawerQuestions.length
-                                        ? 'Show questions list modal'
-                                        : 'Show questions import modal'
-                            }
-                        >
-                            {parsedDrawerQuestions.length ? 'Questions List' : 'Questions Import'}
-                        </button>
-                    )}
-                    {isDesktopViewport && (
-                        <button
-                            type="button"
-                            className="summary-peek-tab"
-                            onClick={() => {
-                                if (summaryModalOpen) {
-                                    closeSummaryModal()
-                                    return
-                                }
-                                closeCvJdModal()
-                                setQuestionsDrawerOpen(false)
-                                openSummaryModal()
-                            }}
-                            aria-expanded={summaryModalOpen}
-                            aria-controls="summary-modal"
-                            title={summaryModalOpen ? 'Hide answer summary modal' : 'Show answer summary modal'}
-                        >
-                            Answer Summary
-                        </button>
-                    )}
-                    {isDesktopViewport && (
-                        <span
-                            className={`disabled-tooltip-wrap previous-peek-tab-wrap${previousAnswersViewDisabledReason ? ' has-tooltip' : ''}`}
-                            data-disabled-reason={previousAnswersViewDisabledReason}
-                            onPointerDown={(event) =>
-                                suppressDisabledTooltipPointerDefault(event, isPreviousAnswersViewDisabled)
-                            }
-                        >
+                    <section
+                        className={`panel camera-panel${centerCameraLayout ? ' centered-camera-panel' : ''}`}
+                    >
+                        {isDesktopViewport && (
                             <button
                                 type="button"
-                                className="previous-peek-tab"
+                                className="generate-questions-peek-tab"
                                 onClick={() => {
-                                    if (shouldPromptFolderFromPreviousAnswers) {
-                                        openSelectRecordingsFolderModal()
-                                        return
-                                    }
-                                    setQuestionsDrawerOpen(false)
-                                    closeCvJdModal()
-                                    closeSummaryModal()
-                                    void openPreviousAnswersModal()
+                                    openGenerateQuestionsCountModal()
                                 }}
-                                disabled={isPreviousAnswersViewDisabled}
+                                disabled={isGeneratingQuestions}
+                                title="Generates questions based on CV/JD/Company Name"
                             >
-                                {isLoadingPreviousAnswers ? 'Loading...' : 'Previous Answers'}
+                                {isGeneratingQuestions ? 'Generating...' : 'Generate Questions'}
                             </button>
-                        </span>
-                    )}
-
-                    {isDesktopViewport && (
-                        <button
-                            type="button"
-                            className="cvjd-peek-tab"
-                            onClick={() => {
-                                setQuestionsDrawerOpen(false)
-                                closeSummaryModal()
-                                closePreviousAnswersModal()
-                                openCvJdModal()
-                            }}
-                            aria-expanded={cvJdModalOpen}
-                            aria-controls="cvjd-modal"
-                            title={cvJdModalOpen ? 'Hide CV and JD modal' : 'Show CV and JD modal'}
-                        >
-                            Input CV/JD
-                        </button>
-                    )}
-
-                    {cameraActionButton && (
-                        <div className="actions wrap camera-access-actions">
-                            {cameraActionButton}
-                        </div>
-                    )}
-
-                    <div className={`camera-frame${!showInterviewer && isPortraitVideo ? ' portrait' : ''}${invertCamera ? ' inverted' : ''}`}>
-                        {showInterviewer && (
-                            <img
-                                src={activeInterviewerImageSrc}
-                                className="interviewer-image"
-                                alt="Mock interviewer"
-                                draggable={false}
-                            />
+                        )}
+                        {isDesktopViewport && (
+                            <button
+                                type="button"
+                                className="question-peek-tab"
+                                onClick={() => {
+                                    setQuestionsDrawerOpen((prev) => {
+                                        const next = !prev
+                                        if (next) closeSummaryModal()
+                                        if (next) closeCvJdModal()
+                                        if (next) closePreviousAnswersModal()
+                                        return next
+                                    })
+                                }}
+                                aria-expanded={questionsDrawerOpen}
+                                aria-controls="questions-modal"
+                                title={
+                                    questionsDrawerOpen
+                                        ? parsedDrawerQuestions.length
+                                            ? 'Hide questions list modal'
+                                            : 'Hide questions import modal'
+                                        : parsedDrawerQuestions.length
+                                            ? 'Show questions list modal'
+                                            : 'Show questions import modal'
+                                }
+                            >
+                                {parsedDrawerQuestions.length ? 'Questions List' : 'Questions Import'}
+                            </button>
+                        )}
+                        {isDesktopViewport && (
+                            <span
+                                className={`disabled-tooltip-wrap summary-peek-tab-wrap${summaryViewDisabledReason ? ' has-tooltip' : ''}`}
+                                data-disabled-reason={summaryViewDisabledReason}
+                                onPointerDown={(event) =>
+                                    suppressDisabledTooltipPointerDefault(event, isSummaryViewDisabled)
+                                }
+                            >
+                                <button
+                                    type="button"
+                                    className="summary-peek-tab"
+                                    onClick={() => {
+                                        if (summaryModalOpen) {
+                                            closeSummaryModal()
+                                            return
+                                        }
+                                        closeCvJdModal()
+                                        setQuestionsDrawerOpen(false)
+                                        openSummaryModal()
+                                    }}
+                                    aria-expanded={summaryModalOpen}
+                                    aria-controls="summary-modal"
+                                    title={
+                                        isSummaryViewDisabled
+                                            ? summaryViewDisabledReason
+                                            : summaryModalOpen
+                                                ? 'Hide answer summary modal'
+                                                : 'Show answer summary modal'
+                                    }
+                                    disabled={isSummaryViewDisabled}
+                                >
+                                    Answer Summary
+                                </button>
+                            </span>
+                        )}
+                        {isDesktopViewport && (
+                            <button
+                                type="button"
+                                className="am-report-peek-tab"
+                                onClick={() => {
+                                    void generateAmFeedbackReport()
+                                }}
+                                disabled={isGeneratingAmReport || isGeneratingDetailedReport || !interviewSummaries.length}
+                                title={
+                                    interviewSummaries.length
+                                        ? 'Generate AM feedback report PDF from summary and CV/JD'
+                                        : 'Answer a question first to generate a report.'
+                                }
+                            >
+                                {isGeneratingAmReport ? 'Generating...' : 'Generate AM Report'}
+                            </button>
+                        )}
+                        {isDesktopViewport && (
+                            <button
+                                type="button"
+                                className="detailed-report-peek-tab"
+                                onClick={() => {
+                                    void generateDetailedInterviewReport()
+                                }}
+                                disabled={isGeneratingDetailedReport || isGeneratingAmReport || !interviewSummaries.length}
+                                title={
+                                    interviewSummaries.length
+                                        ? 'Generate detailed per-question report with suggested improved answers'
+                                        : 'Answer a question first to generate a detailed report.'
+                                }
+                            >
+                                {isGeneratingDetailedReport ? 'Generating...' : 'Generate Detailed Report'}
+                            </button>
+                        )}
+                        {isDesktopViewport && (
+                            <span
+                                className={`disabled-tooltip-wrap previous-peek-tab-wrap${previousAnswersViewDisabledReason ? ' has-tooltip' : ''}`}
+                                data-disabled-reason={previousAnswersViewDisabledReason}
+                                onPointerDown={(event) =>
+                                    suppressDisabledTooltipPointerDefault(event, isPreviousAnswersViewDisabled)
+                                }
+                            >
+                                <button
+                                    type="button"
+                                    className="previous-peek-tab"
+                                    onClick={() => {
+                                        setQuestionsDrawerOpen(false)
+                                        closeCvJdModal()
+                                        closeSummaryModal()
+                                        void openPreviousAnswersModal()
+                                    }}
+                                    disabled={isPreviousAnswersViewDisabled}
+                                >
+                                    {isLoadingPreviousAnswers ? 'Loading...' : 'Previous Answers'}
+                                </button>
+                            </span>
                         )}
 
-                        <img
-                            src={meetingOverlayImage}
-                            className="interviewer-image meeting-overlay-image"
-                            alt="Meeting overlay"
-                            draggable={false}
-                        />
+                        {isDesktopViewport && (
+                            <button
+                                type="button"
+                                className="cvjd-peek-tab"
+                                onClick={() => {
+                                    setQuestionsDrawerOpen(false)
+                                    closeSummaryModal()
+                                    closePreviousAnswersModal()
+                                    openCvJdModal()
+                                }}
+                                aria-expanded={cvJdModalOpen}
+                                aria-controls="cvjd-modal"
+                                title={cvJdModalOpen ? 'Hide CV and JD modal' : 'Show CV and JD modal'}
+                            >
+                                Input CV/JD
+                            </button>
+                        )}
 
-                        {showSelfView ? (
-                            <div className={`self-view-frame${showPiP ? ' pip' : ' full'}${isPortraitVideo ? ' portrait' : ''}`}>
-                                <video
-                                    ref={videoRef}
-                                    className="camera-video"
-                                    muted
-                                    playsInline
+                        <div className={`camera-frame${!showInterviewer && isPortraitVideo ? ' portrait' : ''}${invertCamera ? ' inverted' : ''}`}>
+                            {showInterviewer && (
+                                <img
+                                    src={activeInterviewerImageSrc}
+                                    className="interviewer-image"
+                                    alt="Mock interviewer"
+                                    draggable={false}
                                 />
-                                <canvas
-                                    ref={overlayRef}
-                                    className={`camera-overlay${debugEnabled ? '' : ' hidden'}`}
-                                />
-                                {cameraStatus !== 'ready' && (
-                                    <div className="camera-empty">
-                                        <p>
-                                            {cameraStatus === 'loading'
-                                                ? 'Starting camera...'
-                                                : 'Camera disabled'}
-                                        </p>
+                            )}
+
+                            <img
+                                src={meetingOverlayImage}
+                                className="interviewer-image meeting-overlay-image"
+                                alt="Meeting overlay"
+                                draggable={false}
+                            />
+
+                            {showSelfView ? (
+                                <div className={`self-view-frame${showPiP ? ' pip' : ' full'}${isPortraitVideo ? ' portrait' : ''}`}>
+                                    <video
+                                        ref={videoRef}
+                                        className="camera-video"
+                                        muted
+                                        playsInline
+                                    />
+                                    <canvas
+                                        ref={overlayRef}
+                                        className={`camera-overlay${debugEnabled ? '' : ' hidden'}`}
+                                    />
+                                    {cameraStatus !== 'ready' && (
+                                        <div className="camera-empty">
+                                            <p>
+                                                {cameraStatus === 'loading'
+                                                    ? 'Starting camera...'
+                                                    : !isCameraAccessAllowed
+                                                        ? 'No Camera Access'
+                                                        : 'Camera disabled'}
+                                            </p>
+                                        </div>
+                                    )}
+                                </div>
+                            ) : null}
+
+                            <div className="camera-toggle-overlay-wrap" ref={cameraOverlayControlsRef}>
+                                <button
+                                    type="button"
+                                    className={`camera-toggle-overlay-btn${enableCamera && isCameraAccessAllowed ? '' : ' is-disabled'}`}
+                                    onClick={handleCameraOverlayToggle}
+                                    aria-label={enableCamera ? 'Disable camera' : 'Enable camera'}
+                                    title={enableCamera ? 'Disable camera' : 'Enable camera'}
+                                >
+                                    <span className="material-symbols-outlined" aria-hidden="true">
+                                        {enableCamera ? 'videocam' : 'videocam_off'}
+                                    </span>
+                                    <span className="camera-toggle-overlay-label">Video</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    className="camera-toggle-overlay-caret"
+                                    onClick={handleToggleCameraOverlayMenu}
+                                    aria-label="Open webcam quick settings"
+                                    aria-expanded={isCameraOverlayMenuOpen}
+                                    aria-haspopup="menu"
+                                    title="Webcam quick settings"
+                                >
+                                    <span className="material-symbols-outlined" aria-hidden="true">
+                                        {isCameraOverlayMenuOpen ? 'keyboard_arrow_down' : 'keyboard_arrow_up'}
+                                    </span>
+                                </button>
+                                {isCameraOverlayMenuOpen ? (
+                                    <div className="camera-overlay-settings-menu" role="menu" aria-label="Webcam settings">
+                                        <button
+                                            type="button"
+                                            className="camera-overlay-settings-item"
+                                            role="menuitemcheckbox"
+                                            aria-checked={invertCamera}
+                                            onClick={() => setInvertCamera((prev) => !prev)}
+                                            title="Mirror camera horizontally"
+                                        >
+                                            <span>Invert camera</span>
+                                            <span className="material-symbols-outlined" aria-hidden="true">
+                                                {invertCamera ? 'toggle_on' : 'toggle_off'}
+                                            </span>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="camera-overlay-settings-item"
+                                            role="menuitemradio"
+                                            aria-checked={
+                                                cameraDisplayMode === CAMERA_DISPLAY_MODE_INTERVIEWER_PLUS_SELF_PIP
+                                            }
+                                            onClick={() =>
+                                                applyCameraDisplayMode(
+                                                    CAMERA_DISPLAY_MODE_INTERVIEWER_PLUS_SELF_PIP,
+                                                )
+                                            }
+                                        >
+                                            <span>Show both</span>
+                                            <span className="material-symbols-outlined" aria-hidden="true">
+                                                {cameraDisplayMode === CAMERA_DISPLAY_MODE_INTERVIEWER_PLUS_SELF_PIP
+                                                    ? 'radio_button_checked'
+                                                    : 'radio_button_unchecked'}
+                                            </span>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="camera-overlay-settings-item"
+                                            role="menuitemradio"
+                                            aria-checked={cameraDisplayMode === CAMERA_DISPLAY_MODE_SELF_ONLY}
+                                            onClick={() => applyCameraDisplayMode(CAMERA_DISPLAY_MODE_SELF_ONLY)}
+                                        >
+                                            <span>Show self only</span>
+                                            <span className="material-symbols-outlined" aria-hidden="true">
+                                                {cameraDisplayMode === CAMERA_DISPLAY_MODE_SELF_ONLY
+                                                    ? 'radio_button_checked'
+                                                    : 'radio_button_unchecked'}
+                                            </span>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="camera-overlay-settings-item"
+                                            role="menuitemradio"
+                                            aria-checked={cameraDisplayMode === CAMERA_DISPLAY_MODE_INTERVIEWER_ONLY}
+                                            onClick={() => applyCameraDisplayMode(CAMERA_DISPLAY_MODE_INTERVIEWER_ONLY)}
+                                        >
+                                            <span>Show interviewer only</span>
+                                            <span className="material-symbols-outlined" aria-hidden="true">
+                                                {cameraDisplayMode === CAMERA_DISPLAY_MODE_INTERVIEWER_ONLY
+                                                    ? 'radio_button_checked'
+                                                    : 'radio_button_unchecked'}
+                                            </span>
+                                        </button>
                                     </div>
-                                )}
+                                ) : null}
                             </div>
-                        ) : null}
 
-                        <div className="camera-toggle-overlay-wrap" ref={cameraOverlayControlsRef}>
-                            <button
-                                type="button"
-                                className={`camera-toggle-overlay-btn${enableCamera ? '' : ' is-disabled'}`}
-                                onClick={handleCameraOverlayToggle}
-                                aria-label={enableCamera ? 'Disable camera' : 'Enable camera'}
-                                title={enableCamera ? 'Disable camera' : 'Enable camera'}
-                            >
-                                <span className="material-symbols-outlined" aria-hidden="true">
-                                    {enableCamera ? 'videocam' : 'videocam_off'}
-                                </span>
-                                <span className="camera-toggle-overlay-label">Video</span>
-                            </button>
-                            <button
-                                type="button"
-                                className="camera-toggle-overlay-caret"
-                                onClick={handleToggleCameraOverlayMenu}
-                                aria-label="Open webcam quick settings"
-                                aria-expanded={isCameraOverlayMenuOpen}
-                                aria-haspopup="menu"
-                                title="Webcam quick settings"
-                            >
-                                <span className="material-symbols-outlined" aria-hidden="true">
-                                    {isCameraOverlayMenuOpen ? 'keyboard_arrow_down' : 'keyboard_arrow_up'}
-                                </span>
-                            </button>
-                            {isCameraOverlayMenuOpen ? (
-                                <div className="camera-overlay-settings-menu" role="menu" aria-label="Webcam settings">
-                                    <button
-                                        type="button"
-                                        className="camera-overlay-settings-item"
-                                        role="menuitemradio"
-                                        aria-checked={
-                                            cameraDisplayMode === CAMERA_DISPLAY_MODE_INTERVIEWER_PLUS_SELF_PIP
-                                        }
-                                        onClick={() =>
-                                            applyCameraDisplayMode(
-                                                CAMERA_DISPLAY_MODE_INTERVIEWER_PLUS_SELF_PIP,
-                                            )
-                                        }
-                                    >
-                                        <span>Show both</span>
-                                        <span className="material-symbols-outlined" aria-hidden="true">
-                                            {cameraDisplayMode === CAMERA_DISPLAY_MODE_INTERVIEWER_PLUS_SELF_PIP
-                                                ? 'radio_button_checked'
-                                                : 'radio_button_unchecked'}
-                                        </span>
-                                    </button>
-                                    <button
-                                        type="button"
-                                        className="camera-overlay-settings-item"
-                                        role="menuitemradio"
-                                        aria-checked={cameraDisplayMode === CAMERA_DISPLAY_MODE_SELF_ONLY}
-                                        onClick={() => applyCameraDisplayMode(CAMERA_DISPLAY_MODE_SELF_ONLY)}
-                                    >
-                                        <span>Show self only</span>
-                                        <span className="material-symbols-outlined" aria-hidden="true">
-                                            {cameraDisplayMode === CAMERA_DISPLAY_MODE_SELF_ONLY
-                                                ? 'radio_button_checked'
-                                                : 'radio_button_unchecked'}
-                                        </span>
-                                    </button>
-                                    <button
-                                        type="button"
-                                        className="camera-overlay-settings-item"
-                                        role="menuitemradio"
-                                        aria-checked={cameraDisplayMode === CAMERA_DISPLAY_MODE_INTERVIEWER_ONLY}
-                                        onClick={() => applyCameraDisplayMode(CAMERA_DISPLAY_MODE_INTERVIEWER_ONLY)}
-                                    >
-                                        <span>Show interviewer only</span>
-                                        <span className="material-symbols-outlined" aria-hidden="true">
-                                            {cameraDisplayMode === CAMERA_DISPLAY_MODE_INTERVIEWER_ONLY
-                                                ? 'radio_button_checked'
-                                                : 'radio_button_unchecked'}
-                                        </span>
-                                    </button>
+                            {questionInput.trim() ? (
+                                <div className="camera-question-overlay" aria-live="polite">
+                                    <p>
+                                        {currentQuestionListNumber
+                                            ? `${currentQuestionListNumber}. `
+                                            : ''}
+                                        {questionInput.trim()}
+                                    </p>
                                 </div>
                             ) : null}
                         </div>
 
-                        {questionInput.trim() ? (
-                            <div className="camera-question-overlay" aria-live="polite">
-                                <p>
-                                    {currentQuestionListNumber
-                                        ? `${currentQuestionListNumber}. `
-                                        : ''}
-                                    {questionInput.trim()}
-                                </p>
-                            </div>
+                        {debugEnabled && showSelfView && cameraStatus === 'ready' && facesDetected === 0 ? (
+                            <p className="face-detected-text">No face detected</p>
                         ) : null}
-                    </div>
 
-                    {debugEnabled && showSelfView && cameraStatus === 'ready' && facesDetected === 0 ? (
-                        <p className="face-detected-text">No face detected</p>
-                    ) : null}
-
-                    <div className="actions wrap recording-actions camera-recording-actions">
-                        {!isRecording ? (
-                            <>
-                                {deepgramKeyWarningText ? (
-                                    <button
-                                        type="button"
-                                        className="camera-recording-key-status"
-                                        onClick={openSettingsAndFocusDeepgramInput}
-                                        title="Open Settings to add or validate your Deepgram API key"
-                                    >
-                                        {deepgramKeyWarningText}
-                                    </button>
-                                ) : null}
-                                <div className="camera-recording-primary">
-                                    <button
-                                        type="button"
-                                        className="btn ghost"
-                                        onClick={() => startRecording('audio')}
-                                        disabled={isTranscribing}
-                                    >
-                                        Start Audio Recording
-                                    </button>
-                                    <span
-                                        className={`disabled-tooltip-wrap start-video-wrap${isVideoStartDisabled && videoStartDisabledReason ? ' has-tooltip' : ''}`}
-                                        data-disabled-reason={videoStartDisabledReason}
-                                    >
+                        <div className="actions wrap recording-actions camera-recording-actions">
+                            {!isRecording ? (
+                                <>
+                                    {deepgramKeyWarningText ? (
                                         <button
                                             type="button"
-                                            className="btn"
-                                            onClick={() => startRecording('video')}
-                                            disabled={isVideoStartDisabled}
+                                            className="camera-recording-key-status"
+                                            onClick={openSettingsAndFocusDeepgramInput}
+                                            title="Open Settings to add or validate your Deepgram API key"
                                         >
-                                            Start Video Recording
+                                            {deepgramKeyWarningText}
                                         </button>
-                                    </span>
-                                </div>
-                                <span
-                                    className={`disabled-tooltip-wrap question-next-tooltip-wrap camera-recording-next-wrap${showNoNextQuestionTooltip ? ' has-tooltip' : ''}`}
-                                >
-                                    <button
-                                        type="button"
-                                        className={`btn question-next-btn${showNoNextQuestionTooltip ? ' btn-disabled-look' : ''}`}
-                                        onClick={handleNextQuestionAction}
-                                        disabled={isImportQuestionDisabled}
-                                        title={nextQuestionTitle}
-                                    >
-                                        Next Question
-                                    </button>
-                                    {showNoNextQuestionTooltip ? (
-                                        <span className="question-next-hover-tooltip" role="tooltip">
-                                            {noNextQuestionTooltipText}
-                                        </span>
                                     ) : null}
-                                </span>
-                            </>
-                        ) : (
-                            <button
-                                type="button"
-                                className="btn"
-                                onClick={stopRecordingAndTranscribe}
-                            >
-                                Stop and Transcribe
-                            </button>
-                        )}
-                    </div>
-
-                    {debugEnabled && (
-                        <div className="actions wrap camera-controls-row">
-                            <div className="baseline-controls">
-                                <div className="baseline-button-row">
-                                    <button
-                                        type="button"
-                                        className="btn ghost"
-                                        onClick={resetStatisticsAndRecalibrate}
-                                        disabled={cameraStatus !== 'ready' || isRecording || isTranscribing}
-                                    >
-                                        Reset Statistics
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-
-                    {debugEnabled ? (
-                        <div className="metrics-grid metrics-grid-wide">
-                            <article className="metric-card">
-                                <p className="metric-label">Face detected</p>
-                                <p className="metric-value">{facesDetected > 0 ? 'true' : 'false'}</p>
-                            </article>
-                            <article className="metric-card">
-                                <p className="metric-label">Eye contact proxy</p>
-                                <p className="metric-value">
-                                    {eyeContactScore == null
-                                        ? 'n/a'
-                                        : `${Math.round(eyeContactScore * 100)}%`}
-                                </p>
-                                <p className="metric-help">
-                                    Higher is better. It estimates how consistently your gaze stays
-                                    near the camera.
-                                </p>
-                            </article>
-                            <article className="metric-card">
-                                <p className="metric-label">Gaze deviation</p>
-                                <p className="metric-value">
-                                    {gazeDeviationPct == null
-                                        ? 'n/a'
-                                        : `${gazeDeviationPct}%`}
-                                </p>
-                                <p className="metric-help">
-                                    Lower is better. It is the share of time your gaze was away
-                                    from center.
-                                </p>
-                            </article>
-                            <article className="metric-card">
-                                <p className="metric-label">Gaze deviations from center</p>
-                                <p className="metric-value">{gazeDeviationCount}</p>
-                                <p className="metric-help">
-                                    Leaves center: L {gazeDirectionCounts.left} / R {gazeDirectionCounts.right} / U {gazeDirectionCounts.up} / D {gazeDirectionCounts.down}
-                                </p>
-                            </article>
-                            <article className="metric-card">
-                                <p className="metric-label">Prolonged closure</p>
-                                <p className="metric-value">{prolongedClosureCount}</p>
-                            </article>
-                        </div>
-                    ) : null}
-                </section>
-
-                {shouldShowSessionPanel && (
-                    <section
-                        className={`panel session${centerCameraLayout ? ' centered-session-panel' : ''}${isDesktopViewport ? ' floating-session-panel' : ''}${isDesktopViewport && isSessionPanelMinimized ? ' is-minimized' : ''}`}
-                    >
-                        {isDesktopViewport && (
-                            <div className="floating-session-head">
-                                <h3>Question, Transcript and Metrics</h3>
-                                <button
-                                    type="button"
-                                    className="btn ghost floating-session-toggle"
-                                    onClick={() => setIsSessionPanelMinimized((prev) => !prev)}
-                                    aria-expanded={!isSessionPanelMinimized}
-                                    aria-label={isSessionPanelMinimized ? 'Expand session panel' : 'Minimize session panel'}
-                                    title={isSessionPanelMinimized ? 'Expand session panel' : 'Minimize session panel'}
-                                >
-                                    <span className="material-symbols-outlined" aria-hidden="true">
-                                        {isSessionPanelMinimized ? 'open_in_full' : 'minimize'}
-                                    </span>
-                                </button>
-                            </div>
-                        )}
-
-                        {(!isDesktopViewport || !isSessionPanelMinimized) && (
-                            <div className="floating-session-body">
-
-                                <div className="actions wrap export-actions">
-                                    {(isFolderFeatureDisabled || !autoSaveMediaToFolder) && (
-                                        <div className="export-download-actions">
+                                    <div className="camera-recording-primary">
+                                        <button
+                                            type="button"
+                                            className="btn ghost two-line-btn"
+                                            onClick={() => startRecording('audio')}
+                                            disabled={isTranscribing}
+                                        >
+                                            <span>
+                                                Start Audio
+                                                <br />
+                                                Recording
+                                            </span>
+                                        </button>
+                                        <span
+                                            className={`disabled-tooltip-wrap start-video-wrap${isVideoStartDisabled && videoStartDisabledReason ? ' has-tooltip' : ''}`}
+                                            data-disabled-reason={videoStartDisabledReason}
+                                        >
                                             <button
                                                 type="button"
-                                                className="btn ghost"
-                                                onClick={downloadSelectedRecording}
-                                                disabled={!recordedAudioBlob && !recordedVideoBlob}
+                                                className="btn two-line-btn"
+                                                onClick={() => startRecording('video')}
+                                                disabled={isVideoStartDisabled}
                                             >
-                                                Download Recording
+                                                <span>
+                                                    Start Video
+                                                    <br />
+                                                    Recording
+                                                </span>
                                             </button>
-                                        </div>
-                                    )}
-                                    <label className="debug-toggle auto-summary-toggle">
-                                        <input
-                                            type="checkbox"
-                                            checked={autoAddCompletedAnswersToSummary}
-                                            onChange={(event) => setAutoAddCompletedAnswersToSummary(event.target.checked)}
-                                            disabled={isRecording || isTranscribing}
-                                        />
-                                        <span>Auto-Add</span>
-                                    </label>
-                                    <button
-                                        type="button"
-                                        className="btn"
-                                        onClick={addCurrentAnswerToSummary}
-                                        disabled={
-                                            !transcript ||
-                                            !latestInterviewMetrics ||
-                                            isRecording ||
-                                            isTranscribing ||
-                                            isCurrentAnswerAlreadyInSummary
-                                        }
-                                        title={
-                                            isCurrentAnswerAlreadyInSummary
-                                                ? 'This answer is already in summary.'
-                                                : 'Add this answer to summary'
-                                        }
+                                        </span>
+                                    </div>
+                                    <span
+                                        className={`disabled-tooltip-wrap question-next-tooltip-wrap camera-recording-next-wrap${showNoNextQuestionTooltip ? ' has-tooltip' : ''}`}
                                     >
-                                        {isCurrentAnswerAlreadyInSummary ? 'Already in Summary' : 'Add to Summary'}
-                                    </button>
-                                </div>
-
-                                <div className="label question-row">
-                                    <p className="question-main-label">
-                                        Interview question
-                                        {currentQuestionListNumber
-                                            ? ` (#${currentQuestionListNumber})`
-                                            : ''}
-                                    </p>
-                                    <div className="question-row-actions">
-                                        {isDesktopViewport ? (
-                                            <div
-                                                className={`disabled-tooltip-wrap question-next-tooltip-wrap${showNoNextQuestionTooltip ? ' has-tooltip' : ''}`}
-                                            >
+                                        {hasQuestionsInList ? (
+                                            <>
                                                 <button
                                                     type="button"
-                                                    className={`btn question-next-btn${showNoNextQuestionTooltip ? ' btn-disabled-look' : ''}`}
+                                                    className="btn ghost question-prev-btn two-line-btn"
+                                                    onClick={handlePreviousQuestionAction}
+                                                    disabled={isImportQuestionDisabled}
+                                                    title="Go to previous question"
+                                                >
+                                                    <span className="material-symbols-outlined question-nav-icon" aria-hidden="true">
+                                                        chevron_left
+                                                    </span>
+                                                    <span className="question-nav-label">
+                                                        Previous
+                                                        <br />
+                                                        Question
+                                                    </span>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="btn question-next-btn two-line-btn"
                                                     onClick={handleNextQuestionAction}
                                                     disabled={isImportQuestionDisabled}
                                                     title={nextQuestionTitle}
                                                 >
-                                                    Next Question
-                                                </button>
-                                                {showNoNextQuestionTooltip ? (
-                                                    <span className="question-next-hover-tooltip" role="tooltip">
-                                                        {noNextQuestionTooltipText}
+                                                    <span className="question-nav-label">
+                                                        Next
+                                                        <br />
+                                                        Question
                                                     </span>
-                                                ) : null}
-                                            </div>
+                                                    <span className="material-symbols-outlined question-nav-icon" aria-hidden="true">
+                                                        chevron_right
+                                                    </span>
+                                                </button>
+                                            </>
+                                        ) : isGeneratingQuestions ? null : canPromptGenerateQuestionsFromCvJd ? (
+                                            <button
+                                                type="button"
+                                                className="btn question-next-btn question-generate-btn two-line-btn"
+                                                onClick={generateQuestionsInBackground}
+                                                disabled={isImportQuestionDisabled}
+                                                title="Generate questions in the background"
+                                            >
+                                                <span className="question-nav-label">
+                                                    Generate
+                                                    <br />
+                                                    Questions
+                                                </span>
+                                            </button>
                                         ) : (
-                                            <div className="question-bank-actions">
+                                            <button
+                                                type="button"
+                                                className="btn ghost question-next-btn two-line-btn"
+                                                onClick={openCvJdModal}
+                                                disabled={isImportQuestionDisabled}
+                                                title="Add CV and JD details first"
+                                            >
+                                                <span className="question-nav-label">
+                                                    Add JD and CV
+                                                    <br />
+                                                    information
+                                                </span>
+                                            </button>
+                                        )}
+                                    </span>
+                                </>
+                            ) : (
+                                <button
+                                    type="button"
+                                    className="btn"
+                                    onClick={stopRecordingAndTranscribe}
+                                >
+                                    Stop and Transcribe
+                                </button>
+                            )}
+                        </div>
+
+                        {debugEnabled && (
+                            <div className="actions wrap camera-controls-row">
+                                <div className="baseline-controls">
+                                    <div className="baseline-button-row">
+                                        <button
+                                            type="button"
+                                            className="btn ghost"
+                                            onClick={resetStatisticsAndRecalibrate}
+                                            disabled={cameraStatus !== 'ready' || isRecording || isTranscribing}
+                                        >
+                                            Reset Statistics
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {debugEnabled ? (
+                            <div className="metrics-grid metrics-grid-wide">
+                                <article className="metric-card">
+                                    <p className="metric-label">Face detected</p>
+                                    <p className="metric-value">{facesDetected > 0 ? 'true' : 'false'}</p>
+                                </article>
+                                <article className="metric-card">
+                                    <p className="metric-label">Eye contact proxy</p>
+                                    <p className="metric-value">
+                                        {eyeContactScore == null
+                                            ? 'n/a'
+                                            : `${Math.round(eyeContactScore * 100)}%`}
+                                    </p>
+                                    <p className="metric-help">
+                                        Higher is better. It estimates how consistently your gaze stays
+                                        near the camera.
+                                    </p>
+                                </article>
+                                <article className="metric-card">
+                                    <p className="metric-label">Gaze deviation</p>
+                                    <p className="metric-value">
+                                        {gazeDeviationPct == null
+                                            ? 'n/a'
+                                            : `${gazeDeviationPct}%`}
+                                    </p>
+                                    <p className="metric-help">
+                                        Lower is better. It is the share of time your gaze was away
+                                        from center.
+                                    </p>
+                                </article>
+                                <article className="metric-card">
+                                    <p className="metric-label">Gaze deviations from center</p>
+                                    <p className="metric-value">{gazeDeviationCount}</p>
+                                    <p className="metric-help">
+                                        Leaves center: L {gazeDirectionCounts.left} / R {gazeDirectionCounts.right} / U {gazeDirectionCounts.up} / D {gazeDirectionCounts.down}
+                                    </p>
+                                </article>
+                                <article className="metric-card">
+                                    <p className="metric-label">Prolonged closure</p>
+                                    <p className="metric-value">{prolongedClosureCount}</p>
+                                </article>
+                            </div>
+                        ) : null}
+                    </section>
+
+                    {shouldShowSessionPanel && (
+                        <section
+                            className={`panel session${centerCameraLayout ? ' centered-session-panel' : ''}${isDesktopViewport ? ' floating-session-panel' : ''}${isDesktopViewport && isSessionPanelMinimized ? ' is-minimized' : ''}`}
+                        >
+                            {isDesktopViewport && (
+                                <div className="floating-session-head">
+                                    <h3>Question, Transcript and Metrics</h3>
+                                    <button
+                                        type="button"
+                                        className="btn ghost floating-session-toggle"
+                                        onClick={() => setIsSessionPanelMinimized((prev) => !prev)}
+                                        aria-expanded={!isSessionPanelMinimized}
+                                        aria-label={isSessionPanelMinimized ? 'Expand session panel' : 'Minimize session panel'}
+                                        title={isSessionPanelMinimized ? 'Expand session panel' : 'Minimize session panel'}
+                                    >
+                                        <span className="material-symbols-outlined" aria-hidden="true">
+                                            {isSessionPanelMinimized ? 'open_in_full' : 'minimize'}
+                                        </span>
+                                    </button>
+                                </div>
+                            )}
+
+                            {(!isDesktopViewport || !isSessionPanelMinimized) && (
+                                <div className="floating-session-body">
+
+                                    <div className="actions wrap export-actions">
+                                        {(isFolderFeatureDisabled || !autoSaveMediaToFolder) && (
+                                            <div className="export-download-actions">
                                                 <button
                                                     type="button"
-                                                    className="btn ghost question-bank-btn"
-                                                    onClick={() => {
-                                                        closeSummaryModal()
-                                                        setQuestionsDrawerOpen(true)
-                                                    }}
+                                                    className="btn ghost"
+                                                    onClick={downloadSelectedRecording}
+                                                    disabled={!recordedAudioBlob && !recordedVideoBlob}
                                                 >
-                                                    Questions List
+                                                    Download Recording
                                                 </button>
-                                                <div
-                                                    className={`disabled-tooltip-wrap question-next-tooltip-wrap${showNoNextQuestionTooltip ? ' has-tooltip' : ''}`}
-                                                >
+                                            </div>
+                                        )}
+                                        <label className="debug-toggle auto-summary-toggle">
+                                            <input
+                                                type="checkbox"
+                                                checked={autoAddCompletedAnswersToSummary}
+                                                onChange={(event) => setAutoAddCompletedAnswersToSummary(event.target.checked)}
+                                                disabled={isRecording || isTranscribing}
+                                            />
+                                            <span>Auto-Add</span>
+                                        </label>
+                                        <button
+                                            type="button"
+                                            className="btn"
+                                            onClick={addCurrentAnswerToSummary}
+                                            disabled={
+                                                !transcript ||
+                                                !latestInterviewMetrics ||
+                                                isRecording ||
+                                                isTranscribing ||
+                                                isCurrentAnswerAlreadyInSummary
+                                            }
+                                            title={
+                                                isCurrentAnswerAlreadyInSummary
+                                                    ? 'This answer is already in summary.'
+                                                    : 'Add this answer to summary'
+                                            }
+                                        >
+                                            {isCurrentAnswerAlreadyInSummary ? 'Already in Summary' : 'Add to Summary'}
+                                        </button>
+                                    </div>
+
+                                    <div className="label question-row">
+                                        <p className="question-main-label">
+                                            Interview question
+                                            {currentQuestionListNumber
+                                                ? ` (#${currentQuestionListNumber})`
+                                                : ''}
+                                        </p>
+                                        <div className="question-row-actions">
+                                            {hasQuestionsInList ? (
+                                                isDesktopViewport ? (
                                                     <button
                                                         type="button"
-                                                        className={`btn question-next-btn${showNoNextQuestionTooltip ? ' btn-disabled-look' : ''}`}
+                                                        className="btn question-next-btn"
                                                         onClick={handleNextQuestionAction}
                                                         disabled={isImportQuestionDisabled}
                                                         title={nextQuestionTitle}
                                                     >
                                                         Next Question
                                                     </button>
-                                                    {showNoNextQuestionTooltip ? (
-                                                        <span className="question-next-hover-tooltip" role="tooltip">
-                                                            {noNextQuestionTooltipText}
-                                                        </span>
-                                                    ) : null}
-                                                </div>
-                                            </div>
-                                        )}
-                                    </div>
-                                </div>
-                                <textarea
-                                    id="interview-question"
-                                    className="field question-field"
-                                    aria-label="Interview question"
-                                    value={questionInput}
-                                    onChange={(event) => {
-                                        setQuestionInput(event.target.value)
-                                        setActiveQuestionListIndex(null)
-                                    }}
-                                    autoComplete="off"
-                                    rows={2}
-                                    placeholder="Type your question here, or import from the questions tab"
-                                />
-                                {needsRevalidation && (
-                                    <p className="warning">
-                                        Revalidation recommended. Your key was last checked over 30 days ago.
-                                    </p>
-                                )}
-                                {!hasTtsProvider && readQuestionWithTts && (
-                                    <p className="muted">
-                                        Question TTS uses your system voice and is unavailable in this browser.
-                                    </p>
-                                )}
-                                {banner && <p className="banner">{banner}</p>}
-                                {deepgramDebugEnabled && transcriptionProviderStatus && (
-                                    <p className="muted">{transcriptionProviderStatus}</p>
-                                )}
-                                {deepgramDebugEnabled && questionTtsProviderStatus && (
-                                    <p className="muted">{questionTtsProviderStatus}</p>
-                                )}
-
-                                <div
-                                    className="transcript-box session-output-box"
-                                >
-                                    <h3>Transcript</h3>
-                                    <p className="output-text">{transcriptDisplayText}</p>
-                                </div>
-
-                                <div className="transcript-metrics-compact" aria-live="polite">
-                                    <p className="transcript-metrics-title">Interview Metrics</p>
-                                    {!isRecording && latestInterviewMetrics ? (
-                                        <div className="transcript-metrics-grid">
-                                            <div className="transcript-metric-chip">
-                                                <span className="label">Length</span>
-                                                <span className="value">{latestInterviewMetrics.answerLengthSec}s</span>
-                                            </div>
-                                            <div className="transcript-metric-chip">
-                                                <span className="label">WPM</span>
-                                                <span className="value">{latestInterviewMetrics.wpm}</span>
-                                            </div>
-                                            <div className="transcript-metric-chip">
-                                                <span className="label">Hesitations</span>
-                                                <span className="value">{latestInterviewMetrics.hesitationsCount}</span>
-                                            </div>
-                                            <div className="transcript-metric-chip">
-                                                <span className="label">Gaze center</span>
-                                                <span className="value">{latestInterviewMetrics.gazeCenterPct}%</span>
-                                            </div>
-                                            <div className="transcript-metric-chip">
-                                                <span className="label">Gaze deviations</span>
-                                                <span className="value">{latestInterviewMetrics.gazeDeviationCount}</span>
-                                            </div>
-                                            <div className="transcript-metric-chip">
-                                                <span className="label">Prolonged closures</span>
-                                                <span className="value">{latestInterviewMetrics.prolongedClosureEvents}</span>
-                                            </div>
+                                                ) : (
+                                                    <div className="question-bank-actions">
+                                                        <button
+                                                            type="button"
+                                                            className="btn ghost question-bank-btn"
+                                                            onClick={() => {
+                                                                closeSummaryModal()
+                                                                setQuestionsDrawerOpen(true)
+                                                            }}
+                                                        >
+                                                            Questions List
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            className="btn question-next-btn"
+                                                            onClick={handleNextQuestionAction}
+                                                            disabled={isImportQuestionDisabled}
+                                                            title={nextQuestionTitle}
+                                                        >
+                                                            Next Question
+                                                        </button>
+                                                    </div>
+                                                )
+                                            ) : isGeneratingQuestions ? null : canPromptGenerateQuestionsFromCvJd ? (
+                                                <button
+                                                    type="button"
+                                                    className="btn"
+                                                    onClick={generateQuestionsInBackground}
+                                                    disabled={isImportQuestionDisabled}
+                                                    title="Generate questions in the background"
+                                                >
+                                                    Generate Questions
+                                                </button>
+                                            ) : (
+                                                <button
+                                                    type="button"
+                                                    className="btn ghost"
+                                                    onClick={openCvJdModal}
+                                                    disabled={isImportQuestionDisabled}
+                                                    title="Add CV and JD details first"
+                                                >
+                                                    Add JD and CV information
+                                                </button>
+                                            )}
                                         </div>
-                                    ) : (
-                                        <p className="muted transcript-metrics-empty">
-                                            Values appear here after you stop and transcribe a recording.
+                                    </div>
+                                    <textarea
+                                        id="interview-question"
+                                        className="field question-field"
+                                        aria-label="Interview question"
+                                        value={questionInput}
+                                        onChange={(event) => {
+                                            setQuestionInput(event.target.value)
+                                            setActiveQuestionListIndex(null)
+                                        }}
+                                        autoComplete="off"
+                                        rows={2}
+                                        placeholder="Type your question here, or import from the questions tab"
+                                    />
+                                    {needsRevalidation && (
+                                        <p className="warning">
+                                            Revalidation recommended. Your key was last checked over 30 days ago.
                                         </p>
                                     )}
-                                </div>
+                                    {!hasTtsProvider && readQuestionWithTts && (
+                                        <p className="muted">
+                                            Question TTS uses your system voice and is unavailable in this browser.
+                                        </p>
+                                    )}
+                                    {banner && <p className="banner">{banner}</p>}
+                                    {deepgramDebugEnabled && transcriptionProviderStatus && (
+                                        <p className="muted">{transcriptionProviderStatus}</p>
+                                    )}
+                                    {deepgramDebugEnabled && questionTtsProviderStatus && (
+                                        <p className="muted">{questionTtsProviderStatus}</p>
+                                    )}
 
-                                {isDesktopViewport && previousAnswersError && <p className="warning">{previousAnswersError}</p>}
-                            </div>
-                        )}
-                    </section>
-                )}
-            </main>
+                                    <div
+                                        className="transcript-box session-output-box"
+                                    >
+                                        <h3>Transcript</h3>
+                                        <p className="output-text">{transcriptDisplayText}</p>
+                                    </div>
+
+                                    <div className="transcript-metrics-compact" aria-live="polite">
+                                        <p className="transcript-metrics-title">Interview Metrics</p>
+                                        {!isRecording && latestInterviewMetrics ? (
+                                            <div className="transcript-metrics-grid">
+                                                <div className="transcript-metric-chip">
+                                                    <span className="label">Length</span>
+                                                    <span className="value">{latestInterviewMetrics.answerLengthSec}s</span>
+                                                </div>
+                                                <div className="transcript-metric-chip">
+                                                    <span className="label">WPM</span>
+                                                    <span className="value">{latestInterviewMetrics.wpm}</span>
+                                                </div>
+                                                <div className="transcript-metric-chip">
+                                                    <span className="label">Hesitations</span>
+                                                    <span className="value">{latestInterviewMetrics.hesitationsCount}</span>
+                                                </div>
+                                                <div className="transcript-metric-chip">
+                                                    <span className="label">Gaze center</span>
+                                                    <span className="value">{latestInterviewMetrics.gazeCenterPct}%</span>
+                                                </div>
+                                                <div className="transcript-metric-chip">
+                                                    <span className="label">Gaze deviations</span>
+                                                    <span className="value">{latestInterviewMetrics.gazeDeviationCount}</span>
+                                                </div>
+                                                <div className="transcript-metric-chip">
+                                                    <span className="label">Prolonged closures</span>
+                                                    <span className="value">{latestInterviewMetrics.prolongedClosureEvents}</span>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <p className="muted transcript-metrics-empty">
+                                                Values appear here after you stop and transcribe a recording.
+                                            </p>
+                                        )}
+                                    </div>
+
+                                    {isDesktopViewport && previousAnswersError && <p className="warning">{previousAnswersError}</p>}
+                                </div>
+                            )}
+                        </section>
+                    )}
+                </main>
+            </div>
 
             {changelogModalOpen && (
                 <div
@@ -4635,7 +6646,86 @@ function App() {
                         onClick={(event) => event.stopPropagation()}
                     >
                         <div className="history-modal-header">
-                            <h2 id="history-title">Previous Answers</h2>
+                            <div className="history-title-row">
+                                <h2 id="history-title">Previous Answers</h2>
+                                <div
+                                    className="history-source-toggle"
+                                    role="group"
+                                    aria-label="Previous answers source"
+                                >
+                                    <span className="history-source-label">Source:</span>
+                                    <button
+                                        type="button"
+                                        className={`btn ghost history-source-btn${previousAnswersSource === PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE
+                                            ? ' active'
+                                            : ''
+                                            }`}
+                                        onClick={() => {
+                                            if (
+                                                previousAnswersSource ===
+                                                PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE
+                                            ) {
+                                                return
+                                            }
+
+                                            setPreviousAnswersSource(
+                                                PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE,
+                                            )
+                                            setSelectedPreviousAnswerId('')
+                                            replaceHistoryMediaUrls({
+                                                audioUrl: '',
+                                                videoUrl: '',
+                                            })
+                                            void loadPreviousAnswersFromLocalStorage()
+                                        }}
+                                    >
+                                        Local Storage
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className={`btn ghost history-source-btn${previousAnswersSource === PREVIOUS_ANSWERS_SOURCE_FOLDER
+                                            ? ' active'
+                                            : ''
+                                            }`}
+                                        onClick={() => {
+                                            if (
+                                                previousAnswersSource === PREVIOUS_ANSWERS_SOURCE_FOLDER
+                                            ) {
+                                                return
+                                            }
+
+                                            setPreviousAnswersSource(
+                                                PREVIOUS_ANSWERS_SOURCE_FOLDER,
+                                            )
+                                            setSelectedPreviousAnswerId('')
+                                            replaceHistoryMediaUrls({
+                                                audioUrl: '',
+                                                videoUrl: '',
+                                            })
+                                            void loadPreviousAnswersFromFolder()
+                                        }}
+                                        disabled={isFolderFeatureDisabled}
+                                        title={
+                                            isFolderFeatureDisabled
+                                                ? 'Folder history is unavailable in this browser.'
+                                                : ''
+                                        }
+                                    >
+                                        Folder
+                                    </button>
+                                </div>
+                                <label className="debug-toggle history-autosave-toggle">
+                                    <input
+                                        type="checkbox"
+                                        checked={autoSaveMediaToFolder}
+                                        onChange={(event) =>
+                                            setAutoSaveMediaToFolder(event.target.checked)
+                                        }
+                                        disabled={isFolderFeatureDisabled}
+                                    />
+                                    <span>Auto-Save Recordings to Folder</span>
+                                </label>
+                            </div>
                             <button
                                 type="button"
                                 className="btn ghost history-close-btn"
@@ -4652,14 +6742,16 @@ function App() {
                                 <div className="history-overview-head">
                                     <h3>Overview</h3>
                                     <div className="history-overview-actions">
-                                        <button
-                                            type="button"
-                                            className="btn ghost"
-                                            onClick={openSelectRecordingsFolderModal}
-                                            disabled={isFolderFeatureDisabled}
-                                        >
-                                            Reselect Folder
-                                        </button>
+                                        {previousAnswersSource === PREVIOUS_ANSWERS_SOURCE_FOLDER && (
+                                            <button
+                                                type="button"
+                                                className="btn ghost"
+                                                onClick={openSelectRecordingsFolderModal}
+                                                disabled={isFolderFeatureDisabled}
+                                            >
+                                                Reselect Folder
+                                            </button>
+                                        )}
                                         <button
                                             type="button"
                                             className="btn ghost"
@@ -4692,7 +6784,11 @@ function App() {
                                         </button>
                                     ))}
                                     {!previousAnswers.length && (
-                                        <p className="muted">No previous answers found in the selected folder.</p>
+                                        <p className="muted">
+                                            {previousAnswersSource === PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE
+                                                ? 'No previous answers found in local storage.'
+                                                : 'No previous answers found in the selected folder.'}
+                                        </p>
                                     )}
                                 </div>
                             </aside>
@@ -4708,16 +6804,23 @@ function App() {
                                                     {selectedPreviousAnswer.source} ·{' '}
                                                     {formatReadableCapturedDate(selectedPreviousAnswer.capturedAt)}
                                                 </p>
-                                                <p className="metric-label history-detail-meta">
-                                                    Total file size: {selectedPreviousAnswerTotalSizeLabel}
-                                                </p>
+                                                {selectedPreviousAnswer.source !==
+                                                    PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE && (
+                                                        <p className="metric-label history-detail-meta">
+                                                            Total file size: {selectedPreviousAnswerTotalSizeLabel}
+                                                        </p>
+                                                    )}
                                             </div>
                                             <div className="history-detail-actions">
                                                 <button
                                                     type="button"
                                                     className="btn ghost history-copy-btn"
                                                     onClick={copySelectedAnswerTextFile}
-                                                    disabled={!selectedPreviousAnswer.textHandle}
+                                                    disabled={
+                                                        !selectedPreviousAnswer.textHandle &&
+                                                        !selectedPreviousAnswer.metricsText?.trim() &&
+                                                        !selectedPreviousAnswer.transcript?.trim()
+                                                    }
                                                 >
                                                     Copy Transcript and Metrics
                                                 </button>
@@ -4740,6 +6843,12 @@ function App() {
                                                     type="button"
                                                     className="btn danger"
                                                     onClick={deleteSelectedPreviousAnswer}
+                                                    title={
+                                                        previousAnswersSource ===
+                                                            PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE
+                                                            ? 'Delete this answer from local storage history.'
+                                                            : ''
+                                                    }
                                                 >
                                                     Delete Answer
                                                 </button>
@@ -4747,102 +6856,107 @@ function App() {
                                         </div>
 
                                         <div className="history-detail-scroll">
-                                            <details className="transcript-box history-files">
-                                                <summary>Files</summary>
-                                                <div className="history-files-body">
-                                                    <p className="metric-label history-detail-meta">
-                                                        Report: {selectedPreviousAnswer.reportFileName || 'n/a'}
-                                                        {selectedPreviousAnswerFileSizes.report ? ` (${selectedPreviousAnswerFileSizes.report})` : ''}
-                                                    </p>
-                                                    <p className="metric-label history-detail-meta">
-                                                        Transcript: {selectedPreviousAnswer.textFileName || 'n/a'}
-                                                        {selectedPreviousAnswerFileSizes.text ? ` (${selectedPreviousAnswerFileSizes.text})` : ''}
-                                                    </p>
-                                                    {selectedPreviousAnswer.audioFileName &&
-                                                    selectedPreviousAnswer.videoFileName &&
-                                                    selectedPreviousAnswer.audioFileName === selectedPreviousAnswer.videoFileName ? (
-                                                        <p className="metric-label history-detail-meta">
-                                                            Media file: {selectedPreviousAnswer.audioFileName}
-                                                            {(selectedPreviousAnswerFileSizes.audio || selectedPreviousAnswerFileSizes.video)
-                                                                ? ` (${selectedPreviousAnswerFileSizes.audio || selectedPreviousAnswerFileSizes.video})`
-                                                                : ''}
-                                                        </p>
-                                                    ) : (
-                                                        <>
-                                                            <p className="metric-label history-detail-meta">
-                                                                Audio: {selectedPreviousAnswer.audioFileName || 'n/a'}
-                                                                {selectedPreviousAnswerFileSizes.audio ? ` (${selectedPreviousAnswerFileSizes.audio})` : ''}
-                                                            </p>
-                                                            <p className="metric-label history-detail-meta">
-                                                                Video: {selectedPreviousAnswer.videoFileName || 'n/a'}
-                                                                {selectedPreviousAnswerFileSizes.video ? ` (${selectedPreviousAnswerFileSizes.video})` : ''}
-                                                            </p>
-                                                        </>
-                                                    )}
-                                                </div>
-                                            </details>
+                                            {selectedPreviousAnswer.source !==
+                                                PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE && (
+                                                    <>
+                                                        <details className="transcript-box history-files">
+                                                            <summary>Files</summary>
+                                                            <div className="history-files-body">
+                                                                <p className="metric-label history-detail-meta">
+                                                                    Report: {selectedPreviousAnswer.reportFileName || 'n/a'}
+                                                                    {selectedPreviousAnswerFileSizes.report ? ` (${selectedPreviousAnswerFileSizes.report})` : ''}
+                                                                </p>
+                                                                <p className="metric-label history-detail-meta">
+                                                                    Transcript: {selectedPreviousAnswer.textFileName || 'n/a'}
+                                                                    {selectedPreviousAnswerFileSizes.text ? ` (${selectedPreviousAnswerFileSizes.text})` : ''}
+                                                                </p>
+                                                                {selectedPreviousAnswer.audioFileName &&
+                                                                    selectedPreviousAnswer.videoFileName &&
+                                                                    selectedPreviousAnswer.audioFileName === selectedPreviousAnswer.videoFileName ? (
+                                                                    <p className="metric-label history-detail-meta">
+                                                                        Media file: {selectedPreviousAnswer.audioFileName}
+                                                                        {(selectedPreviousAnswerFileSizes.audio || selectedPreviousAnswerFileSizes.video)
+                                                                            ? ` (${selectedPreviousAnswerFileSizes.audio || selectedPreviousAnswerFileSizes.video})`
+                                                                            : ''}
+                                                                    </p>
+                                                                ) : (
+                                                                    <>
+                                                                        <p className="metric-label history-detail-meta">
+                                                                            Audio: {selectedPreviousAnswer.audioFileName || 'n/a'}
+                                                                            {selectedPreviousAnswerFileSizes.audio ? ` (${selectedPreviousAnswerFileSizes.audio})` : ''}
+                                                                        </p>
+                                                                        <p className="metric-label history-detail-meta">
+                                                                            Video: {selectedPreviousAnswer.videoFileName || 'n/a'}
+                                                                            {selectedPreviousAnswerFileSizes.video ? ` (${selectedPreviousAnswerFileSizes.video})` : ''}
+                                                                        </p>
+                                                                    </>
+                                                                )}
+                                                            </div>
+                                                        </details>
 
-                                            <div className="transcript-box history-media">
-                                                <div className="history-media-head">
-                                                    <h3>Recording</h3>
-                                                    <div
-                                                        className="history-speed-controls"
-                                                        role="group"
-                                                        aria-label="Video playback speed"
-                                                    >
-                                                        {[1, 1.5, 2, 3].map((rate) => (
-                                                            <button
-                                                                key={rate}
-                                                                type="button"
-                                                                className={`btn ghost history-speed-btn${historyPlaybackRate === rate ? ' active' : ''}`}
-                                                                onClick={() => setHistoryPlaybackRate(rate)}
-                                                                disabled={
-                                                                    !selectedHistoryMedia.videoUrl &&
-                                                                    !selectedHistoryMedia.audioUrl
-                                                                }
-                                                            >
-                                                                {rate}x
-                                                            </button>
-                                                        ))}
-                                                    </div>
-                                                </div>
+                                                        <div className="transcript-box history-media">
+                                                            <div className="history-media-head">
+                                                                <h3>Recording</h3>
+                                                                <div
+                                                                    className="history-speed-controls"
+                                                                    role="group"
+                                                                    aria-label="Video playback speed"
+                                                                >
+                                                                    {[1, 1.5, 2, 3].map((rate) => (
+                                                                        <button
+                                                                            key={rate}
+                                                                            type="button"
+                                                                            className={`btn ghost history-speed-btn${historyPlaybackRate === rate ? ' active' : ''}`}
+                                                                            onClick={() => setHistoryPlaybackRate(rate)}
+                                                                            disabled={
+                                                                                !selectedHistoryMedia.videoUrl &&
+                                                                                !selectedHistoryMedia.audioUrl
+                                                                            }
+                                                                        >
+                                                                            {rate}x
+                                                                        </button>
+                                                                    ))}
+                                                                </div>
+                                                            </div>
 
-                                                {selectedHistoryMedia.videoUrl ? (
-                                                    <video
-                                                        ref={historyVideoRef}
-                                                        className="history-video"
-                                                        src={selectedHistoryMedia.videoUrl}
-                                                        controls
-                                                        preload="metadata"
-                                                        onLoadedMetadata={() => {
-                                                            if (historyVideoRef.current) {
-                                                                historyVideoRef.current.playbackRate =
-                                                                    historyPlaybackRate
-                                                            }
-                                                        }}
-                                                    />
-                                                ) : (
-                                                    <p className="muted">No video recording found for this answer.</p>
+                                                            {selectedHistoryMedia.videoUrl ? (
+                                                                <video
+                                                                    ref={historyVideoRef}
+                                                                    className="history-video"
+                                                                    src={selectedHistoryMedia.videoUrl}
+                                                                    controls
+                                                                    preload="metadata"
+                                                                    onLoadedMetadata={() => {
+                                                                        if (historyVideoRef.current) {
+                                                                            historyVideoRef.current.playbackRate =
+                                                                                historyPlaybackRate
+                                                                        }
+                                                                    }}
+                                                                />
+                                                            ) : (
+                                                                <p className="muted">No video recording found for this answer.</p>
+                                                            )}
+
+                                                            {!selectedHistoryMedia.videoUrl && selectedHistoryMedia.audioUrl ? (
+                                                                <audio
+                                                                    ref={historyAudioRef}
+                                                                    className="history-audio"
+                                                                    src={selectedHistoryMedia.audioUrl}
+                                                                    controls
+                                                                    preload="metadata"
+                                                                    onLoadedMetadata={() => {
+                                                                        if (historyAudioRef.current) {
+                                                                            historyAudioRef.current.playbackRate =
+                                                                                historyPlaybackRate
+                                                                        }
+                                                                    }}
+                                                                />
+                                                            ) : !selectedHistoryMedia.videoUrl ? (
+                                                                <p className="muted">No audio recording found for this answer.</p>
+                                                            ) : null}
+                                                        </div>
+                                                    </>
                                                 )}
-
-                                                {!selectedHistoryMedia.videoUrl && selectedHistoryMedia.audioUrl ? (
-                                                    <audio
-                                                        ref={historyAudioRef}
-                                                        className="history-audio"
-                                                        src={selectedHistoryMedia.audioUrl}
-                                                        controls
-                                                        preload="metadata"
-                                                        onLoadedMetadata={() => {
-                                                            if (historyAudioRef.current) {
-                                                                historyAudioRef.current.playbackRate =
-                                                                    historyPlaybackRate
-                                                            }
-                                                        }}
-                                                    />
-                                                ) : !selectedHistoryMedia.videoUrl ? (
-                                                    <p className="muted">No audio recording found for this answer.</p>
-                                                ) : null}
-                                            </div>
 
                                             <div className="transcript-box history-transcript">
                                                 <h3>Full Transcript</h3>
@@ -4909,8 +7023,13 @@ function App() {
                                     className="btn ghost"
                                     onClick={copySummaryToClipboard}
                                     disabled={!interviewSummaries.length}
+                                    aria-label="Copy All"
+                                    title="Copy All"
                                 >
-                                    Copy Answer Summary for Gem
+                                    <span className="material-symbols-outlined topbar-icon" aria-hidden="true">
+                                        content_copy
+                                    </span>
+                                    <span>Copy All</span>
                                 </button>
                                 <button
                                     type="button"
@@ -4937,16 +7056,15 @@ function App() {
 
                                 <h3 className="summary-question-list-title">Answers</h3>
                                 <div className="history-overview-list">
-                                    {interviewSummaries.map((item, index) => (
+                                    {interviewSummaries.map((item) => (
                                         <button
                                             key={item.id}
                                             type="button"
                                             className={`history-overview-item${selectedSummary?.id === item.id ? ' active' : ''}`}
                                             onClick={() => setSelectedSummaryId(item.id)}
                                         >
-                                            <strong>Q{interviewSummaries.length - index}</strong>
+                                            <strong>{item.question}</strong>
                                             <span>{formatReadableCapturedDate(item.capturedAt)}</span>
-                                            <span>{item.question}</span>
                                         </button>
                                     ))}
                                     {!interviewSummaries.length && (
@@ -5079,7 +7197,18 @@ function App() {
                                     className="btn ghost"
                                     onClick={copyCvJdForGemini}
                                 >
-                                    Copy CV, JD and Company Name for Gemini
+                                    Copy
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn ghost"
+                                    onClick={() => {
+                                        openGenerateQuestionsCountModal({ closeCvJd: true })
+                                    }}
+                                    disabled={isGeneratingQuestions}
+                                    title="Generates questions based on CV/JD/Company Name"
+                                >
+                                    {isGeneratingQuestions ? 'Generating...' : 'Generate Questions'}
                                 </button>
                                 <button
                                     type="button"
@@ -5098,6 +7227,18 @@ function App() {
                                 <p className="muted">
                                     Save your candidate profile and target role details here for quick Gemini prompts.
                                 </p>
+                                <label htmlFor="cvjd-consultant-full-name" className="label cvjd-label">
+                                    Consultant Full Name
+                                </label>
+                                <input
+                                    id="cvjd-consultant-full-name"
+                                    type="text"
+                                    className="field cvjd-field"
+                                    value={consultantFullNameInput}
+                                    onChange={(event) => setConsultantFullNameInput(event.target.value)}
+                                    placeholder="Example: Alex Morgan"
+                                    autoComplete="off"
+                                />
                                 <label htmlFor="cvjd-company" className="label cvjd-label">
                                     Company Name
                                 </label>
@@ -5111,16 +7252,17 @@ function App() {
                                     autoComplete="off"
                                 />
 
-                                <label htmlFor="cvjd-cv" className="label cvjd-label">
-                                    CV
+                                <label htmlFor="cvjd-job-title" className="label cvjd-label">
+                                    Job Title
                                 </label>
-                                <textarea
-                                    id="cvjd-cv"
-                                    className="field cvjd-textarea"
-                                    value={cvText}
-                                    onChange={(event) => setCvText(event.target.value)}
-                                    rows={12}
-                                    placeholder="Paste your CV here"
+                                <input
+                                    id="cvjd-job-title"
+                                    type="text"
+                                    className="field cvjd-field"
+                                    value={jobTitleInput}
+                                    onChange={(event) => setJobTitleInput(event.target.value)}
+                                    placeholder="Example: Senior Consultant"
+                                    autoComplete="off"
                                 />
 
                                 <label htmlFor="cvjd-jd" className="label cvjd-label">
@@ -5133,6 +7275,18 @@ function App() {
                                     onChange={(event) => setJdText(event.target.value)}
                                     rows={12}
                                     placeholder="Paste the job description here"
+                                />
+
+                                <label htmlFor="cvjd-cv" className="label cvjd-label">
+                                    CV
+                                </label>
+                                <textarea
+                                    id="cvjd-cv"
+                                    className="field cvjd-textarea"
+                                    value={cvText}
+                                    onChange={(event) => setCvText(event.target.value)}
+                                    rows={12}
+                                    placeholder="Paste your CV here"
                                 />
                             </div>
                         </div>
@@ -5159,7 +7313,7 @@ function App() {
                         onClick={(event) => event.stopPropagation()}
                     >
                         <div className="history-modal-header">
-                            <h2 id="questions-modal-title">Questions Import</h2>
+                            <h2 id="questions-modal-title">Questions LIst</h2>
                             <div className="summary-header-actions">
                                 <button
                                     type="button"
@@ -5168,6 +7322,19 @@ function App() {
                                     disabled={!parsedDrawerQuestions.length}
                                 >
                                     Clear Questions List
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn"
+                                    onClick={requestGenerateQuestionsFromQuestionsModal}
+                                    disabled={isGeneratingQuestions}
+                                    title="Generates questions based on CV/JD/Company Name"
+                                >
+                                    {isGeneratingQuestions
+                                        ? 'Generating...'
+                                        : parsedDrawerQuestions.length
+                                            ? 'Re-generate Questions'
+                                            : 'Generate Questions'}
                                 </button>
                                 <button
                                     type="button"
@@ -5381,6 +7548,159 @@ function App() {
                             </label>
 
                             <div className="settings-section">
+                                <label className="label">LLM Chat Providers</label>
+                                <p className="muted">
+                                    Configure OpenRouter or NVIDIA NIM for question generation.
+                                </p>
+
+                                <label className="label">Select Provider</label>
+                                <select
+                                    className="field"
+                                    value={llmProviderModeInput}
+                                    onChange={(event) =>
+                                        setLlmProviderModeInput(
+                                            normalizeLlmProviderMode(event.target.value),
+                                        )
+                                    }
+                                >
+                                    <option value={LLM_PROVIDER_MODE_AUTO}>Auto</option>
+                                    <option value={LLM_PROVIDER_MODE_OPENROUTER_ONLY}>OpenRouter only</option>
+                                    <option value={LLM_PROVIDER_MODE_NIM_ONLY}>NVIDIA NIM only</option>
+                                </select>
+                                <p className="muted">
+                                    Auto mode tries OpenRouter first, then retries with NVIDIA NIM if OpenRouter fails.
+                                </p>
+
+                                <label className="label">OpenRouter API Key</label>
+                                <div className="key-input-row">
+                                    <input
+                                        className="field"
+                                        type="password"
+                                        value={openrouterApiKeyInput}
+                                        onChange={(event) => setOpenrouterApiKeyInput(event.target.value)}
+                                        autoComplete="off"
+                                    />
+                                    <button
+                                        type="button"
+                                        className="btn key-save-btn"
+                                        onMouseDown={(event) => event.preventDefault()}
+                                        onClick={saveOpenrouterKeyOnly}
+                                        disabled={isSavingOpenrouterKey}
+                                    >
+                                        {isSavingOpenrouterKey ? 'Saving...' : 'Save key'}
+                                    </button>
+                                </div>
+
+                                <label className="label">OpenRouter Model</label>
+                                <select
+                                    className="field"
+                                    value={openrouterModelSelectValue}
+                                    onChange={(event) => handleOpenrouterModelSelection(event.target.value)}
+                                >
+                                    {openrouterModelOptions.map((option) => (
+                                        <option key={option.value} value={option.value}>
+                                            {option.label}
+                                        </option>
+                                    ))}
+                                </select>
+                                {openrouterModelSelectValue === CUSTOM_MODEL_OPTION_VALUE && (
+                                    <input
+                                        className="field"
+                                        type="text"
+                                        value={openrouterCustomModelInput}
+                                        onChange={(event) => {
+                                            const nextValue = event.target.value
+                                            setOpenrouterCustomModelInput(nextValue)
+                                            setOpenrouterModelInput(nextValue)
+                                        }}
+                                        placeholder="Enter custom OpenRouter model id"
+                                    />
+                                )}
+
+                                <label className="label">NVIDIA NIM API Key</label>
+                                <div className="key-input-row">
+                                    <input
+                                        className="field"
+                                        type="password"
+                                        value={nimApiKeyInput}
+                                        onChange={(event) => setNimApiKeyInput(event.target.value)}
+                                        autoComplete="off"
+                                    />
+                                    <button
+                                        type="button"
+                                        className="btn key-save-btn"
+                                        onMouseDown={(event) => event.preventDefault()}
+                                        onClick={saveNimKeyOnly}
+                                        disabled={isSavingNimKey}
+                                    >
+                                        {isSavingNimKey ? 'Saving...' : 'Save key'}
+                                    </button>
+                                </div>
+
+                                <label className="label">NVIDIA NIM Model</label>
+                                <select
+                                    className="field"
+                                    value={nimModelSelectValue}
+                                    onChange={(event) => handleNimModelSelection(event.target.value)}
+                                >
+                                    {nimModelOptions.map((option) => (
+                                        <option key={option.value} value={option.value}>
+                                            {option.label}
+                                        </option>
+                                    ))}
+                                </select>
+                                {nimModelSelectValue === CUSTOM_MODEL_OPTION_VALUE && (
+                                    <input
+                                        className="field"
+                                        type="text"
+                                        value={nimCustomModelInput}
+                                        onChange={(event) => {
+                                            const nextValue = event.target.value
+                                            setNimCustomModelInput(nextValue)
+                                            setNimModelInput(nextValue)
+                                        }}
+                                        placeholder="Enter custom NVIDIA NIM model id"
+                                    />
+                                )}
+
+                                <label className="label">NVIDIA NIM Base URL</label>
+                                <input
+                                    className="field"
+                                    type="text"
+                                    value={nimBaseUrlInput}
+                                    onChange={(event) => setNimBaseUrlInput(event.target.value)}
+                                    placeholder="/api/nim"
+                                />
+                                <p className="muted">
+                                    Use a same-origin proxy endpoint in deployed environments to avoid browser CORS blocks (example: /api/nim).
+                                </p>
+
+                                <div className="actions wrap llm-settings-actions">
+                                    <button
+                                        type="button"
+                                        className="btn"
+                                        onClick={saveLlmSettings}
+                                    >
+                                        Save LLM settings
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn ghost"
+                                        onClick={resetLlmSettingsToDefaults}
+                                        title="Clear keys and reset provider/model defaults"
+                                    >
+                                        Clear keys and reset to defaults
+                                    </button>
+                                </div>
+
+                                {llmSettingsError && (
+                                    <p className="error-text" aria-live="polite">
+                                        {llmSettingsError}
+                                    </p>
+                                )}
+                            </div>
+
+                            <div className="settings-section">
                                 <label className="label">Camera Debug Overlay</label>
                                 <p className="muted">
                                     Enable landmark and posture debugging overlays in Camera View.
@@ -5397,6 +7717,14 @@ function App() {
 
                             <div className="settings-section">
                                 <label className="label">Camera Display</label>
+                                <label className="debug-toggle">
+                                    <input
+                                        type="checkbox"
+                                        checked={invertCamera}
+                                        onChange={(event) => setInvertCamera(event.target.checked)}
+                                    />
+                                    <span>Invert camera</span>
+                                </label>
                                 <label className="debug-toggle">
                                     <input
                                         type="radio"
@@ -5454,14 +7782,6 @@ function App() {
                                         }}
                                     />
                                     <span>Enable Camera</span>
-                                </label>
-                                <label className="debug-toggle">
-                                    <input
-                                        type="checkbox"
-                                        checked={invertCamera}
-                                        onChange={(event) => setInvertCamera(event.target.checked)}
-                                    />
-                                    <span>Invert camera</span>
                                 </label>
                                 <div className="interviewer-image-settings">
                                     <label htmlFor="interviewer-image-select" className="label">
@@ -5541,9 +7861,11 @@ function App() {
                                                     ? 'No folder selected. Recordings can still be downloaded manually.'
                                                     : 'Folder selection is unavailable in this browser.'}
                                     </p>
-                                    <p className="muted">
-                                        Recycle Bin size: {formatFileSize(recycleBinSizeBytes)}
-                                    </p>
+                                    {recordingsFolderName && (
+                                        <p className="muted">
+                                            Recycle Bin size: {formatFileSize(recycleBinSizeBytes)}
+                                        </p>
+                                    )}
                                     <div className="actions wrap">
                                         <button
                                             type="button"
@@ -5560,17 +7882,19 @@ function App() {
                                                 onClick={clearRecordingsFolder}
                                                 disabled={isFolderFeatureDisabled}
                                             >
-                                                Clear Save Folder
+                                                Disable Folder Functionality
                                             </button>
                                         )}
-                                        <button
-                                            type="button"
-                                            className="btn ghost"
-                                            onClick={clearRecycleBin}
-                                            disabled={isFolderFeatureDisabled || !recordingsFolderName || isRecycleBinBusy || recycleBinSizeBytes <= 0}
-                                        >
-                                            {isRecycleBinBusy ? 'Clearing Recycle Bin...' : 'Clear Recycle Bin'}
-                                        </button>
+                                        {recordingsFolderName && (
+                                            <button
+                                                type="button"
+                                                className="btn ghost"
+                                                onClick={clearRecycleBin}
+                                                disabled={isFolderFeatureDisabled || isRecycleBinBusy || recycleBinSizeBytes <= 0}
+                                            >
+                                                {isRecycleBinBusy ? 'Clearing Recycle Bin...' : 'Clear Recycle Bin'}
+                                            </button>
+                                        )}
                                     </div>
                                     <label className="debug-toggle">
                                         <input
@@ -5586,6 +7910,287 @@ function App() {
                                 </div>
                             )}
 
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {confirmCloseSettingsUnsavedLlmOpen && (
+                <div className="overlay" role="presentation">
+                    <div
+                        className="modal compact"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="settings-unsaved-llm-title"
+                    >
+                        <h2 id="settings-unsaved-llm-title">Save LLM changes?</h2>
+                        <p className="muted">
+                            You have unsaved LLM settings. Save LLM settings before closing, or discard changes.
+                        </p>
+                        <div className="actions">
+                            <button
+                                type="button"
+                                className="btn"
+                                onClick={saveLlmSettingsAndCloseSettings}
+                            >
+                                Save LLM Settings
+                            </button>
+                            <button
+                                type="button"
+                                className="btn danger"
+                                onClick={discardUnsavedLlmSettingsAndClose}
+                            >
+                                Discard
+                            </button>
+                            <button
+                                type="button"
+                                className="btn ghost"
+                                onClick={() => setConfirmCloseSettingsUnsavedLlmOpen(false)}
+                            >
+                                Stay
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {amReportModalOpen && (
+                <div className="overlay" role="presentation">
+                    <div
+                        className="modal question-modal am-report-stream-modal"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="am-report-stream-title"
+                    >
+                        <div className="history-modal-header">
+                            <h2 id="am-report-stream-title">Generating AM Report</h2>
+                            <div className="summary-header-actions">
+                                <button
+                                    type="button"
+                                    className="btn danger"
+                                    onClick={cancelAmReportGeneration}
+                                    disabled={!isGeneratingAmReport}
+                                >
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                        <div className="question-modal-body am-report-stream-body" ref={amReportPreviewScrollRef}>
+                            <div className="question-modal-inner am-report-stream-inner" aria-live="polite">
+                                <div className="am-report-stream-content no-select">
+                                    <ReactMarkdown>{amReportMarkdownPreview || 'Generating AM report...'}</ReactMarkdown>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {amReportPdfPreviewOpen && (
+                <div
+                    className="overlay"
+                    role="presentation"
+                    onPointerDown={(event) => {
+                        if (event.target === event.currentTarget) {
+                            requestCloseAmReportPdfPreview()
+                        }
+                    }}
+                >
+                    <div
+                        className="modal question-modal am-report-pdf-modal"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="am-report-pdf-title"
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        <div className="history-modal-header">
+                            <h2 id="am-report-pdf-title">AM Feedback PDF</h2>
+                            <div className="summary-header-actions">
+                                <button
+                                    type="button"
+                                    className="btn ghost history-close-btn icon-only-btn"
+                                    onClick={downloadCurrentAmReportPdf}
+                                    aria-label="Download PDF"
+                                    title="Download PDF"
+                                >
+                                    <span className="material-symbols-outlined" aria-hidden="true">
+                                        download
+                                    </span>
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn ghost history-close-btn"
+                                    onClick={requestCloseAmReportPdfPreview}
+                                    aria-label="Close"
+                                    title="Close"
+                                >
+                                    X
+                                </button>
+                            </div>
+                        </div>
+                        <div className="am-report-pdf-body">
+                            {amReportPdfPreviewUrl ? (
+                                <iframe
+                                    title="AM Feedback PDF Preview"
+                                    src={amReportPdfPreviewUrl}
+                                    className="am-report-pdf-iframe"
+                                />
+                            ) : (
+                                <p className="muted">Could not render PDF preview.</p>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {detailedReportModalOpen && (
+                <div className="overlay" role="presentation">
+                    <div
+                        className="modal question-modal am-report-stream-modal"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="detailed-report-stream-title"
+                    >
+                        <div className="history-modal-header">
+                            <h2 id="detailed-report-stream-title">Generating Detailed Report</h2>
+                            <div className="summary-header-actions">
+                                <button
+                                    type="button"
+                                    className="btn danger"
+                                    onClick={cancelDetailedReportGeneration}
+                                    disabled={!isGeneratingDetailedReport}
+                                >
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                        <div className="question-modal-body am-report-stream-body" ref={detailedReportPreviewScrollRef}>
+                            <div className="question-modal-inner am-report-stream-inner" aria-live="polite">
+                                <div className="am-report-stream-content no-select">
+                                    <ReactMarkdown>{detailedReportMarkdownPreview || 'Generating detailed report...'}</ReactMarkdown>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {detailedReportPdfPreviewOpen && (
+                <div
+                    className="overlay"
+                    role="presentation"
+                    onPointerDown={(event) => {
+                        if (event.target === event.currentTarget) {
+                            requestCloseDetailedReportPdfPreview()
+                        }
+                    }}
+                >
+                    <div
+                        className="modal question-modal am-report-pdf-modal"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="detailed-report-pdf-title"
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        <div className="history-modal-header">
+                            <h2 id="detailed-report-pdf-title">Detailed Interview Report PDF</h2>
+                            <div className="summary-header-actions">
+                                <button
+                                    type="button"
+                                    className="btn ghost history-close-btn icon-only-btn"
+                                    onClick={downloadCurrentDetailedReportPdf}
+                                    aria-label="Download PDF"
+                                    title="Download PDF"
+                                >
+                                    <span className="material-symbols-outlined" aria-hidden="true">
+                                        download
+                                    </span>
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn ghost history-close-btn"
+                                    onClick={requestCloseDetailedReportPdfPreview}
+                                    aria-label="Close"
+                                    title="Close"
+                                >
+                                    X
+                                </button>
+                            </div>
+                        </div>
+                        <div className="am-report-pdf-body">
+                            {detailedReportPdfPreviewUrl ? (
+                                <iframe
+                                    title="Detailed Interview Report PDF Preview"
+                                    src={detailedReportPdfPreviewUrl}
+                                    className="am-report-pdf-iframe"
+                                />
+                            ) : (
+                                <p className="muted">Could not render PDF preview.</p>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {confirmCloseAmReportPdfOpen && (
+                <div className="overlay" role="presentation">
+                    <div
+                        className="modal compact"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="am-pdf-close-title"
+                    >
+                        <h2 id="am-pdf-close-title">Exit PDF preview?</h2>
+                        <p className="muted">
+                            If you exit now, the generated PDF will not be saved and will be discarded.
+                        </p>
+                        <div className="actions">
+                            <button
+                                type="button"
+                                className="btn danger"
+                                onClick={closeAmReportPdfPreviewConfirmed}
+                            >
+                                Exit
+                            </button>
+                            <button
+                                type="button"
+                                className="btn ghost"
+                                onClick={() => setConfirmCloseAmReportPdfOpen(false)}
+                            >
+                                Stay
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {confirmCloseDetailedReportPdfOpen && (
+                <div className="overlay" role="presentation">
+                    <div
+                        className="modal compact"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="detailed-pdf-close-title"
+                    >
+                        <h2 id="detailed-pdf-close-title">Exit PDF preview?</h2>
+                        <p className="muted">
+                            If you exit now, the generated PDF will not be saved and will be discarded.
+                        </p>
+                        <div className="actions">
+                            <button
+                                type="button"
+                                className="btn danger"
+                                onClick={closeDetailedReportPdfPreviewConfirmed}
+                            >
+                                Exit
+                            </button>
+                            <button
+                                type="button"
+                                className="btn ghost"
+                                onClick={() => setConfirmCloseDetailedReportPdfOpen(false)}
+                            >
+                                Stay
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -5645,6 +8250,84 @@ function App() {
                 </div>
             )}
 
+            {confirmRegenerateQuestionsOpen && (
+                <div className="overlay" role="presentation">
+                    <div
+                        className="modal compact"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="regenerate-questions-title"
+                    >
+                        <h2 id="regenerate-questions-title">Re-generate questions?</h2>
+                        <p className="muted">
+                            Existing questions in this list will be overwritten.
+                        </p>
+                        <div className="actions">
+                            <button
+                                type="button"
+                                className="btn danger"
+                                onClick={confirmRegenerateQuestions}
+                            >
+                                Re-generate
+                            </button>
+                            <button
+                                type="button"
+                                className="btn ghost"
+                                onClick={() => setConfirmRegenerateQuestionsOpen(false)}
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {generateQuestionsCountModalOpen && (
+                <div className="overlay" role="presentation">
+                    <div
+                        className="modal compact"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="question-count-title"
+                    >
+                        <h2 id="question-count-title">How many questions?</h2>
+                        <p className="muted">
+                            Enter how many interview questions to generate.
+                        </p>
+                        <label htmlFor="question-count-input" className="label">
+                            Question count
+                        </label>
+                        <input
+                            id="question-count-input"
+                            type="number"
+                            className="field"
+                            min={3}
+                            max={40}
+                            step={1}
+                            value={generateQuestionsCountInput}
+                            onChange={(event) => setGenerateQuestionsCountInput(event.target.value)}
+                            autoFocus
+                        />
+                        <div className="actions">
+                            <button
+                                type="button"
+                                className="btn"
+                                onClick={confirmGenerateQuestionsCountSelection}
+                            >
+                                Generate Questions
+                            </button>
+                            <button
+                                type="button"
+                                className="btn ghost"
+                                onClick={closeGenerateQuestionsCountModal}
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {pendingDeleteAction && (
                 <div className="overlay" role="presentation">
                     <div
@@ -5664,7 +8347,10 @@ function App() {
                             {pendingDeleteAction.kind === 'parsed-question'
                                 ? 'This question will be removed from the Questions Import list.'
                                 : pendingDeleteAction.kind === 'previous-answer'
-                                    ? `This will remove the selected answer and move linked saved files into ${RECYCLE_BIN_FOLDER_NAME} under the selected folder.`
+                                    ? selectedPreviousAnswer?.source ===
+                                        PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE
+                                        ? 'This will remove the selected answer from local storage history.'
+                                        : `This will remove the selected answer and move linked saved files into ${RECYCLE_BIN_FOLDER_NAME} under the selected folder.`
                                     : 'This will remove the selected answer from Answer Summary only. Saved folder files will not be deleted.'}
                         </p>
                         <div className="actions">
