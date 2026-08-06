@@ -6,7 +6,9 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
 
 concurrency:
   group: pages-dev
@@ -15,6 +17,8 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,15 +35,19 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Write dev CNAME
+        run: echo "dev.interview.haydenmlh.com" > dist/CNAME
+
       - name: Include GPL-3.0 license in published site
         run: cp LICENSE dist/LICENSE
 
-      - name: Publish Dev to GitHub Pages branch in this repository
-        uses: peaceiris/actions-gh-pages@v4
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_branch: gh-pages-dev
-          publish_dir: ./dist
-          cname: dev.interview.haydenmlh.com
-          force_orphan: true
-          commit_message: "Deploy dev from source: ${{ github.sha }}"
+          path: ./dist
+
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
