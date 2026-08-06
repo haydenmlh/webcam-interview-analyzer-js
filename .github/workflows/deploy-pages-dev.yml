@@ -36,6 +36,9 @@ jobs:
       - name: Include GPL-3.0 license in published site
         run: cp LICENSE dist/LICENSE
 
+      - name: Set dev CNAME
+        run: echo "dev.interview.haydenmlh.com" > dist/CNAME
+
       - name: Publish Dev to GitHub Pages branch in this repository
         uses: peaceiris/actions-gh-pages@v4
         with:
