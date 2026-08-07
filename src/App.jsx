@@ -3816,7 +3816,7 @@ function App() {
         const shuffled = [...questions]
         for (let index = shuffled.length - 1; index > 0; index -= 1) {
             const randomIndex = Math.floor(Math.random() * (index + 1))
-            ;[shuffled[index], shuffled[randomIndex]] = [shuffled[randomIndex], shuffled[index]]
+                ;[shuffled[index], shuffled[randomIndex]] = [shuffled[randomIndex], shuffled[index]]
         }
         return shuffled
     }
@@ -6272,23 +6272,6 @@ function App() {
                         {isDesktopViewport && isPracticeMode && (
                             <button
                                 type="button"
-                                className="generate-questions-peek-tab"
-                                onClick={() => {
-                                    requestGenerateQuestionsFromQuestionsModal()
-                                }}
-                                disabled={isGeneratingQuestions || !hasMockCvJdInput}
-                                title={
-                                    !hasMockCvJdInput
-                                        ? 'Add CV or JD details first.'
-                                        : 'Generates questions based on CV/JD/Company Name'
-                                }
-                            >
-                                {isGeneratingQuestions ? 'Generating...' : 'Generate Questions'}
-                            </button>
-                        )}
-                        {isDesktopViewport && isPracticeMode && (
-                            <button
-                                type="button"
                                 className="question-peek-tab"
                                 onClick={() => {
                                     setQuestionsDrawerOpen((prev) => {
@@ -6302,13 +6285,13 @@ function App() {
                                 aria-expanded={questionsDrawerOpen}
                                 aria-controls="questions-modal"
                                 title={
-                                    !hasMockCvJdInput
-                                        ? 'Add CV or JD details first.'
+                                    isGeneratingQuestions
+                                        ? 'Generating questions...'
                                         : questionsDrawerOpen
                                             ? 'Hide questions list modal'
                                             : 'Show questions list modal'
                                 }
-                                disabled={!hasMockCvJdInput}
+                                disabled={isGeneratingQuestions}
                             >
                                 Questions List
                             </button>

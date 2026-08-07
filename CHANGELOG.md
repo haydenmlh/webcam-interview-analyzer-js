@@ -19,6 +19,12 @@ Use this template for future releases:
 -
 ```
 
+## [1.10.4] - 2026-08-07
+
+### Changed
+- Merged the separate practice-mode left-tab `Generate Questions` action into the `Questions List` flow and shifted remaining left-tab buttons upward.
+- Updated the practice-mode `Questions List` left-tab button to keep its label consistent and open the questions drawer even when the list is empty.
+
 ## [1.10.3] - 2026-08-07
 
 ### Added

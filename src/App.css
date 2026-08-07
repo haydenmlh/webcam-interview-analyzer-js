@@ -2305,7 +2305,7 @@ h3 {
 .question-peek-tab {
     position: absolute;
     left: calc(-1 * var(--peek-tab-width));
-    top: calc(var(--peek-tab-top) + (var(--peek-tab-step) * 2) + (var(--peek-tab-tall-extra) * 2));
+    top: calc(var(--peek-tab-top) + var(--peek-tab-step) + var(--peek-tab-tall-extra));
     border: 1px solid var(--line);
     border-right: none;
     border-radius: 10px 0 0 10px;
@@ -2331,7 +2331,7 @@ h3 {
 .summary-peek-tab {
     position: absolute;
     left: calc(-1 * var(--peek-tab-width));
-    top: calc(var(--peek-tab-top) + (var(--peek-tab-step) * 3) + (var(--peek-tab-tall-extra) * 3));
+    top: calc(var(--peek-tab-top) + (var(--peek-tab-step) * 2) + (var(--peek-tab-tall-extra) * 2));
     border: 1px solid var(--line);
     border-right: none;
     border-radius: 10px 0 0 10px;
@@ -2357,7 +2357,7 @@ h3 {
 .summary-peek-tab-wrap {
     position: absolute;
     left: calc(-1 * var(--peek-tab-width));
-    top: calc(var(--peek-tab-top) + (var(--peek-tab-step) * 3) + (var(--peek-tab-tall-extra) * 3));
+    top: calc(var(--peek-tab-top) + (var(--peek-tab-step) * 2) + (var(--peek-tab-tall-extra) * 2));
     z-index: 3;
 }
 
@@ -2375,7 +2375,7 @@ h3 {
 .reports-peek-tab {
     position: absolute;
     left: calc(-1 * var(--peek-tab-width));
-    top: calc(var(--peek-tab-top) + (var(--peek-tab-step) * 4) + (var(--peek-tab-tall-extra) * 4));
+    top: calc(var(--peek-tab-top) + (var(--peek-tab-step) * 3) + (var(--peek-tab-tall-extra) * 3));
     border: 1px solid var(--line);
     border-right: none;
     border-radius: 10px 0 0 10px;
