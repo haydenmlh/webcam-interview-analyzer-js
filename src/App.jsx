@@ -2905,6 +2905,129 @@ function App() {
         return splitByQuestionMarks.length > 1 ? splitByQuestionMarks : normalizedLines
     }
 
+    function hasAnswerTranscriptSection(questionBlockMarkdown) {
+        return /(^|\n)\s*(\*\*Answer Transcript\*\*|###\s*Answer Transcript\b)/i.test(
+            questionBlockMarkdown,
+        )
+    }
+
+    function buildQuotedTranscriptLines(transcriptText) {
+        const lines = String(transcriptText || '')
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean)
+
+        if (!lines.length) return []
+        if (lines.length === 1) {
+            return [`> "${lines[0]}"`]
+        }
+
+        const firstLine = `> "${lines[0]}`
+        const middleLines = lines.slice(1, -1).map((line) => `> ${line}`)
+        const lastLine = `> ${lines[lines.length - 1]}"`
+        return [firstLine, ...middleLines, lastLine]
+    }
+
+    function insertAnswerTranscriptInQuestionBlock(questionBlockMarkdown, transcriptText) {
+        if (!transcriptText?.trim() || hasAnswerTranscriptSection(questionBlockMarkdown)) {
+            return questionBlockMarkdown
+        }
+
+        const lines = questionBlockMarkdown.split('\n')
+        const firstBoldedHeadingIndex = lines.findIndex(
+            (line, index) => index > 0 && /^\s*\*\*[^*\n]+\*\*\s*$/.test(line.trim()),
+        )
+        if (firstBoldedHeadingIndex < 0) {
+            return questionBlockMarkdown
+        }
+
+        let insertAt = lines.length
+        for (let index = firstBoldedHeadingIndex + 1; index < lines.length; index += 1) {
+            if (/^\s*\*\*[^*\n]+\*\*\s*$/.test(lines[index].trim())) {
+                insertAt = index
+                break
+            }
+        }
+
+        const quotedTranscriptLines = buildQuotedTranscriptLines(transcriptText)
+        if (!quotedTranscriptLines.length) return questionBlockMarkdown
+
+        lines.splice(insertAt, 0, '', '**Answer Transcript**', ...quotedTranscriptLines, '')
+        return lines.join('\n').replace(/\n{3,}/g, '\n\n')
+    }
+
+    function normalizeDetailedReportMarkdownForPdf(detailedMarkdown, summaries) {
+        const normalizedMarkdown = String(detailedMarkdown || '').replace(/\r\n?/g, '\n')
+        const questionBlockPattern =
+            /^###\s*Question\s+(\d+)\s*:[^\n]*\n[\s\S]*?(?=^###\s*Question\s+\d+\s*:|\Z)/gm
+
+        const extractedBlocks = []
+        let match
+        while ((match = questionBlockPattern.exec(normalizedMarkdown)) !== null) {
+            const questionNumber = Number.parseInt(match[1], 10)
+            const blockText = match[0]
+            const headingText =
+                blockText.match(/^###\s*Question\s+\d+\s*:\s*(.*)$/m)?.[1]?.trim() || ''
+
+            extractedBlocks.push({
+                start: match.index,
+                end: match.index + blockText.length,
+                questionNumber,
+                headingText,
+                blockText,
+            })
+        }
+
+        if (!extractedBlocks.length) return normalizedMarkdown
+
+        const questionOrder = extractedBlocks.map((block) => block.questionNumber)
+        const isStrictlyDescending =
+            questionOrder.length > 1 &&
+            questionOrder.every((value, index) => index === 0 || questionOrder[index - 1] > value)
+
+        const questionBlocks = isStrictlyDescending
+            ? [...extractedBlocks].sort((a, b) => a.questionNumber - b.questionNumber)
+            : extractedBlocks
+
+        const summariesChronological = [...(summaries || [])].sort((a, b) => {
+            const left = Date.parse(a?.capturedAt || '')
+            const right = Date.parse(b?.capturedAt || '')
+            const leftValue = Number.isFinite(left) ? left : 0
+            const rightValue = Number.isFinite(right) ? right : 0
+            return leftValue - rightValue
+        })
+
+        const transcriptByQuestionKey = new Map()
+        for (const entry of summariesChronological) {
+            const key = normalizeQuestionKey(entry?.question)
+            const transcriptText = String(entry?.transcript || '').trim()
+            if (!key || !transcriptText || transcriptByQuestionKey.has(key)) continue
+            transcriptByQuestionKey.set(key, transcriptText)
+        }
+
+        const enhancedBlocks = questionBlocks.map((block) => {
+            const normalizedHeadingKey = normalizeQuestionKey(block.headingText)
+            const transcriptFromHeading = normalizedHeadingKey
+                ? transcriptByQuestionKey.get(normalizedHeadingKey) || ''
+                : ''
+            const transcriptFromIndex =
+                summariesChronological[block.questionNumber - 1]?.transcript || ''
+            const transcriptText = String(transcriptFromHeading || transcriptFromIndex || '').trim()
+
+            return insertAnswerTranscriptInQuestionBlock(block.blockText, transcriptText)
+        })
+
+        const firstStart = extractedBlocks[0].start
+        const lastEnd = extractedBlocks[extractedBlocks.length - 1].end
+        const before = normalizedMarkdown.slice(0, firstStart)
+        const after = normalizedMarkdown.slice(lastEnd)
+        const combinedBlocks = enhancedBlocks
+            .map((blockText) => blockText.trimEnd())
+            .join('\n\n')
+
+        return `${before}${combinedBlocks}${after}`
+    }
+
     function getLlmProviderCandidatesForCurrentMode() {
         const providerCandidates = []
         if (llmProviderMode === LLM_PROVIDER_MODE_OPENROUTER_ONLY) {
@@ -3372,11 +3495,16 @@ function App() {
                 throw lastError || new Error('Could not generate detailed report.')
             }
 
+            const normalizedDetailedPdfMarkdown = normalizeDetailedReportMarkdownForPdf(
+                result.text,
+                interviewSummaries,
+            )
+
             const pdfDocument = await downloadInterviewReportPdf({
                 companyName,
                 consultantFullName,
                 jobTitle,
-                feedbackText: result.text,
+                feedbackText: normalizedDetailedPdfMarkdown,
                 reportTitle: 'Detailed Interview Report',
                 feedbackSectionTitle: 'Detailed Feedback Output',
                 fileNamePrefix: 'detailed-interview-report',
@@ -3520,11 +3648,16 @@ function App() {
                     throw lastError || new Error('Could not generate detailed report.')
                 }
 
+                const normalizedDetailedPdfMarkdown = normalizeDetailedReportMarkdownForPdf(
+                    result.text,
+                    interviewSummaries,
+                )
+
                 const pdfDocument = await downloadInterviewReportPdf({
                     companyName,
                     consultantFullName,
                     jobTitle,
-                    feedbackText: result.text,
+                    feedbackText: normalizedDetailedPdfMarkdown,
                     reportTitle: 'Detailed Interview Report',
                     feedbackSectionTitle: 'Detailed Feedback Output',
                     fileNamePrefix: 'detailed-interview-report',

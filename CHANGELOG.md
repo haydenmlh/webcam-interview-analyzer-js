@@ -19,6 +19,12 @@ Use this template for future releases:
 -
 ```
 
+## [1.10.5] - 2026-08-07
+
+### Fixed
+- Fixed detailed-report PDF generation to normalize per-question section order when model output returns question blocks in reverse (`Question N` down to `Question 1`).
+- Fixed detailed-report PDF generation to insert a bold `Answer Transcript` section with quoted full transcript after the first bolded section in each question block when transcript content is missing.
+
 ## [1.10.4] - 2026-08-07
 
 ### Changed
