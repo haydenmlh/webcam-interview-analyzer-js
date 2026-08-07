@@ -14,11 +14,15 @@ body {
     content: '';
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.75);
+    background: rgba(255, 255, 255, 0.75);
     opacity: 0;
     transition: opacity 1000ms ease;
     pointer-events: none;
     z-index: 14;
+}
+
+:root[data-theme='dark'] .app-shell::before {
+    background: rgba(0, 0, 0, 0.75);
 }
 
 .app-shell.mock-interview-focus-mode::before {
@@ -37,11 +41,15 @@ body {
     position: absolute;
     inset: -1px;
     border-radius: inherit;
-    background: rgba(0, 0, 0, 0.75);
+    background: rgba(255, 255, 255, 0.75);
     opacity: 0;
     transition: opacity 1000ms ease;
     pointer-events: none;
     z-index: 16;
+}
+
+:root[data-theme='dark'] .camera-panel::before {
+    background: rgba(0, 0, 0, 0.75);
 }
 
 .app-shell.mock-interview-focus-mode .camera-panel::before {

@@ -19,6 +19,14 @@ Use this template for future releases:
 -
 ```
 
+## [1.10.3] - 2026-08-07
+
+### Added
+- Added per-session question shuffling when starting mock interview, so each new start randomizes question order before question 1 is read.
+
+### Changed
+- Updated theater-mode overlay behavior so light mode fades to white while dark mode continues fading to black.
+
 ## [1.10.2] - 2026-08-06
 
 ### Added

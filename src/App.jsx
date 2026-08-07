@@ -3812,6 +3812,15 @@ function App() {
         return currentIndexFromInput >= 0 ? currentIndexFromInput : 0
     }
 
+    function shuffleQuestions(questions) {
+        const shuffled = [...questions]
+        for (let index = shuffled.length - 1; index > 0; index -= 1) {
+            const randomIndex = Math.floor(Math.random() * (index + 1))
+            ;[shuffled[index], shuffled[randomIndex]] = [shuffled[randomIndex], shuffled[index]]
+        }
+        return shuffled
+    }
+
     async function ensureMicrophonePermissionForMockInterviewStart() {
         if (!navigator?.mediaDevices?.getUserMedia) {
             setBanner('Microphone access is unavailable in this browser.')
@@ -3836,7 +3845,8 @@ function App() {
     }
 
     async function startMockInterviewQuestionAt(index, options = {}) {
-        const question = parsedDrawerQuestions[index]
+        const questions = options.questions || parsedDrawerQuestions
+        const question = questions[index]
         if (!question) return false
 
         // Reset overlay visibility on question transition; user can explicitly show it again.
@@ -3896,10 +3906,17 @@ function App() {
             return
         }
 
+        const shuffledQuestions = shuffleQuestions(parsedDrawerQuestions)
+        setQuestionsBulkInput(shuffledQuestions.join('\n'))
+        setNextQuestionCursor(0)
+        setActiveQuestionListIndex(null)
+
         setIsMockInterviewStarted(true)
         setHasMockInterviewStartedOnce(true)
 
-        const started = await startMockInterviewQuestionAt(startIndex)
+        const started = await startMockInterviewQuestionAt(0, {
+            questions: shuffledQuestions,
+        })
         if (!started) {
             setIsMockInterviewStarted(false)
         }
