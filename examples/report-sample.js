@@ -1,5 +1,4 @@
-const puppeteer = require('puppeteer');
-const fs = require('fs');
+import puppeteer from 'puppeteer';
 
 const htmlContent = `<!DOCTYPE html>
 <html lang="en">

@@ -317,6 +317,7 @@ h3 {
 
 .layout.center-camera-layout {
     grid-template-columns: 1fr;
+    padding-top: 8px;
 }
 
 .layout.center-camera-layout .centered-camera-panel {
@@ -884,6 +885,8 @@ h3 {
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
 }
 
 .self-view-frame.full {
@@ -975,6 +978,8 @@ h3 {
     justify-items: center;
     gap: 0.16rem;
     cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
 }
 
 .camera-toggle-overlay-btn:hover {
@@ -1011,6 +1016,8 @@ h3 {
     line-height: 1;
     transform: translateY(1px);
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+    user-select: none;
+    -webkit-user-select: none;
 }
 
 .camera-toggle-overlay-caret {
@@ -1026,6 +1033,8 @@ h3 {
     align-items: center;
     justify-content: center;
     cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
 }
 
 .camera-toggle-overlay-btn:hover+.camera-toggle-overlay-caret {
@@ -1847,6 +1856,12 @@ h3 {
     min-height: 0;
     overflow: auto;
     padding: 1rem;
+    display: grid;
+    gap: 0.85rem;
+}
+
+.settings-modal-body > .label:first-child {
+    margin-top: 0;
 }
 
 .changelog-modal {
@@ -2073,6 +2088,10 @@ h3 {
     display: block;
     margin-top: 0.95rem;
     font-weight: 600;
+}
+
+.interview-mode-label {
+    margin-top: 0;
 }
 
 .label-with-link {
@@ -2880,7 +2899,24 @@ h3 {
 }
 
 .settings-section {
-    margin-top: 0.95rem;
+    margin-top: 0;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--card-bg), white 3%);
+    padding: 0.75rem 0.85rem 0.85rem;
+}
+
+.settings-section-title {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 0.98rem;
+    letter-spacing: 0.01em;
+}
+
+.settings-section-title + .label,
+.settings-section-title + .muted,
+.settings-section-title + .debug-toggle {
+    margin-top: 0.5rem;
 }
 
 .interviewer-image-settings {
@@ -2889,15 +2925,26 @@ h3 {
 
 .interviewer-image-actions {
     margin-top: 0.5rem;
+    align-items: center;
 }
 
 .interviewer-image-help {
     margin-top: 0.45rem;
 }
 
+.interviewer-image-help-inline {
+    margin: 0;
+    font-size: calc(0.9rem - 2px);
+    line-height: 1.25;
+}
+
 .help-text,
 .privacy-note {
     color: var(--ink-700);
+}
+
+.recording-storage-note {
+    font-size: calc(0.9rem - 2px);
 }
 
 .error-text {

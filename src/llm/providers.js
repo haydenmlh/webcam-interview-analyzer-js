@@ -5,7 +5,7 @@ const PROVIDER_LABELS = {
 
 const DEFAULT_BASE_URLS = {
     openrouter: 'https://openrouter.ai/api/v1',
-    nim: '/api/nim',
+    nim: 'https://nim-proxy-worker.haydenmlh.workers.dev/v1',
 }
 
 const DEFAULT_MODELS = {

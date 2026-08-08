@@ -19,6 +19,31 @@ Use this template for future releases:
 -
 ```
 
+## [1.10.8] - 2026-08-08
+
+### Changed
+- Reorganized the Settings modal into clearer grouped sections with semantic section headings for improved readability.
+- Removed the NVIDIA NIM Base URL block from the Settings UI while preserving the internal saved/default base URL behavior.
+
+### Fixed
+- Prevented text selection/highlighting when interacting with webcam overlay controls (`Video` toggle/caret) and when double-clicking the self-view PiP frame.
+
+## [1.10.7] - 2026-08-08
+
+### Changed
+- Updated LLM provider defaults to start in `NVIDIA NIM only` mode.
+- Updated Settings provider visibility rules so OpenRouter key/model fields are hidden in `NVIDIA NIM only` mode, and NVIDIA NIM key/model fields are hidden in `OpenRouter only` mode.
+
+### Fixed
+- Fixed a runtime blank-page regression by restoring stable settings-close handler behavior and eliminating a follow-up maximum update depth loop.
+- Updated provider default-base-url tests to align with the current NVIDIA NIM workers endpoint default.
+
+## [1.10.6] - 2026-08-08
+
+### Changed
+- Updated the default NVIDIA NIM base URL to `https://nim-proxy-worker.haydenmlh.workers.dev/v1`.
+- Added double-click toggle behavior on the self-view frame to switch between PiP and self-only view.
+
 ## [1.10.5] - 2026-08-07
 
 ### Fixed

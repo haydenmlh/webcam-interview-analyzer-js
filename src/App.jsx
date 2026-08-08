@@ -88,6 +88,7 @@ const HANDLE_DB_NAME = 'mia-handle-db'
 const HANDLE_STORE_NAME = 'handles'
 const RECORDINGS_FOLDER_KEY = 'recordings-folder'
 const RECYCLE_BIN_FOLDER_NAME = '_Recycle Bin'
+const LOCAL_STORAGE_APPROX_MAX_BYTES = 5 * 1024 * 1024
 
 const VALIDATION_RECOMMEND_DAYS = 30
 const INITIAL_NOW_MS = Date.now()
@@ -313,10 +314,6 @@ function getSavedValue(keyName) {
     } catch {
         return ''
     }
-}
-
-function getSavedBoolean(keyName) {
-    return getSavedValue(keyName) === 'true'
 }
 
 function setSavedValue(keyName, value) {
@@ -872,7 +869,14 @@ async function downloadInterviewReportPdf({
             .normalize('NFKD')
             .replace(/[\u0300-\u036F]/g, '')
             // Keep degree symbol for angle/temperature metrics while removing other unsupported glyphs.
-            .replace(/[^\x09\x0A\x20-\x7E\u00B0]/g, '')
+            .split('')
+            .filter((char) => {
+                const code = char.charCodeAt(0)
+                if (code === 9 || code === 10) return true
+                if (code >= 32 && code <= 126) return true
+                return code === 176
+            })
+            .join('')
             // Keep unit symbols attached to numeric values (e.g. 4%, 19°).
             .replace(/(\d)\s+([%°])/g, '$1$2')
 
@@ -1794,7 +1798,7 @@ function App() {
         const persistedLlmProviderMode = normalizeEnumValue(
             getSavedValue(STORAGE_LLM_PROVIDER_MODE),
             LLM_PROVIDER_MODES,
-            LLM_PROVIDER_MODE_AUTO,
+            LLM_PROVIDER_MODE_NIM_ONLY,
         )
         const persistedOpenrouterApiKey = getSavedValue(STORAGE_OPENROUTER_API_KEY)
         const persistedOpenrouterModel =
@@ -2114,7 +2118,7 @@ function App() {
         revokeHistoryMediaUrls(selectedHistoryMediaRef.current)
         selectedHistoryMediaRef.current = nextUrls
         setSelectedHistoryMedia(nextUrls)
-    }, [revokeHistoryMediaUrls])
+    }, [revokeHistoryMediaUrls, setSelectedHistoryMedia])
 
     async function loadHistoryMedia(item) {
         if (!item) {
@@ -2141,6 +2145,7 @@ function App() {
         replaceHistoryMediaUrls({ audioUrl, videoUrl })
     }
 
+    // Keep dependencies minimal here to avoid callback identity churn from custom hook setters.
     const loadPreviousAnswersFromFolder = useCallback(async () => {
         if (isIphoneClient) {
             setPreviousAnswers([])
@@ -2284,8 +2289,10 @@ function App() {
         } finally {
             setIsLoadingPreviousAnswers(false)
         }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [fileSystemAccessSupported, isIphoneClient])
 
+    // Keep dependencies minimal here to avoid callback identity churn from custom hook setters.
     const loadPreviousAnswersFromLocalStorage = useCallback(async () => {
         setIsLoadingPreviousAnswers(true)
         setPreviousAnswersError('')
@@ -2349,6 +2356,7 @@ function App() {
         } finally {
             setIsLoadingPreviousAnswers(false)
         }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
 
     const loadPreviousAnswers = useCallback(async () => {
@@ -2358,6 +2366,7 @@ function App() {
         return loadPreviousAnswersFromFolder()
     }, [loadPreviousAnswersFromFolder, loadPreviousAnswersFromLocalStorage, previousAnswersSource])
 
+    // Keep dependencies minimal here to avoid repeated source flipping and update loops.
     useEffect(() => {
         if (!isFolderFeatureDisabled) return
         if (previousAnswersSource !== PREVIOUS_ANSWERS_SOURCE_FOLDER) return
@@ -2366,6 +2375,7 @@ function App() {
         setSelectedPreviousAnswerId('')
         replaceHistoryMediaUrls({ audioUrl: '', videoUrl: '' })
         void loadPreviousAnswersFromLocalStorage()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [
         isFolderFeatureDisabled,
         previousAnswersSource,
@@ -2388,10 +2398,35 @@ function App() {
         setHistoryModalOpen(true)
     }
 
+    async function openLocalStoragePreviousAnswersFromSettings() {
+        closeSettingsConfirmed()
+        setPreviousAnswersSource(PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE)
+
+        const items = await loadPreviousAnswersFromLocalStorage()
+        if (!items.length) {
+            setHistoryModalOpen(true)
+            setSelectedPreviousAnswerId('')
+            replaceHistoryMediaUrls({ audioUrl: '', videoUrl: '' })
+            return
+        }
+
+        const firstItem = items[0]
+        setSelectedPreviousAnswerId(firstItem.id)
+        await loadHistoryMedia(firstItem)
+        setHistoryModalOpen(true)
+    }
+
+    function openSessionSummaryFromSettings() {
+        closeSettingsConfirmed()
+        openSummaryModal()
+    }
+
+    // Keep dependencies minimal here to avoid callback identity churn from custom hook setters.
     const closePreviousAnswersModal = useCallback(() => {
         setHistoryModalOpen(false)
         setSelectedPreviousAnswerId('')
         replaceHistoryMediaUrls({ audioUrl: '', videoUrl: '' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [replaceHistoryMediaUrls])
 
     async function selectPreviousAnswer(item) {
@@ -2404,6 +2439,7 @@ function App() {
         [previousAnswers, selectedPreviousAnswerId],
     )
 
+    // Keep dependencies minimal here to avoid repeated file-size effect loops.
     useEffect(() => {
         let cancelled = false
 
@@ -2471,6 +2507,7 @@ function App() {
         return () => {
             cancelled = true
         }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [selectedPreviousAnswer])
 
     const selectedPreviousAnswerSummaryFingerprint = useMemo(() => {
@@ -2532,9 +2569,15 @@ function App() {
             ? 'Loading previous answers...'
             : ''
     const isSummaryViewDisabled = !interviewSummaries.length
-    const summaryViewDisabledReason = isSummaryViewDisabled
-        ? 'Record and transcribe at least one answer first.'
-        : ''
+
+    const localTranscriptMetricsStorageBytes = useMemo(() => {
+        try {
+            const raw = getSavedValue(STORAGE_PREVIOUS_ANSWERS_LOCAL)
+            return new Blob([raw]).size
+        } catch {
+            return 0
+        }
+    }, [settingsOpen, previousAnswers, transcript, latestInterviewMetrics])
 
     function suppressDisabledTooltipPointerDefault(event, isDisabled) {
         if (!isDisabled) return
@@ -2572,6 +2615,7 @@ function App() {
         setToast('Custom interviewer image removed.')
     }
 
+    // Keep dependencies minimal here; closeSettings is intentionally excluded to avoid escape-handler churn.
     useEffect(() => {
         let cancelled = false
 
@@ -2680,6 +2724,10 @@ function App() {
                 : `${parsedDrawerQuestions.length} question(s) in question list`
 
     const shouldShowSessionPanel = false
+    const shouldShowOpenrouterSettings =
+        llmProviderModeInput !== LLM_PROVIDER_MODE_NIM_ONLY
+    const shouldShowNimKeyAndModelSettings =
+        llmProviderModeInput !== LLM_PROVIDER_MODE_OPENROUTER_ONLY
 
     const warningPopupMessage = useMemo(() => {
         if (banner) return banner
@@ -2687,7 +2735,10 @@ function App() {
         if (needsRevalidation) {
             return 'Revalidation recommended. Your key was last checked over 30 days ago.'
         }
-        if (!hasTtsProvider && readQuestionWithTts) {
+        if (
+            !hasTtsProvider &&
+            (cameraWorkflowMode !== CAMERA_WORKFLOW_MODE_PRACTICE || readQuestionWithTts)
+        ) {
             return 'Question TTS uses your system voice and is unavailable in this browser.'
         }
         return ''
@@ -2696,6 +2747,7 @@ function App() {
         previousAnswersError,
         needsRevalidation,
         hasTtsProvider,
+        cameraWorkflowMode,
         readQuestionWithTts,
     ])
 
@@ -2807,7 +2859,6 @@ function App() {
         generateQuestionsCountModalOpen,
         generateQuestionsCountInput,
         setGenerateQuestionsCountInput,
-        openGenerateQuestionsCountModal,
         confirmGenerateQuestionsClearSummary,
         cancelGenerateQuestionsClearSummary,
         confirmGenerateQuestionsCountSelection,
@@ -2959,7 +3010,7 @@ function App() {
     function normalizeDetailedReportMarkdownForPdf(detailedMarkdown, summaries) {
         const normalizedMarkdown = String(detailedMarkdown || '').replace(/\r\n?/g, '\n')
         const questionBlockPattern =
-            /^###\s*Question\s+(\d+)\s*:[^\n]*\n[\s\S]*?(?=^###\s*Question\s+\d+\s*:|\Z)/gm
+            /^###\s*Question\s+(\d+)\s*:[^\n]*\n[\s\S]*?(?=^###\s*Question\s+\d+\s*:|$)/gm
 
         const extractedBlocks = []
         let match
@@ -3250,289 +3301,6 @@ function App() {
             }
         } finally {
             setIsGeneratingQuestions(false)
-        }
-    }
-
-    async function generateAmFeedbackReport() {
-        if (isGeneratingAmReport || isGeneratingDetailedReport) return
-
-        if (!interviewSummaries.length) {
-            setToast('Add at least one answer to Answer Summary before generating AM report.')
-            return
-        }
-
-        const cv = cvText.trim()
-        const jobDescription = jdText.trim()
-        const companyName = companyNameInput.trim()
-        const consultantFullName = consultantFullNameInput.trim()
-        const jobTitle = jobTitleInput.trim()
-        if (!cv && !jobDescription && !companyName) {
-            setToast('Add CV, JD, or company name before generating AM report.')
-            return
-        }
-
-        const providerCandidates = getLlmProviderCandidatesForCurrentMode()
-        if (!providerCandidates.length) {
-            showLlmProviderMissingKeyToast()
-            return
-        }
-
-        const summaryMarkdown = buildAnswerSummaryMarkdown(
-            interviewSummaries,
-            overallInterviewSummary,
-            (value) => formatReadableCapturedDate(value, sanitizeDisplayText),
-        )
-
-        const metricSummary = [
-            `Total answers: ${overallInterviewSummary.totalAnswers}`,
-            `Average WPM: ${overallInterviewSummary.averageWpm}`,
-            `Average answer length (sec): ${overallInterviewSummary.averageAnswerLengthSec}`,
-            `Average hesitations: ${overallInterviewSummary.averageHesitations}`,
-            `Average gaze center (%): ${overallInterviewSummary.averageGazeCenterPct}`,
-        ].join(', ')
-
-        setIsGeneratingAmReport(true)
-        setCombinedReportModalOpen(true)
-        setAmReportMarkdownPreview('Generating AM report...')
-        setConfirmCloseCombinedReportPdfOpen(false)
-        setToast('Generating AM feedback report...')
-
-        try {
-            let result = null
-            let lastError = null
-            const controller = new AbortController()
-            amReportAbortControllerRef.current = controller
-
-            for (let index = 0; index < providerCandidates.length; index += 1) {
-                const providerConfig = providerCandidates[index]
-                setAmReportMarkdownPreview('')
-
-                if (controller.signal.aborted) {
-                    const abortError = new Error('AM report generation canceled.')
-                    abortError.code = 'request-aborted'
-                    throw abortError
-                }
-
-                const providerLabel = getLlmProviderUsageLabel(providerConfig.providerId)
-                const providerUsageMessage = `Generating AM Report, LLM API used: ${providerLabel}`
-                console.info(providerUsageMessage)
-                setToast(providerUsageMessage)
-
-                try {
-                    result = await sendInterviewChatMessage({
-                        providerId: providerConfig.providerId,
-                        apiKey: providerConfig.apiKey,
-                        model: providerConfig.model,
-                        baseUrl: providerConfig.baseUrl,
-                        userMessage: AM_REPORT_USER_MESSAGE,
-                        context: {
-                            question: 'Generate concise mock interview feedback and summary for the consultant at consulting firm. Do not include per question feedback.',
-                            answer: summaryMarkdown,
-                            generationGuidelines: DEFAULT_AM_REPORT_GENERATION_GUIDELINES,
-                            metricSummary,
-                            companyName,
-                            consultantFullName,
-                            jobTitle,
-                            jobDescription,
-                            cv
-                        },
-                        stream: true,
-                        onChunk: (fullText) => {
-                            setAmReportMarkdownPreview(fullText || '')
-                        },
-                        signal: controller.signal,
-                    })
-                    break
-                } catch (error) {
-                    if (error?.code === 'request-aborted') {
-                        throw error
-                    }
-                    showLlmProviderHttpErrorToast(error, providerConfig.providerId)
-                    lastError = error
-                }
-            }
-
-            if (!result?.text) {
-                throw lastError || new Error('Could not generate AM report.')
-            }
-
-            const pdfDocument = await downloadInterviewReportPdf({
-                companyName,
-                consultantFullName,
-                jobTitle,
-                feedbackText: result.text,
-                reportTitle: 'Account Manager Interview Feedback Report',
-                feedbackSectionTitle: 'AM Feedback Output',
-                fileNamePrefix: 'am-feedback-report',
-            })
-
-            if (!pdfDocument?.blob) {
-                throw new Error('Could not prepare AM feedback PDF.')
-            }
-
-            const previewUrl = URL.createObjectURL(pdfDocument.blob)
-            setAmReportPdfPreviewUrl(previewUrl)
-            setAmReportPdfBlob(pdfDocument.blob)
-            setAmReportPdfFileName(pdfDocument.fileName || 'am-feedback-report.pdf')
-            setCombinedReportPdfPreviewOpen(true)
-            setCombinedReportModalOpen(false)
-            setToast('AM feedback PDF ready. Review or download.')
-        } catch (error) {
-            setCombinedReportModalOpen(false)
-            if (error?.code === 'request-aborted') {
-                setToast('AM report generation canceled.')
-            } else {
-                if (!showLlmProviderHttpErrorToast(error)) {
-                    setToast(error?.message || 'Could not generate AM report.')
-                }
-            }
-        } finally {
-            amReportAbortControllerRef.current = null
-            setIsGeneratingAmReport(false)
-        }
-    }
-
-    async function generateDetailedInterviewReport() {
-        if (isGeneratingDetailedReport || isGeneratingAmReport) return
-
-        if (!interviewSummaries.length) {
-            setToast('Add at least one answer to Answer Summary before generating a detailed report.')
-            return
-        }
-
-        const cv = cvText.trim()
-        const jobDescription = jdText.trim()
-        const companyName = companyNameInput.trim()
-        const consultantFullName = consultantFullNameInput.trim()
-        const jobTitle = jobTitleInput.trim()
-        if (!cv && !jobDescription && !companyName) {
-            setToast('Add CV, JD, or company name before generating a detailed report.')
-            return
-        }
-
-        const providerCandidates = getLlmProviderCandidatesForCurrentMode()
-        if (!providerCandidates.length) {
-            showLlmProviderMissingKeyToast()
-            return
-        }
-
-        const summaryMarkdown = buildAnswerSummaryMarkdown(
-            interviewSummaries,
-            overallInterviewSummary,
-            (value) => formatReadableCapturedDate(value, sanitizeDisplayText),
-        )
-
-        const metricSummary = [
-            `Total answers: ${overallInterviewSummary.totalAnswers}`,
-            `Average WPM: ${overallInterviewSummary.averageWpm}`,
-            `Average answer length (sec): ${overallInterviewSummary.averageAnswerLengthSec}`,
-            `Average hesitations: ${overallInterviewSummary.averageHesitations}`,
-            `Average gaze center (%): ${overallInterviewSummary.averageGazeCenterPct}`,
-        ].join(', ')
-
-        setIsGeneratingDetailedReport(true)
-        setCombinedReportModalOpen(true)
-        setDetailedReportMarkdownPreview('Generating detailed report...')
-        setConfirmCloseCombinedReportPdfOpen(false)
-        setToast('Generating detailed interview report...')
-
-        try {
-            let result = null
-            let lastError = null
-            const controller = new AbortController()
-            detailedReportAbortControllerRef.current = controller
-
-            for (let index = 0; index < providerCandidates.length; index += 1) {
-                const providerConfig = providerCandidates[index]
-                setDetailedReportMarkdownPreview('')
-
-                if (controller.signal.aborted) {
-                    const abortError = new Error('Detailed report generation canceled.')
-                    abortError.code = 'request-aborted'
-                    throw abortError
-                }
-
-                const providerLabel = getLlmProviderUsageLabel(providerConfig.providerId)
-                const providerUsageMessage = `Generating Detailed Report, LLM API used: ${providerLabel}`
-                console.info(providerUsageMessage)
-                setToast(providerUsageMessage)
-
-                try {
-                    result = await sendInterviewChatMessage({
-                        providerId: providerConfig.providerId,
-                        apiKey: providerConfig.apiKey,
-                        model: providerConfig.model,
-                        baseUrl: providerConfig.baseUrl,
-                        userMessage: DETAILED_REPORT_USER_MESSAGE,
-                        context: {
-                            question: 'Generate a detailed mock interview report with both overall summary and per-question analysis.',
-                            answer: summaryMarkdown,
-                            generationGuidelines: DEFAULT_DETAILED_REPORT_GENERATION_GUIDELINES,
-                            metricSummary,
-                            companyName,
-                            consultantFullName,
-                            jobTitle,
-                            jobDescription,
-                            cv,
-                        },
-                        stream: true,
-                        onChunk: (fullText) => {
-                            setDetailedReportMarkdownPreview(fullText || '')
-                        },
-                        signal: controller.signal,
-                    })
-                    break
-                } catch (error) {
-                    if (error?.code === 'request-aborted') {
-                        throw error
-                    }
-                    showLlmProviderHttpErrorToast(error, providerConfig.providerId)
-                    lastError = error
-                }
-            }
-
-            if (!result?.text) {
-                throw lastError || new Error('Could not generate detailed report.')
-            }
-
-            const normalizedDetailedPdfMarkdown = normalizeDetailedReportMarkdownForPdf(
-                result.text,
-                interviewSummaries,
-            )
-
-            const pdfDocument = await downloadInterviewReportPdf({
-                companyName,
-                consultantFullName,
-                jobTitle,
-                feedbackText: normalizedDetailedPdfMarkdown,
-                reportTitle: 'Detailed Interview Report',
-                feedbackSectionTitle: 'Detailed Feedback Output',
-                fileNamePrefix: 'detailed-interview-report',
-            })
-
-            if (!pdfDocument?.blob) {
-                throw new Error('Could not prepare detailed report PDF.')
-            }
-
-            const previewUrl = URL.createObjectURL(pdfDocument.blob)
-            setDetailedReportPdfPreviewUrl(previewUrl)
-            setDetailedReportPdfBlob(pdfDocument.blob)
-            setDetailedReportPdfFileName(pdfDocument.fileName || 'detailed-interview-report.pdf')
-            setCombinedReportPdfPreviewOpen(true)
-            setCombinedReportModalOpen(false)
-            setToast('Detailed report PDF ready. Review or download.')
-        } catch (error) {
-            setCombinedReportModalOpen(false)
-            if (error?.code === 'request-aborted') {
-                setToast('Detailed report generation canceled.')
-            } else {
-                if (!showLlmProviderHttpErrorToast(error)) {
-                    setToast(error?.message || 'Could not generate detailed report.')
-                }
-            }
-        } finally {
-            detailedReportAbortControllerRef.current = null
-            setIsGeneratingDetailedReport(false)
         }
     }
 
@@ -3838,32 +3606,8 @@ function App() {
         setToast('Detailed report PDF downloaded.')
     }
 
-    function requestCloseAmReportPdfPreview() {
-        setConfirmCloseCombinedReportPdfOpen(true)
-    }
-
-    function requestCloseDetailedReportPdfPreview() {
-        setConfirmCloseCombinedReportPdfOpen(true)
-    }
-
     function requestCloseCombinedReportPdfPreview() {
         setConfirmCloseCombinedReportPdfOpen(true)
-    }
-
-    function closeAmReportPdfPreviewConfirmed() {
-        setConfirmCloseCombinedReportPdfOpen(false)
-        setCombinedReportPdfPreviewOpen(false)
-        setAmReportPdfBlob(null)
-        setAmReportPdfFileName('')
-        setAmReportPdfPreviewUrl('')
-    }
-
-    function closeDetailedReportPdfPreviewConfirmed() {
-        setConfirmCloseCombinedReportPdfOpen(false)
-        setCombinedReportPdfPreviewOpen(false)
-        setDetailedReportPdfBlob(null)
-        setDetailedReportPdfFileName('')
-        setDetailedReportPdfPreviewUrl('')
     }
 
     function closeCombinedReportPdfPreviewConfirmed() {
@@ -4771,6 +4515,8 @@ function App() {
         })
     }
 
+    // Keep this as a hoisted function to avoid temporal dead zone issues in earlier effects.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     function closeSettings() {
         if (hasUnsavedLlmSettingsChanges) {
             setConfirmCloseSettingsUnsavedLlmOpen(true)
@@ -4795,7 +4541,7 @@ function App() {
         const normalizedProviderMode = normalizeEnumValue(
             llmProviderModeInput,
             LLM_PROVIDER_MODES,
-            LLM_PROVIDER_MODE_AUTO,
+            LLM_PROVIDER_MODE_NIM_ONLY,
         )
         const trimmedOpenrouterModel = openrouterModelInput.trim()
         const trimmedNimModel = nimModelInput.trim()
@@ -4934,7 +4680,7 @@ function App() {
     }
 
     function resetLlmSettingsToDefaults() {
-        const defaultProviderMode = LLM_PROVIDER_MODE_AUTO
+        const defaultProviderMode = LLM_PROVIDER_MODE_NIM_ONLY
         const defaultOpenrouterModel = LLM_PROVIDER_ENV_CONFIG.openrouter.model
         const defaultNimModel = LLM_PROVIDER_ENV_CONFIG.nim.model
         const defaultNimBaseUrl = DEFAULT_NIM_BASE_URL
@@ -5619,7 +5365,7 @@ function App() {
             }
             setRecycleBinSizeBytes(0)
         }
-    }, [isFolderFeatureDisabled])
+    }, [isFolderFeatureDisabled, setRecycleBinSizeBytes])
 
     const refreshRecordingsFolderSize = useCallback(async () => {
         if (isFolderFeatureDisabled || !recordingsFolderRef.current) {
@@ -5640,7 +5386,7 @@ function App() {
         } catch {
             setRecordingsFolderSizeBytes(0)
         }
-    }, [isFolderFeatureDisabled])
+    }, [isFolderFeatureDisabled, setRecordingsFolderSizeBytes])
 
     async function clearRecycleBin() {
         if (isFolderFeatureDisabled) {
@@ -5821,11 +5567,19 @@ function App() {
     }
 
     async function speakQuestionIfEnabled(questionText = questionInput) {
-        if (!readQuestionWithTts) return
+        const isPracticeModeQuestion =
+            cameraWorkflowMode === CAMERA_WORKFLOW_MODE_PRACTICE
+        const shouldReadQuestionWithTts =
+            !isPracticeModeQuestion || readQuestionWithTts
+
+        if (!shouldReadQuestionWithTts) return
 
         const text = questionText.trim()
         if (!text) {
-            setBanner('Read (TTS) Question is enabled, but the question is empty.')
+            const enabledLabel = isPracticeModeQuestion
+                ? 'Read (TTS) Question is enabled for Practice mode'
+                : 'Question TTS is required in Mock Interview mode'
+            setBanner(`${enabledLabel}, but the question is empty.`)
             return
         }
 
@@ -6327,6 +6081,24 @@ function App() {
         setIsCameraOverlayMenuOpen((prev) => !prev)
     }
 
+    function handleSelfViewFrameMouseDown(event) {
+        if (event.detail > 1) {
+            event.preventDefault()
+        }
+    }
+
+    function handleSelfViewFrameDoubleClick(event) {
+        event.preventDefault()
+        event.stopPropagation()
+
+        if (showPiP) {
+            applyCameraDisplayMode(CAMERA_DISPLAY_MODE_SELF_ONLY)
+            return
+        }
+
+        applyCameraDisplayMode(CAMERA_DISPLAY_MODE_INTERVIEWER_PLUS_SELF_PIP)
+    }
+
     useEffect(() => {
         if (!isCameraOverlayMenuOpen) return undefined
 
@@ -6383,25 +6155,6 @@ function App() {
                     <section
                         className={`panel camera-panel${centerCameraLayout ? ' centered-camera-panel' : ''}`}
                     >
-                        <div className="camera-mode-toggle" role="group" aria-label="Interview mode">
-                            <button
-                                type="button"
-                                className={`btn camera-mode-toggle-btn${cameraWorkflowMode === CAMERA_WORKFLOW_MODE_PRACTICE ? ' is-active' : ' ghost'}`}
-                                onClick={() => setCameraWorkflowMode(CAMERA_WORKFLOW_MODE_PRACTICE)}
-                                aria-pressed={cameraWorkflowMode === CAMERA_WORKFLOW_MODE_PRACTICE}
-                            >
-                                Practice Mode
-                            </button>
-                            <button
-                                type="button"
-                                className={`btn camera-mode-toggle-btn${cameraWorkflowMode === CAMERA_WORKFLOW_MODE_MOCK_INTERVIEW ? ' is-active' : ' ghost'}`}
-                                onClick={() => setCameraWorkflowMode(CAMERA_WORKFLOW_MODE_MOCK_INTERVIEW)}
-                                aria-pressed={cameraWorkflowMode === CAMERA_WORKFLOW_MODE_MOCK_INTERVIEW}
-                            >
-                                Mock Interview Mode
-                            </button>
-                        </div>
-
                         {isDesktopViewport && isPracticeMode && (
                             <button
                                 type="button"
@@ -6535,7 +6288,11 @@ function App() {
                             />
 
                             {showSelfView ? (
-                                <div className={`self-view-frame${showPiP ? ' pip' : ' full'}${isPortraitVideo ? ' portrait' : ''}`}>
+                                <div
+                                    className={`self-view-frame${showPiP ? ' pip' : ' full'}${isPortraitVideo ? ' portrait' : ''}`}
+                                    onMouseDown={handleSelfViewFrameMouseDown}
+                                    onDoubleClick={handleSelfViewFrameDoubleClick}
+                                >
                                     <video
                                         ref={videoRef}
                                         className="camera-video"
@@ -7194,7 +6951,10 @@ function App() {
                                             Revalidation recommended. Your key was last checked over 30 days ago.
                                         </p>
                                     )}
-                                    {!hasTtsProvider && readQuestionWithTts && (
+                                    {!hasTtsProvider && (
+                                        cameraWorkflowMode !== CAMERA_WORKFLOW_MODE_PRACTICE ||
+                                        readQuestionWithTts
+                                    ) && (
                                         <p className="muted">
                                             Question TTS uses your system voice and is unavailable in this browser.
                                         </p>
@@ -8124,96 +7884,130 @@ function App() {
                             </div>
                         </div>
                         <div className="settings-modal-body">
-                            <p className="muted">
-                                Add your Deepgram API key to enable live transcription. Your key is stored only in this browser.
-                            </p>
-
-                            <label htmlFor="deepgram-key" className="label label-with-link">
-                                <span>Deepgram API Key</span>
-                                <a
-                                    className="settings-provider-link"
-                                    href="https://deepgram.com/"
-                                    target="_blank"
-                                    rel="noreferrer"
-                                >
-                                    (Get API Key)
-                                </a>
-                            </label>
-                            <div className="key-input-row">
-                                <input
-                                    ref={deepgramKeyInputRef}
-                                    id="deepgram-key"
-                                    type={showKey ? 'text' : 'password'}
-                                    value={keyInput}
-                                    onChange={(event) => updateInput(event.target.value)}
-                                    onBlur={validateOnBlur}
-                                    aria-describedby={fieldError ? 'key-error' : undefined}
-                                    className={fieldError ? 'field field-error' : 'field'}
-                                    autoComplete="off"
-                                />
-                                <button
-                                    type="button"
-                                    className="btn key-save-btn"
-                                    onMouseDown={(event) => event.preventDefault()}
-                                    onClick={saveSettings}
-                                >
-                                    Save key
-                                </button>
-                            </div>
-                            <div className="actions wrap key-actions-row">
-                                <button
-                                    type="button"
-                                    className="btn ghost"
-                                    onClick={() => setShowKey((prev) => !prev)}
-                                >
-                                    {showKey ? 'Hide key' : 'Show key'}
-                                </button>
-                                {hasKey && (
+                            <div className="settings-section">
+                                <label className="label interview-mode-label">Interview Mode</label>
+                                <div className="camera-mode-toggle" role="group" aria-label="Interview mode">
                                     <button
                                         type="button"
-                                        className="btn danger"
-                                        onClick={() => setConfirmRemoveOpen(true)}
+                                        className={`btn camera-mode-toggle-btn${cameraWorkflowMode === CAMERA_WORKFLOW_MODE_PRACTICE ? ' is-active' : ' ghost'}`}
+                                        onClick={() => setCameraWorkflowMode(CAMERA_WORKFLOW_MODE_PRACTICE)}
+                                        aria-pressed={cameraWorkflowMode === CAMERA_WORKFLOW_MODE_PRACTICE}
                                     >
-                                        Remove key
+                                        Practice Mode
                                     </button>
-                                )}
-                                <label className="debug-toggle" title="Use local fallback when Deepgram key is missing">
-                                    <input
-                                        type="checkbox"
-                                        checked={fallbackWithoutDeepgramKey}
-                                        onChange={(event) =>
-                                            setFallbackWithoutDeepgramKey(event.target.checked)
-                                        }
-                                    />
-                                    <span>Use fallback when Deepgram key is missing</span>
-                                </label>
+                                    <button
+                                        type="button"
+                                        className={`btn camera-mode-toggle-btn${cameraWorkflowMode === CAMERA_WORKFLOW_MODE_MOCK_INTERVIEW ? ' is-active' : ' ghost'}`}
+                                        onClick={() => setCameraWorkflowMode(CAMERA_WORKFLOW_MODE_MOCK_INTERVIEW)}
+                                        aria-pressed={cameraWorkflowMode === CAMERA_WORKFLOW_MODE_MOCK_INTERVIEW}
+                                    >
+                                        Mock Interview Mode
+                                    </button>
+                                </div>
+                                <div className="actions wrap">
+                                    <button
+                                        type="button"
+                                        className="btn ghost"
+                                        onClick={openLocalStoragePreviousAnswersFromSettings}
+                                    >
+                                        View Previous Answers
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn ghost"
+                                        onClick={openSessionSummaryFromSettings}
+                                    >
+                                        View Session Summary
+                                    </button>
+                                </div>
                             </div>
-                            {fieldError && (
-                                <p id="key-error" className="error-text" aria-live="polite">
-                                    {fieldError}
-                                </p>
-                            )}
-
-                            <p className="privacy-note">
-                                Anyone with access to this browser profile can use this key until you remove it.
-                            </p>
-                            <p className="privacy-note">
-                                Do not share screenshots of this page while key is visible.
-                            </p>
-                            <label className="debug-toggle">
-                                <input
-                                    type="checkbox"
-                                    checked={deepgramDebugEnabled}
-                                    onChange={(event) => setDeepgramDebugEnabled(event.target.checked)}
-                                />
-                                <span>Deepgram Debug</span>
-                            </label>
 
                             <div className="settings-section">
-                                <label className="label">LLM Chat Providers</label>
-                                <p className="muted">
-                                    Configure OpenRouter or NVIDIA NIM for question generation.
+                                <h3 className="settings-section-title">Speech &amp; Transcription</h3>
+                                <label htmlFor="deepgram-key" className="label label-with-link">
+                                    <span>Deepgram API Key</span>
+                                    <a
+                                        className="settings-provider-link"
+                                        href="https://deepgram.com/"
+                                        target="_blank"
+                                        rel="noreferrer"
+                                    >
+                                        (Get API Key)
+                                    </a>
+                                </label>
+                                <div className="key-input-row">
+                                    <input
+                                        ref={deepgramKeyInputRef}
+                                        id="deepgram-key"
+                                        type={showKey ? 'text' : 'password'}
+                                        value={keyInput}
+                                        onChange={(event) => updateInput(event.target.value)}
+                                        onBlur={validateOnBlur}
+                                        aria-describedby={fieldError ? 'key-error' : undefined}
+                                        className={fieldError ? 'field field-error' : 'field'}
+                                        autoComplete="off"
+                                    />
+                                    <button
+                                        type="button"
+                                        className="btn key-save-btn"
+                                        onMouseDown={(event) => event.preventDefault()}
+                                        onClick={saveSettings}
+                                    >
+                                        Save key
+                                    </button>
+                                </div>
+                                <div className="actions wrap key-actions-row">
+                                    <button
+                                        type="button"
+                                        className="btn ghost"
+                                        onClick={() => setShowKey((prev) => !prev)}
+                                    >
+                                        {showKey ? 'Hide key' : 'Show key'}
+                                    </button>
+                                    {hasKey && (
+                                        <button
+                                            type="button"
+                                            className="btn danger"
+                                            onClick={() => setConfirmRemoveOpen(true)}
+                                        >
+                                            Remove key
+                                        </button>
+                                    )}
+                                    <label className="debug-toggle" title="Use local fallback when Deepgram key is missing">
+                                        <input
+                                            type="checkbox"
+                                            checked={fallbackWithoutDeepgramKey}
+                                            onChange={(event) =>
+                                                setFallbackWithoutDeepgramKey(event.target.checked)
+                                            }
+                                        />
+                                        <span>Use fallback when Deepgram key is missing</span>
+                                    </label>
+                                </div>
+                                {fieldError && (
+                                    <p id="key-error" className="error-text" aria-live="polite">
+                                        {fieldError}
+                                    </p>
+                                )}
+
+                                <p className="privacy-note">
+                                    Anyone with access to this browser profile can use this key until you remove it.
                                 </p>
+                                <p className="privacy-note">
+                                    Do not share screenshots of this page while key is visible.
+                                </p>
+                                <label className="debug-toggle">
+                                    <input
+                                        type="checkbox"
+                                        checked={deepgramDebugEnabled}
+                                        onChange={(event) => setDeepgramDebugEnabled(event.target.checked)}
+                                    />
+                                    <span>Deepgram Debug</span>
+                                </label>
+                            </div>
+
+                            <div className="settings-section">
+                                <h3 className="settings-section-title">LLM Chat Providers</h3>
 
                                 <label className="label">Select Provider</label>
                                 <select
@@ -8224,7 +8018,7 @@ function App() {
                                             normalizeEnumValue(
                                                 event.target.value,
                                                 LLM_PROVIDER_MODES,
-                                                LLM_PROVIDER_MODE_AUTO,
+                                                LLM_PROVIDER_MODE_NIM_ONLY,
                                             ),
                                         )
                                     }
@@ -8237,129 +8031,125 @@ function App() {
                                     Auto mode tries OpenRouter first, then retries with NVIDIA NIM if OpenRouter fails.
                                 </p>
 
-                                <label className="label label-with-link">
-                                    <span>OpenRouter API Key</span>
-                                    <a
-                                        className="settings-provider-link"
-                                        href="https://openrouter.ai/"
-                                        target="_blank"
-                                        rel="noreferrer"
-                                    >
-                                        (Get API Key)
-                                    </a>
-                                </label>
-                                <div className="key-input-row">
-                                    <input
-                                        className="field"
-                                        type="password"
-                                        value={openrouterApiKeyInput}
-                                        onChange={(event) => setOpenrouterApiKeyInput(event.target.value)}
-                                        autoComplete="off"
-                                    />
-                                    <button
-                                        type="button"
-                                        className="btn key-save-btn"
-                                        onMouseDown={(event) => event.preventDefault()}
-                                        onClick={saveOpenrouterKeyOnly}
-                                        disabled={isSavingOpenrouterKey}
-                                    >
-                                        {isSavingOpenrouterKey ? 'Saving...' : 'Save key'}
-                                    </button>
-                                </div>
+                                {shouldShowOpenrouterSettings && (
+                                    <>
+                                        <label className="label label-with-link">
+                                            <span>OpenRouter API Key</span>
+                                            <a
+                                                className="settings-provider-link"
+                                                href="https://openrouter.ai/"
+                                                target="_blank"
+                                                rel="noreferrer"
+                                            >
+                                                (Get API Key)
+                                            </a>
+                                        </label>
+                                        <div className="key-input-row">
+                                            <input
+                                                className="field"
+                                                type="password"
+                                                value={openrouterApiKeyInput}
+                                                onChange={(event) => setOpenrouterApiKeyInput(event.target.value)}
+                                                autoComplete="off"
+                                            />
+                                            <button
+                                                type="button"
+                                                className="btn key-save-btn"
+                                                onMouseDown={(event) => event.preventDefault()}
+                                                onClick={saveOpenrouterKeyOnly}
+                                                disabled={isSavingOpenrouterKey}
+                                            >
+                                                {isSavingOpenrouterKey ? 'Saving...' : 'Save key'}
+                                            </button>
+                                        </div>
 
-                                <label className="label">OpenRouter Model</label>
-                                <select
-                                    className="field"
-                                    value={openrouterModelSelectValue}
-                                    onChange={(event) => handleOpenrouterModelSelection(event.target.value)}
-                                >
-                                    {openrouterModelOptions.map((option) => (
-                                        <option key={option.value} value={option.value}>
-                                            {option.label}
-                                        </option>
-                                    ))}
-                                </select>
-                                {openrouterModelSelectValue === CUSTOM_MODEL_OPTION_VALUE && (
-                                    <input
-                                        className="field"
-                                        type="text"
-                                        value={openrouterCustomModelInput}
-                                        onChange={(event) => {
-                                            const nextValue = event.target.value
-                                            setOpenrouterCustomModelInput(nextValue)
-                                            setOpenrouterModelInput(nextValue)
-                                        }}
-                                        placeholder="Enter custom OpenRouter model id"
-                                    />
+                                        <label className="label">OpenRouter Model</label>
+                                        <select
+                                            className="field"
+                                            value={openrouterModelSelectValue}
+                                            onChange={(event) => handleOpenrouterModelSelection(event.target.value)}
+                                        >
+                                            {openrouterModelOptions.map((option) => (
+                                                <option key={option.value} value={option.value}>
+                                                    {option.label}
+                                                </option>
+                                            ))}
+                                        </select>
+                                        {openrouterModelSelectValue === CUSTOM_MODEL_OPTION_VALUE && (
+                                            <input
+                                                className="field"
+                                                type="text"
+                                                value={openrouterCustomModelInput}
+                                                onChange={(event) => {
+                                                    const nextValue = event.target.value
+                                                    setOpenrouterCustomModelInput(nextValue)
+                                                    setOpenrouterModelInput(nextValue)
+                                                }}
+                                                placeholder="Enter custom OpenRouter model id"
+                                            />
+                                        )}
+                                    </>
                                 )}
 
-                                <label className="label label-with-link">
-                                    <span>NVIDIA NIM API Key</span>
-                                    <a
-                                        className="settings-provider-link"
-                                        href="https://build.nvidia.com/explore/discover"
-                                        target="_blank"
-                                        rel="noreferrer"
-                                    >
-                                        (Get API Key)
-                                    </a>
-                                </label>
-                                <div className="key-input-row">
-                                    <input
-                                        className="field"
-                                        type="password"
-                                        value={nimApiKeyInput}
-                                        onChange={(event) => setNimApiKeyInput(event.target.value)}
-                                        autoComplete="off"
-                                    />
-                                    <button
-                                        type="button"
-                                        className="btn key-save-btn"
-                                        onMouseDown={(event) => event.preventDefault()}
-                                        onClick={saveNimKeyOnly}
-                                        disabled={isSavingNimKey}
-                                    >
-                                        {isSavingNimKey ? 'Saving...' : 'Save key'}
-                                    </button>
-                                </div>
+                                {shouldShowNimKeyAndModelSettings && (
+                                    <>
+                                        <label className="label label-with-link">
+                                            <span>NVIDIA NIM API Key</span>
+                                            <a
+                                                className="settings-provider-link"
+                                                href="https://build.nvidia.com/explore/discover"
+                                                target="_blank"
+                                                rel="noreferrer"
+                                            >
+                                                (Get API Key)
+                                            </a>
+                                        </label>
+                                        <div className="key-input-row">
+                                            <input
+                                                className="field"
+                                                type="password"
+                                                value={nimApiKeyInput}
+                                                onChange={(event) => setNimApiKeyInput(event.target.value)}
+                                                autoComplete="off"
+                                            />
+                                            <button
+                                                type="button"
+                                                className="btn key-save-btn"
+                                                onMouseDown={(event) => event.preventDefault()}
+                                                onClick={saveNimKeyOnly}
+                                                disabled={isSavingNimKey}
+                                            >
+                                                {isSavingNimKey ? 'Saving...' : 'Save key'}
+                                            </button>
+                                        </div>
 
-                                <label className="label">NVIDIA NIM Model</label>
-                                <select
-                                    className="field"
-                                    value={nimModelSelectValue}
-                                    onChange={(event) => handleNimModelSelection(event.target.value)}
-                                >
-                                    {nimModelOptions.map((option) => (
-                                        <option key={option.value} value={option.value}>
-                                            {option.label}
-                                        </option>
-                                    ))}
-                                </select>
-                                {nimModelSelectValue === CUSTOM_MODEL_OPTION_VALUE && (
-                                    <input
-                                        className="field"
-                                        type="text"
-                                        value={nimCustomModelInput}
-                                        onChange={(event) => {
-                                            const nextValue = event.target.value
-                                            setNimCustomModelInput(nextValue)
-                                            setNimModelInput(nextValue)
-                                        }}
-                                        placeholder="Enter custom NVIDIA NIM model id"
-                                    />
+                                        <label className="label">NVIDIA NIM Model</label>
+                                        <select
+                                            className="field"
+                                            value={nimModelSelectValue}
+                                            onChange={(event) => handleNimModelSelection(event.target.value)}
+                                        >
+                                            {nimModelOptions.map((option) => (
+                                                <option key={option.value} value={option.value}>
+                                                    {option.label}
+                                                </option>
+                                            ))}
+                                        </select>
+                                        {nimModelSelectValue === CUSTOM_MODEL_OPTION_VALUE && (
+                                            <input
+                                                className="field"
+                                                type="text"
+                                                value={nimCustomModelInput}
+                                                onChange={(event) => {
+                                                    const nextValue = event.target.value
+                                                    setNimCustomModelInput(nextValue)
+                                                    setNimModelInput(nextValue)
+                                                }}
+                                                placeholder="Enter custom NVIDIA NIM model id"
+                                            />
+                                        )}
+                                    </>
                                 )}
-
-                                <label className="label">NVIDIA NIM Base URL</label>
-                                <input
-                                    className="field"
-                                    type="text"
-                                    value={nimBaseUrlInput}
-                                    onChange={(event) => setNimBaseUrlInput(event.target.value)}
-                                    placeholder="/api/nim"
-                                />
-                                <p className="muted">
-                                    Use a same-origin proxy endpoint in deployed environments to avoid browser CORS blocks (example: /api/nim).
-                                </p>
 
                                 <div className="actions wrap llm-settings-actions">
                                     <button
@@ -8387,7 +8177,7 @@ function App() {
                             </div>
 
                             <div className="settings-section">
-                                <label className="label">Camera Debug Overlay</label>
+                                <h3 className="settings-section-title">Camera Debug Overlay</h3>
                                 <p className="muted">
                                     Enable landmark and posture debugging overlays in Camera View.
                                 </p>
@@ -8402,7 +8192,7 @@ function App() {
                             </div>
 
                             <div className="settings-section">
-                                <label className="label">Camera Display</label>
+                                <h3 className="settings-section-title">Camera Display</h3>
                                 <label className="debug-toggle">
                                     <input
                                         type="checkbox"
@@ -8496,6 +8286,9 @@ function App() {
                                         >
                                             Choose Custom Interviewer
                                         </button>
+                                        <span className="muted interviewer-image-help interviewer-image-help-inline">
+                                            Choose a custom interviewer image from your device.
+                                        </span>
                                         {hasCustomInterviewerImage && (
                                             <button
                                                 type="button"
@@ -8513,39 +8306,47 @@ function App() {
                                         className="sr-only"
                                         onChange={handleInterviewerImageUpload}
                                     />
-                                    <p className="muted interviewer-image-help">
-                                        Choose a custom interviewer image from your device.
-                                    </p>
                                 </div>
                             </div>
 
                             <div className="settings-section">
-                                <label className="label">Question Playback</label>
+                                <h3 className="settings-section-title">Question Playback</h3>
                                 <p className="muted">
-                                    Read each interview question aloud before recording starts.
+                                    This toggle applies to Practice mode only. Mock Interview mode always reads each question with TTS.
                                 </p>
                                 <label className="debug-toggle">
                                     <input
                                         type="checkbox"
                                         checked={readQuestionWithTts}
                                         onChange={(event) => setReadQuestionWithTts(event.target.checked)}
-                                        disabled={isRecording || isTranscribing || isSpeakingQuestion}
+                                        disabled={
+                                            cameraWorkflowMode !== CAMERA_WORKFLOW_MODE_PRACTICE ||
+                                            isRecording ||
+                                            isTranscribing ||
+                                            isSpeakingQuestion
+                                        }
                                     />
-                                    <span>Read (TTS) Question</span>
+                                    <span>Read (TTS) Question in Practice Mode</span>
                                 </label>
+                                {cameraWorkflowMode !== CAMERA_WORKFLOW_MODE_PRACTICE && (
+                                    <p className="muted">Mock Interview mode enforces question TTS.</p>
+                                )}
                             </div>
 
                             {isDesktopViewport && (
                                 <div className="settings-section">
-                                    <label className="label">Recording Save Folder</label>
-                                    <p className="muted">
+                                    <h3 className="settings-section-title">Recording Save Folder</h3>
+                                    <p className="muted recording-storage-note">
                                         {isIphoneClient
                                             ? 'Recording save folder is unavailable on iPhone browsers.'
                                             : recordingsFolderName
                                                 ? `Current folder: ${recordingsFolderName} (Size: ${formatFileSize(recordingsFolderSizeBytes)})`
                                                 : fileSystemAccessSupported
-                                                    ? 'No folder selected. Recordings can still be downloaded manually.'
+                                                    ? 'No folder selected. Recordings can still be downloaded manually. Transcript and metrics are still saved to local storage.'
                                                     : 'Folder selection is unavailable in this browser.'}
+                                    </p>
+                                    <p className="muted recording-storage-note">
+                                        Transcript + metrics local storage: {formatFileSize(localTranscriptMetricsStorageBytes)} / approx {formatFileSize(LOCAL_STORAGE_APPROX_MAX_BYTES)}.
                                     </p>
                                     {recordingsFolderName && (
                                         <p className="muted">
@@ -8560,6 +8361,13 @@ function App() {
                                             disabled={isFolderFeatureDisabled}
                                         >
                                             {recordingsFolderName ? 'Change Save Folder' : 'Select Save Folder'}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="btn ghost"
+                                            onClick={openLocalStoragePreviousAnswersFromSettings}
+                                        >
+                                            View Previous Answers
                                         </button>
                                         {recordingsFolderName && (
                                             <button
