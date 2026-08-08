@@ -73,6 +73,13 @@ Alternative dev server command:
 npm run dev
 ```
 
+## Run with Docker
+
+```bash
+docker build -t [container_name] -f src/Dockerfile .
+docker run -p 5173:5173 [container_name]
+```
+
 ## Build and lint
 
 ```bash
