@@ -2289,7 +2289,7 @@ function App() {
         } finally {
             setIsLoadingPreviousAnswers(false)
         }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [fileSystemAccessSupported, isIphoneClient])
 
     // Keep dependencies minimal here to avoid callback identity churn from custom hook setters.
@@ -2356,7 +2356,7 @@ function App() {
         } finally {
             setIsLoadingPreviousAnswers(false)
         }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
 
     const loadPreviousAnswers = useCallback(async () => {
@@ -2375,7 +2375,7 @@ function App() {
         setSelectedPreviousAnswerId('')
         replaceHistoryMediaUrls({ audioUrl: '', videoUrl: '' })
         void loadPreviousAnswersFromLocalStorage()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [
         isFolderFeatureDisabled,
         previousAnswersSource,
@@ -2399,7 +2399,6 @@ function App() {
     }
 
     async function openLocalStoragePreviousAnswersFromSettings() {
-        closeSettingsConfirmed()
         setPreviousAnswersSource(PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE)
 
         const items = await loadPreviousAnswersFromLocalStorage()
@@ -2417,7 +2416,6 @@ function App() {
     }
 
     function openSessionSummaryFromSettings() {
-        closeSettingsConfirmed()
         openSummaryModal()
     }
 
@@ -2426,7 +2424,7 @@ function App() {
         setHistoryModalOpen(false)
         setSelectedPreviousAnswerId('')
         replaceHistoryMediaUrls({ audioUrl: '', videoUrl: '' })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [replaceHistoryMediaUrls])
 
     async function selectPreviousAnswer(item) {
@@ -2507,7 +2505,7 @@ function App() {
         return () => {
             cancelled = true
         }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [selectedPreviousAnswer])
 
     const selectedPreviousAnswerSummaryFingerprint = useMemo(() => {
@@ -6955,10 +6953,10 @@ function App() {
                                         cameraWorkflowMode !== CAMERA_WORKFLOW_MODE_PRACTICE ||
                                         readQuestionWithTts
                                     ) && (
-                                        <p className="muted">
-                                            Question TTS uses your system voice and is unavailable in this browser.
-                                        </p>
-                                    )}
+                                            <p className="muted">
+                                                Question TTS uses your system voice and is unavailable in this browser.
+                                            </p>
+                                        )}
                                     {banner && <p className="banner">{banner}</p>}
                                     {deepgramDebugEnabled && transcriptionProviderStatus && (
                                         <p className="muted">{transcriptionProviderStatus}</p>
@@ -7026,7 +7024,7 @@ function App() {
 
             {historyModalOpen && (
                 <div
-                    className="overlay"
+                    className={`overlay${settingsOpen ? ' overlay-above-settings' : ''}`}
                     role="presentation"
                     onPointerDown={(event) => {
                         if (event.target === event.currentTarget) {
@@ -7395,7 +7393,7 @@ function App() {
 
             {summaryModalOpen && (
                 <div
-                    className="overlay"
+                    className={`overlay${settingsOpen ? ' overlay-above-settings' : ''}`}
                     role="presentation"
                     onPointerDown={(event) => {
                         if (event.target === event.currentTarget) {
@@ -7904,17 +7902,17 @@ function App() {
                                         Mock Interview Mode
                                     </button>
                                 </div>
-                                <div className="actions wrap">
+                                <div className="camera-mode-toggle settings-mode-shortcuts">
                                     <button
                                         type="button"
-                                        className="btn ghost"
+                                        className="btn ghost camera-mode-toggle-btn"
                                         onClick={openLocalStoragePreviousAnswersFromSettings}
                                     >
                                         View Previous Answers
                                     </button>
                                     <button
                                         type="button"
-                                        className="btn ghost"
+                                        className="btn ghost camera-mode-toggle-btn"
                                         onClick={openSessionSummaryFromSettings}
                                     >
                                         View Session Summary
