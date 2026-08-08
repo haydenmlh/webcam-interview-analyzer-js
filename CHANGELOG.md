@@ -19,6 +19,23 @@ Use this template for future releases:
 -
 ```
 
+## [1.10.10] - 2026-08-08
+
+### Changed
+- Updated the `View Previous Answers` and `View Session Summary` buttons under Interview Mode settings to match the same size/layout as the `Practice Mode` and `Mock Interview Mode` buttons.
+
+## [1.10.9] - 2026-08-08
+
+### Added
+- Added `View Previous Answers` and `View Session Summary` shortcuts directly under the `Practice Mode` / `Mock Interview Mode` toggle in Settings.
+
+### Changed
+- Removed top margin from the `Interview Mode` label text in Settings.
+- Reduced the font size of recording local-storage note text in the `Recording Save Folder` section.
+
+### Fixed
+- Opening `View Previous Answers` or `View Session Summary` from Settings now keeps the Settings modal open underneath while rendering those popups above it.
+
 ## [1.10.8] - 2026-08-08
 
 ### Changed
