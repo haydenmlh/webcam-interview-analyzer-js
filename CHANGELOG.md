@@ -19,6 +19,11 @@ Use this template for future releases:
 -
 ```
 
+## [1.10.11] - 2026-08-08
+
+### Added
+- Added Docker run instructions to the README, including `docker build -t [container_name] -f src/Dockerfile .` and `docker run -p 5173:5173 [container_name]`.
+
 ## [1.10.10] - 2026-08-08
 
 ### Changed
