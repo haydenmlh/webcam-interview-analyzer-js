@@ -19,6 +19,153 @@ Use this template for future releases:
 -
 ```
 
+## [1.10.11] - 2026-08-08
+
+### Added
+- Added Docker run instructions to the README, including `docker build -t [container_name] -f src/Dockerfile .` and `docker run -p 5173:5173 [container_name]`.
+
+## [1.10.10] - 2026-08-08
+
+### Changed
+- Updated the `View Previous Answers` and `View Session Summary` buttons under Interview Mode settings to match the same size/layout as the `Practice Mode` and `Mock Interview Mode` buttons.
+
+## [1.10.9] - 2026-08-08
+
+### Added
+- Added `View Previous Answers` and `View Session Summary` shortcuts directly under the `Practice Mode` / `Mock Interview Mode` toggle in Settings.
+
+### Changed
+- Removed top margin from the `Interview Mode` label text in Settings.
+- Reduced the font size of recording local-storage note text in the `Recording Save Folder` section.
+
+### Fixed
+- Opening `View Previous Answers` or `View Session Summary` from Settings now keeps the Settings modal open underneath while rendering those popups above it.
+
+## [1.10.8] - 2026-08-08
+
+### Changed
+- Reorganized the Settings modal into clearer grouped sections with semantic section headings for improved readability.
+- Removed the NVIDIA NIM Base URL block from the Settings UI while preserving the internal saved/default base URL behavior.
+
+### Fixed
+- Prevented text selection/highlighting when interacting with webcam overlay controls (`Video` toggle/caret) and when double-clicking the self-view PiP frame.
+
+## [1.10.7] - 2026-08-08
+
+### Changed
+- Updated LLM provider defaults to start in `NVIDIA NIM only` mode.
+- Updated Settings provider visibility rules so OpenRouter key/model fields are hidden in `NVIDIA NIM only` mode, and NVIDIA NIM key/model fields are hidden in `OpenRouter only` mode.
+
+### Fixed
+- Fixed a runtime blank-page regression by restoring stable settings-close handler behavior and eliminating a follow-up maximum update depth loop.
+- Updated provider default-base-url tests to align with the current NVIDIA NIM workers endpoint default.
+
+## [1.10.6] - 2026-08-08
+
+### Changed
+- Updated the default NVIDIA NIM base URL to `https://nim-proxy-worker.haydenmlh.workers.dev/v1`.
+- Added double-click toggle behavior on the self-view frame to switch between PiP and self-only view.
+
+## [1.10.5] - 2026-08-07
+
+### Fixed
+- Fixed detailed-report PDF generation to normalize per-question section order when model output returns question blocks in reverse (`Question N` down to `Question 1`).
+- Fixed detailed-report PDF generation to insert a bold `Answer Transcript` section with quoted full transcript after the first bolded section in each question block when transcript content is missing.
+
+## [1.10.4] - 2026-08-07
+
+### Changed
+- Merged the separate practice-mode left-tab `Generate Questions` action into the `Questions List` flow and shifted remaining left-tab buttons upward.
+- Updated the practice-mode `Questions List` left-tab button to keep its label consistent and open the questions drawer even when the list is empty.
+
+## [1.10.3] - 2026-08-07
+
+### Added
+- Added per-session question shuffling when starting mock interview, so each new start randomizes question order before question 1 is read.
+
+### Changed
+- Updated theater-mode overlay behavior so light mode fades to white while dark mode continues fading to black.
+
+## [1.10.2] - 2026-08-06
+
+### Added
+- Added a microphone-permission preflight when starting a mock interview, so permission is requested before the first TTS question is read.
+
+### Changed
+- Updated no-transcript banner notifications (including Deepgram no-transcript wording) to auto-dismiss after 5 seconds.
+
+## [1.10.1] - 2026-08-06
+
+### Added
+- Added provider quick links next to API key labels in Settings: Deepgram, OpenRouter, and NVIDIA NIM (`Get API Key`).
+
+### Changed
+- Added mock-interview focus mode dimming with a smooth fade-in/out transition.
+- Increased focus mode dim intensity and refined light-mode layering so camera panel/frame chrome no longer appears above the dim overlay.
+- Restricted focus-mode interaction so only `Start Mock Interview`, `Show Current Question`, and `End Interview` remain clickable.
+
+## [1.10.0] - 2026-08-06
+
+### Added
+- Added reducer-backed domain hooks for question generation, mock interview flow, report generation, history answers, and LLM settings.
+- Added reusable modal components for confirmation dialogs, pending-delete confirmation, changelog display, and question-count generation prompts.
+
+### Changed
+- Refactored `App.jsx` by moving shared logic into dedicated `utils` modules (questions, session formatting, history parsing, display formatting, changelog parsing, summary markdown, and app helpers).
+- Rewired app orchestration to consume extracted hooks/components while preserving existing mock interview and report-generation behavior.
+
+## [1.9.4] - 2026-08-06
+
+### Changed
+- Updated the changelog modal header row to use a dedicated class for changelog-specific styling.
+- Increased left/right padding for the changelog header row while keeping vertical spacing compact.
+
+### Fixed
+- Removed extra bottom margin from the `Changelog (Last 10 Releases)` title to tighten header-row alignment.
+
+## [1.9.3] - 2026-08-06
+
+### Added
+- Added a confirmation warning before generating mock-interview questions when existing Answer Summary entries are present.
+
+### Changed
+- Confirmed question generation now clears existing Answer Summary entries before starting the new generation flow.
+- Updated Generate Questions minimum count from `4` to `2` while keeping the maximum at `25`.
+
+## [1.9.2] - 2026-08-06
+
+### Added
+- Added a confirmation warning before starting a new mock interview after an ended session when an Answer Summary already exists.
+
+### Changed
+- Starting a confirmed new mock interview now clears the existing Answer Summary so the next run starts with a clean summary state.
+
+## [1.9.1] - 2026-08-06
+
+### Changed
+- Updated the active mock-interview turn action label from `Done Current Question` to `Finished my Answer`.
+
+## [1.9.0] - 2026-08-06
+
+### Added
+- Added a guided mock-interview turn flow: `Start Mock Interview` transitions into `Reading Question (TTS)` and `Done Current Question`, with automatic next-question progression.
+- Added early-end handling for active mock interviews so ending mid-run finalizes the current answer and stops subsequent question progression.
+- Added an `Ending...` processing state for the mock end action while transcript/metrics finalization completes.
+
+### Changed
+- Updated mock question generation UX to hide Questions List during generation and show live button progress as `Generating (n/X)` from streamed question rows.
+- Updated the mock question action text to switch from `Generate Questions` to `Re-generate Questions` once questions exist.
+- Updated mock control gating so `Start Mock Interview` stays disabled until generation fully completes and questions are available.
+- Updated mock control gating so `End Interview` and `Generate Reports` require a started interview state, with reports requiring the interview to be ended first.
+- Updated the center control layout with a dedicated `Show/Hide Current Question` action next to `Start Mock Interview`.
+- Updated mock question overlay behavior to default hidden, support explicit show/hide toggling, and auto-hide on each question transition.
+- Updated end-action labeling to show `End Interview Early` on non-final questions and keep `End Interview` on the last question.
+
+### Fixed
+- Fixed mock auto-advance after `Done Current Question` so the next question TTS/recording transition no longer aborts due to stale busy-state checks.
+- Fixed `Show/Hide Current Question` availability so it remains usable during active mock interview turns.
+- Fixed detailed-report PDF pagination so `Question 1` also starts on a new page (with each following question continuing on its own page).
+
 ## [1.8.29] - 2026-08-06
 
 ### Added

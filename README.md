@@ -2,7 +2,7 @@
 
 Mock Interviewer is a React + Vite web app for practicing interview answers with live camera posture cues, audio/video recording, and Deepgram-powered transcription.
 
-Current app version: 1.8.29
+Current app version: 1.10.11
 
 ## Highlights
 
@@ -71,6 +71,13 @@ Alternative dev server command:
 
 ```bash
 npm run dev
+```
+
+## Run with Docker
+
+```bash
+docker build -t [container_name] -f src/Dockerfile .
+docker run -p 5173:5173 [container_name]
 ```
 
 ## Build and lint

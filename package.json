@@ -4,7 +4,7 @@
     "version": "0.0.0",
     "type": "module",
     "scripts": {
-        "start": "vite --host localhost --port 5173",
+        "start": "vite --host 0.0.0.0 --port 5173",
         "dev": "vite",
         "build": "vite build",
         "lint": "eslint .",
@@ -35,6 +35,7 @@
     "allowScripts": {
         "onnxruntime-node@1.21.0": true,
         "protobufjs@7.6.5": true,
-        "sharp@0.34.5": true
+        "sharp@0.34.5": true,
+        "core-js@3.49.0": true
     }
 }

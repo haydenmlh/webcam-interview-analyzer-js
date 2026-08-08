@@ -1,38 +1,11 @@
-const DEFAULT_ALLOWED_ORIGINS = [
-    'https://dev.interview.haydenmlh.com',
-    'https://interview.haydenmlh.com',
-    'http://localhost:5173',
-]
-
 const ALLOWED_PATHS = new Set(['/v1/models', '/v1/chat/completions'])
 const ALLOWED_HEADERS = ['authorization', 'content-type', 'accept']
-
-function parseAllowedOrigins(env) {
-    const raw = String(env?.ALLOWED_ORIGINS || '').trim()
-    if (!raw) return DEFAULT_ALLOWED_ORIGINS
-
-    return raw
-        .split(',')
-        .map((value) => value.trim())
-        .filter(Boolean)
-}
-
-function isAllowedOrigin(origin, allowedOrigins) {
-    if (!origin) return false
-    return allowedOrigins.includes(origin)
-}
-
-function buildCorsHeaders(origin, allowedOrigins) {
-    if (!isAllowedOrigin(origin, allowedOrigins)) {
-        return null
-    }
-
+function buildCorsHeaders() {
     return {
-        'Access-Control-Allow-Origin': origin,
+        'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
         'Access-Control-Allow-Headers': 'Authorization,Content-Type,Accept',
         'Access-Control-Max-Age': '86400',
-        Vary: 'Origin',
     }
 }
 
@@ -88,31 +61,15 @@ function buildUpstreamHeaders(request) {
 
 export default {
     async fetch(request, env) {
-        const allowedOrigins = parseAllowedOrigins(env)
-        const requestOrigin = request.headers.get('Origin') || ''
-        const corsHeaders = buildCorsHeaders(requestOrigin, allowedOrigins)
+        const corsHeaders = buildCorsHeaders()
         const requestUrl = new URL(request.url)
         const normalizedPath = normalizePath(requestUrl.pathname)
 
         if (request.method === 'OPTIONS') {
-            if (!corsHeaders) {
-                return jsonResponse(
-                    { error: 'CORS origin is not allowed.' },
-                    403,
-                )
-            }
             return new Response(null, {
                 status: 204,
                 headers: corsHeaders,
             })
-        }
-
-        // Browsers always send Origin for cross-origin fetches.
-        if (requestOrigin && !corsHeaders) {
-            return jsonResponse(
-                { error: 'CORS origin is not allowed.' },
-                403,
-            )
         }
 
         if (!isAllowedRequest(normalizedPath, request.method)) {

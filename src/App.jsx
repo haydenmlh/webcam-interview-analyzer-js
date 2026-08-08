@@ -17,6 +17,41 @@ import {
     sendInterviewChatMessage,
     validateLlmProviderApiKey,
 } from './llm/providers'
+import ChangelogModal from './components/modals/ChangelogModal'
+import ConfirmActionModal from './components/modals/ConfirmActionModal'
+import GenerateQuestionsCountModal from './components/modals/GenerateQuestionsCountModal'
+import PendingDeleteModal from './components/modals/PendingDeleteModal'
+import {
+    buildModelOptionsWithCurrent,
+    getModelSelectValue,
+    normalizeEnumValue,
+    truncateText,
+} from './utils/appHelpers'
+import { parseRecentChangelogReleases } from './utils/changelog'
+import {
+    getImportedQuestionsFromCurrentUrl,
+    normalizeQuestionKey,
+    parseQuestionsFromBulkInput,
+} from './utils/questions'
+import {
+    buildSessionDateFolderName,
+    buildSessionFileBaseName,
+    formatReadableCapturedDate,
+} from './utils/sessionFormatting'
+import {
+    formatFileSize,
+    formatMetricDisplayValue,
+} from './utils/displayFormatting'
+import {
+    parseSessionJsonReport,
+    splitFileName,
+} from './utils/historyParsing'
+import { useHistoryAnswers } from './hooks/useHistoryAnswers'
+import { useLlmSettings } from './hooks/useLlmSettings'
+import { useMockInterviewFlow } from './hooks/useMockInterviewFlow'
+import { useQuestionGeneration } from './hooks/useQuestionGeneration'
+import { useReportGeneration } from './hooks/useReportGeneration'
+import { buildAnswerSummaryMarkdown } from './utils/summaryMarkdown'
 import { jsPDF } from 'jspdf'
 import { marked } from 'marked'
 import ReactMarkdown from 'react-markdown'
@@ -53,6 +88,7 @@ const HANDLE_DB_NAME = 'mia-handle-db'
 const HANDLE_STORE_NAME = 'handles'
 const RECORDINGS_FOLDER_KEY = 'recordings-folder'
 const RECYCLE_BIN_FOLDER_NAME = '_Recycle Bin'
+const LOCAL_STORAGE_APPROX_MAX_BYTES = 5 * 1024 * 1024
 
 const VALIDATION_RECOMMEND_DAYS = 30
 const INITIAL_NOW_MS = Date.now()
@@ -60,19 +96,30 @@ const OVERALL_SUMMARY_VIEW_ID = '__overall__'
 const LLM_PROVIDER_MODE_AUTO = 'auto'
 const LLM_PROVIDER_MODE_OPENROUTER_ONLY = 'openrouter-only'
 const LLM_PROVIDER_MODE_NIM_ONLY = 'nim-only'
+const LLM_PROVIDER_MODES = [
+    LLM_PROVIDER_MODE_AUTO,
+    LLM_PROVIDER_MODE_OPENROUTER_ONLY,
+    LLM_PROVIDER_MODE_NIM_ONLY,
+]
 const PREVIOUS_ANSWERS_SOURCE_FOLDER = 'folder'
 const PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE = 'local-storage'
+const PREVIOUS_ANSWERS_SOURCES = [
+    PREVIOUS_ANSWERS_SOURCE_FOLDER,
+    PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE,
+]
+const CAMERA_WORKFLOW_MODE_PRACTICE = 'practice'
+const CAMERA_WORKFLOW_MODE_MOCK_INTERVIEW = 'mock-interview'
 const DEFAULT_GENERATED_QUESTION_COUNT = 10
 const DEFAULT_QUESTION_GENERATION_GUIDELINES =
     'Generate concise, role-relevant interview questions. Cover technical depth, behavioral examples, and company alignment. Avoid duplicates. Return one question per line.'
 const DEFAULT_AM_REPORT_GENERATION_GUIDELINES =
-    'Generate a report for an account-manager at a consulting firm regarding the Answers provided in context, which were answered by a consultant. Provide feedback grounded in the interview answer transcript, answer metrics, JD and CV. Be specific, concise, and evidence-based. Do not generate per question feedback.'
+    'Generate a report for an account-manager at a consulting firm regarding the Answers provided in context, which were answered by a consultant. Provide feedback grounded in the interview answer transcript, answer metrics, JD and CV. Be specific, concise, and evidence-based. Do not generate per-question feedback. Use markdown only (no HTML) and follow this structure: ## Summary, ## Overall Score (out of 10), ## Key Strengths, ## Key Development Areas, ## Domain Knowledge Assessment, ## Interview Progression, ## Primary Interview Risks, ## Recommended Coach Actions, ## Final Recommendation.'
 const DEFAULT_DETAILED_REPORT_GENERATION_GUIDELINES =
     'Generate an in-depth report with an executive summary first, then detailed per-question analysis. For each question include strengths, weaknesses, metric interpretation, and a suggested improved answer. Tailor suggested answers to CV/JD/company/job title when relevant, and explicitly state when profile context is not relevant to that specific question.'
 const QUESTION_GENERATION_USER_MESSAGE = (questionCount, jdOnlyQuestionCount) =>
     `Generate ${questionCount} concise mock interview questions based on the provided CV, job description, and company. If a job description is provided, include at least ${jdOnlyQuestionCount} questions that are derived only from the job description requirements and are not based on the CV. Return only the questions, one per line, no intro or explanation.`
 const AM_REPORT_USER_MESSAGE =
-    'You are an Interview Expert for a Consulting Firm. You are writing feedback for the mock interview answers. Using the provided interview Job Title, Q&A transcript, Q&A metrics, JD and CV, return markdown with sections: 1) Initial Feedback, 2) Overall Rating (out of 10), 3) Answer Strengths, 4) Answer Weaknesses, 5) Future Directions For Improvement. Keep it concise and evidence-based.'
+    'You are an Interview Expert for a Consulting Firm. You are writing feedback for mock interview answers. Using interview Job Title, Q&A transcript, Q&A metrics, JD and CV, return concise, evidence-based markdown in this exact section order: 1) ## Overall Verdict, 2) ## Overall Score (out of 10) 3) ## Key Strengths, 4) ## Key Development Areas, 5) ## Domain Knowledge Assessment, 6) ## Interview Progression, 7) ## Primary Interview Risks, 8) ## Recommended Coach Actions, 9) ## Final Recommendation. Keep it account-manager friendly and do not include per-question analysis.'
 const DETAILED_REPORT_USER_MESSAGE =
     'You are an Interview Expert for a Consulting Firm. Using the provided interview context, return markdown with these exact top-level sections in order: 1) Initial Feedback, 2) Overall Rating (out of 10), 3) Answer Strengths, 4) Answer Weaknesses, 5) Future Directions For Improvement, 6) Detailed Per-Question Analysis. In section 6, create one subsection per answer using heading format "### Question N: <question>" and include: Candidate Answer Snapshot, Strengths, Weaknesses, Metric Interpretation, Suggested Improved Answer. The Suggested Improved Answer must describe an ideal answer and tailor it to CV/JD/company/job title context when relevant; if not relevant, explicitly state that no CV/JD tailoring applies. Keep feedback specific, concise, and evidence-based using transcript and metrics.'
 const LLM_PROVIDER_ENV_CONFIG = getLlmProviderConfig(import.meta.env)
@@ -112,56 +159,6 @@ const NIM_MODEL_PRESETS = [
         label: 'OpenAI GPT OSS 20B [openai/gpt-oss-20b]',
     },
 ]
-
-function buildModelOptionsWithCurrent(presets) {
-    const uniquePresets = presets.filter(
-        (preset, index) =>
-            preset?.value && presets.findIndex((entry) => entry.value === preset.value) === index,
-    )
-
-    const options = [...uniquePresets]
-    options.push({
-        value: CUSTOM_MODEL_OPTION_VALUE,
-        label: 'Custom model...',
-    })
-    return options
-}
-
-function getModelSelectValue(currentModel, presets) {
-    const normalizedCurrent = String(currentModel || '').trim()
-    if (!normalizedCurrent) return CUSTOM_MODEL_OPTION_VALUE
-    if (presets.some((preset) => preset.value === normalizedCurrent)) {
-        return normalizedCurrent
-    }
-    return CUSTOM_MODEL_OPTION_VALUE
-}
-
-function normalizeLlmProviderMode(value) {
-    if (
-        value === LLM_PROVIDER_MODE_AUTO ||
-        value === LLM_PROVIDER_MODE_OPENROUTER_ONLY ||
-        value === LLM_PROVIDER_MODE_NIM_ONLY
-    ) {
-        return value
-    }
-
-    return LLM_PROVIDER_MODE_AUTO
-}
-
-function normalizePreviousAnswersSource(value) {
-    if (value === PREVIOUS_ANSWERS_SOURCE_FOLDER || value === PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE) {
-        return value
-    }
-
-    return PREVIOUS_ANSWERS_SOURCE_FOLDER
-}
-
-function truncateText(value, maxLength) {
-    const normalized = String(value || '').trim().replace(/\s+/g, ' ')
-    if (!normalized) return ''
-    if (normalized.length <= maxLength) return normalized
-    return `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`
-}
 
 const DEFAULT_WASM_URL =
     'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
@@ -250,68 +247,6 @@ function createDefaultCameraUiMetrics() {
     }
 }
 
-function parseRecentChangelogReleases(markdown, limit = 10) {
-    const lines = markdown.split(/\r?\n/)
-    const releases = []
-    let currentRelease = null
-    let currentSection = ''
-
-    for (const line of lines) {
-        const releaseMatch = line.match(/^## \[([^\]]+)\] - (.+)$/)
-        if (releaseMatch) {
-            if (currentRelease) {
-                releases.push(currentRelease)
-            }
-
-            if (releaseMatch[1] === 'X.Y.Z') {
-                currentRelease = null
-                currentSection = ''
-                continue
-            }
-
-            currentRelease = {
-                version: releaseMatch[1],
-                date: releaseMatch[2],
-                sections: [],
-            }
-            currentSection = ''
-            continue
-        }
-
-        if (!currentRelease) continue
-
-        const sectionMatch = line.match(/^###\s+(.+)$/)
-        if (sectionMatch) {
-            currentSection = sectionMatch[1]
-            currentRelease.sections.push({
-                title: currentSection,
-                bullets: [],
-            })
-            continue
-        }
-
-        const bulletMatch = line.match(/^-\s+(.+)$/)
-        if (!bulletMatch) continue
-
-        if (!currentSection) {
-            currentSection = 'Notes'
-            currentRelease.sections.push({
-                title: currentSection,
-                bullets: [],
-            })
-        }
-
-        const targetSection = currentRelease.sections[currentRelease.sections.length - 1]
-        targetSection.bullets.push(bulletMatch[1])
-    }
-
-    if (currentRelease) {
-        releases.push(currentRelease)
-    }
-
-    return releases.slice(0, limit)
-}
-
 function validateKeyFormat(rawValue) {
     const value = rawValue.trim()
     if (!value) return 'Enter your Deepgram API key.'
@@ -379,10 +314,6 @@ function getSavedValue(keyName) {
     } catch {
         return ''
     }
-}
-
-function getSavedBoolean(keyName) {
-    return getSavedValue(keyName) === 'true'
 }
 
 function setSavedValue(keyName, value) {
@@ -861,140 +792,6 @@ function sanitizeDisplayText(value, fallback = '') {
     return trimmed || fallback
 }
 
-function formatSessionTimestamp(dateValue) {
-    const date = new Date(dateValue)
-    const safeDate = Number.isNaN(date.getTime()) ? new Date() : date
-    const year = safeDate.getFullYear()
-    const month = String(safeDate.getMonth() + 1).padStart(2, '0')
-    const day = String(safeDate.getDate()).padStart(2, '0')
-    const hours = String(safeDate.getHours()).padStart(2, '0')
-    const minutes = String(safeDate.getMinutes()).padStart(2, '0')
-    const seconds = String(safeDate.getSeconds()).padStart(2, '0')
-    return `${year}${month}${day}_${hours}${minutes}${seconds}`
-}
-
-function sanitizeQuestionForFileName(question) {
-    const safeText = sanitizeDisplayText(question, 'question')
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '_')
-        .replace(/^_+|_+$/g, '')
-    return (safeText || 'question').slice(0, 30)
-}
-
-function parseQuestionsFromUrlSearch(search) {
-    if (!search) return []
-
-    const params = new URLSearchParams(search)
-    const candidates = []
-
-    // Preferred format: ?questions=Q1%0AQ2%0AQ3 (newline-separated)
-    const packedQuestions = sanitizeDisplayText(params.get('questions'), '')
-    if (packedQuestions) {
-        candidates.push(
-            ...packedQuestions
-                .split(/\r?\n|\|\|/)
-                .map((item) => sanitizeDisplayText(item, '').trim())
-                .filter(Boolean),
-        )
-    }
-
-    // Alternate format: ?q=Question%201&q=Question%202
-    const repeatedQuestions = params.getAll('q')
-    for (const question of repeatedQuestions) {
-        const normalized = sanitizeDisplayText(question, '').trim()
-        if (normalized) candidates.push(normalized)
-    }
-
-    const unique = []
-    const seen = new Set()
-    for (const question of candidates) {
-        const key = normalizeQuestionKey(question)
-        if (!key || seen.has(key)) continue
-        seen.add(key)
-        unique.push(question)
-    }
-
-    return unique
-}
-
-function getImportedQuestionsFromCurrentUrl() {
-    if (typeof window === 'undefined') return []
-    return parseQuestionsFromUrlSearch(window.location.search)
-}
-
-function normalizeQuestionKey(questionText) {
-    return sanitizeDisplayText(questionText, '')
-        .toLowerCase()
-        .replace(/\s+/g, ' ')
-        .trim()
-}
-
-function buildSessionFileBaseName(capturedAtIso, question) {
-    const stamp = formatSessionTimestamp(capturedAtIso)
-    const safeQuestion = sanitizeQuestionForFileName(question)
-    return `${stamp}_${safeQuestion}`
-}
-
-function buildSessionDateFolderName(capturedAtIso) {
-    const source = capturedAtIso || new Date().toISOString()
-    const parsed = new Date(source)
-    const safeDate = Number.isNaN(parsed.getTime()) ? new Date() : parsed
-    const year = safeDate.getFullYear()
-    const month = String(safeDate.getMonth() + 1).padStart(2, '0')
-    const day = String(safeDate.getDate()).padStart(2, '0')
-    return `${year}-${month}-${day}`
-}
-
-function formatReadableCapturedDate(value) {
-    const parsed = new Date(value)
-    if (Number.isNaN(parsed.getTime())) {
-        return sanitizeDisplayText(value, 'unknown-date')
-    }
-
-    const month = parsed.toLocaleString('en-US', { month: 'short' })
-    const day = parsed.getDate()
-    const year = parsed.getFullYear()
-    return `${month}/${day}/${year}`
-}
-
-function formatMetricDisplayValue(key, value) {
-    if (value == null) return 'n/a'
-
-    if (key === 'gazeDeviationDirectionCounts' && typeof value === 'object') {
-        const left = Number(value.left) || 0
-        const right = Number(value.right) || 0
-        const up = Number(value.up) || 0
-        const down = Number(value.down) || 0
-        return `L ${left} / R ${right} / U ${up} / D ${down}`
-    }
-
-    if (Array.isArray(value)) {
-        return value.length ? value.join(', ') : 'none'
-    }
-
-    if (typeof value === 'object') {
-        return JSON.stringify(value)
-    }
-
-    return String(value)
-}
-
-function formatFileSize(bytes) {
-    if (!Number.isFinite(bytes) || bytes < 0) return 'n/a'
-    if (bytes < 1024) return `${bytes} B`
-
-    const units = ['KB', 'MB', 'GB', 'TB']
-    let value = bytes / 1024
-    let unitIndex = 0
-    while (value >= 1024 && unitIndex < units.length - 1) {
-        value /= 1024
-        unitIndex += 1
-    }
-
-    const precision = value >= 100 ? 0 : value >= 10 ? 1 : 2
-    return `${value.toFixed(precision)} ${units[unitIndex]}`
-}
-
 async function calculateDirectorySizeBytes(directoryHandle) {
     let totalBytes = 0
     for await (const [, entryHandle] of directoryHandle.entries()) {
@@ -1024,107 +821,6 @@ function getSummaryFingerprint(entry) {
                 ? entry.metrics
                 : null,
     })
-}
-
-function splitFileName(fileName) {
-    const safeName = sanitizeDisplayText(fileName, 'unknown')
-    const lastDot = safeName.lastIndexOf('.')
-    if (lastDot <= 0) return { baseName: safeName, extension: '' }
-    return {
-        baseName: safeName.slice(0, lastDot),
-        extension: safeName.slice(lastDot + 1).toLowerCase(),
-    }
-}
-
-function parseSessionJsonReport(fileName, content, fallbackDateIso, sortTime, folderPath = '') {
-    try {
-        const parsed = JSON.parse(content)
-        const { baseName } = splitFileName(fileName)
-        const parsedTextFileName = sanitizeDisplayText(parsed?.savedFiles?.textFileName, '')
-        const sourcePath = folderPath ? `${folderPath}/${fileName}` : fileName
-        return {
-            id: `${sourcePath}-${sortTime}-json`,
-            baseName,
-            source: sanitizeDisplayText(sourcePath, 'unknown-file'),
-            reportFileName: fileName,
-            folderPath,
-            capturedAt: sanitizeDisplayText(
-                parsed?.generatedAt ?? parsed?.capturedAt,
-                fallbackDateIso,
-            ),
-            question: sanitizeDisplayText(parsed?.question, '(none)'),
-            transcript: sanitizeDisplayText(
-                parsed?.transcript ?? parsed?.answer,
-                '(no transcript captured)',
-            ),
-            metrics:
-                parsed?.interviewMetrics && typeof parsed.interviewMetrics === 'object'
-                    ? parsed.interviewMetrics
-                    : parsed?.metrics && typeof parsed.metrics === 'object'
-                        ? parsed.metrics
-                        : null,
-            metricsText: sanitizeDisplayText(parsed?.outputText, ''),
-            audioFileName: sanitizeDisplayText(
-                parsed?.audioFileName ?? parsed?.savedFiles?.audioFileName,
-                '',
-            ),
-            videoFileName: sanitizeDisplayText(
-                parsed?.videoFileName ?? parsed?.savedFiles?.videoFileName,
-                '',
-            ),
-            textFileName: parsedTextFileName || `${baseName}.txt`,
-            audioHandle: null,
-            videoHandle: null,
-            textHandle: null,
-            sortTime,
-        }
-    } catch {
-        return null
-    }
-}
-
-function buildAnswerSummaryMarkdown(interviewSummaries, overallInterviewSummary) {
-    const totals = overallInterviewSummary
-    const sections = [
-        '# Interview Summary for Gemini',
-        '',
-        `Generated: ${new Date().toISOString()}`,
-        '',
-        '## Total Metrics',
-        `- Total answers: ${totals.totalAnswers}`,
-        `- Average WPM: ${totals.averageWpm}`,
-        `- Average answer length (sec): ${totals.averageAnswerLengthSec}`,
-        `- Average hesitations: ${totals.averageHesitations}`,
-        `- Average gaze center (%): ${totals.averageGazeCenterPct}`,
-        '',
-        '## Answers',
-    ]
-
-    interviewSummaries.forEach((item, index) => {
-        const answerNumber = interviewSummaries.length - index
-        sections.push(`### Answer ${answerNumber}`)
-        sections.push(`- Captured: ${formatReadableCapturedDate(item.capturedAt)}`)
-        sections.push(`- Question: ${item.question}`)
-        sections.push('')
-        sections.push('Transcript:')
-        sections.push('```text')
-        sections.push(item.transcript || '(no transcript captured)')
-        sections.push('```')
-        sections.push('')
-        sections.push('Metrics:')
-
-        const metricEntries = Object.entries(item.metrics || {})
-        if (!metricEntries.length) {
-            sections.push('- n/a')
-        } else {
-            metricEntries.forEach(([key, value]) => {
-                sections.push(`- ${key}: ${String(value ?? 'n/a')}`)
-            })
-        }
-        sections.push('')
-    })
-
-    return sections.join('\n')
 }
 
 async function downloadInterviewReportPdf({
@@ -1173,7 +869,14 @@ async function downloadInterviewReportPdf({
             .normalize('NFKD')
             .replace(/[\u0300-\u036F]/g, '')
             // Keep degree symbol for angle/temperature metrics while removing other unsupported glyphs.
-            .replace(/[^\x09\x0A\x20-\x7E\u00B0]/g, '')
+            .split('')
+            .filter((char) => {
+                const code = char.charCodeAt(0)
+                if (code === 9 || code === 10) return true
+                if (code >= 32 && code <= 126) return true
+                return code === 176
+            })
+            .join('')
             // Keep unit symbols attached to numeric values (e.g. 4%, 19°).
             .replace(/(\d)\s+([%°])/g, '$1$2')
 
@@ -1203,6 +906,39 @@ async function downloadInterviewReportPdf({
     function normalizeRunTextForPdf(value) {
         return removeUnsafeControlChars(normalizePdfTypography(value))
             .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g, '')
+    }
+
+    function getHongKongTimestampParts(dateValue = new Date()) {
+        const formatter = new Intl.DateTimeFormat('en-GB', {
+            timeZone: 'Asia/Hong_Kong',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false,
+        })
+        const parts = formatter.formatToParts(dateValue)
+        const partValue = (type) => parts.find((part) => part.type === type)?.value || '00'
+        return {
+            year: partValue('year'),
+            month: partValue('month'),
+            day: partValue('day'),
+            hour: partValue('hour'),
+            minute: partValue('minute'),
+            second: partValue('second'),
+        }
+    }
+
+    function formatHongKongPdfTimestamp(dateValue = new Date()) {
+        const { year, month, day, hour, minute, second } = getHongKongTimestampParts(dateValue)
+        return `${year}-${month}-${day} ${hour}:${minute}:${second} HKT`
+    }
+
+    function formatHongKongPdfFileTimestamp(dateValue = new Date()) {
+        const { year, month, day, hour, minute, second } = getHongKongTimestampParts(dateValue)
+        return `${year}-${month}-${day}_${hour}-${minute}-${second}`
     }
 
     function ensureRoom(heightNeeded = defaultLineHeight) {
@@ -1576,11 +1312,21 @@ async function downloadInterviewReportPdf({
                         cursorY = margin
                     }
                 } else if (
-                    detailedPdfPaginationState.inDetailedSection &&
-                    headingLevel >= 3 &&
+                    headingLevel >= 2 &&
                     /^Question\s+\d+\b/i.test(headingText)
                 ) {
-                    if (detailedPdfPaginationState.questionHeadingCount >= 1) {
+                    if (!detailedPdfPaginationState.inDetailedSection) {
+                        detailedPdfPaginationState.inDetailedSection = true
+                        detailedPdfPaginationState.questionHeadingCount = 0
+                    }
+
+                    // Ensure every question heading, including Question 1, starts on a fresh page.
+                    if (detailedPdfPaginationState.questionHeadingCount === 0) {
+                        if (cursorY > margin) {
+                            doc.addPage()
+                            cursorY = margin
+                        }
+                    } else {
                         doc.addPage()
                         cursorY = margin
                     }
@@ -1678,7 +1424,8 @@ async function downloadInterviewReportPdf({
         })
     }
 
-    const stamp = new Date().toISOString()
+    const reportGeneratedAt = new Date()
+    const displayStamp = formatHongKongPdfTimestamp(reportGeneratedAt)
     const safeCompanyName = companyName || 'Unknown company'
     const safeConsultantFullName = consultantFullName || '(not provided)'
     const safeJobTitle = jobTitle || '(not provided)'
@@ -1691,7 +1438,7 @@ async function downloadInterviewReportPdf({
         fontStyle: 'bold',
         spacingAfter: 4,
     })
-    writeTextBlock(`Generated: ${stamp}`, {
+    writeTextBlock(`Generated: ${displayStamp}`, {
         fontSize: 10,
         spacingAfter: 2,
     })
@@ -1715,7 +1462,7 @@ async function downloadInterviewReportPdf({
     })
     renderTokens(marked.lexer(safeFeedbackMarkdown), 0)
 
-    const fileDateStamp = stamp.replace(/[:.]/g, '-').replace('T', '_').replace('Z', '')
+    const fileDateStamp = formatHongKongPdfFileTimestamp(reportGeneratedAt)
     const fileName = `${fileNamePrefix}-${fileDateStamp}.pdf`
     const blob = doc.output('blob')
     return { blob, fileName }
@@ -1758,6 +1505,7 @@ function App() {
     const deepgramKeyInputRef = useRef(null)
     const amReportAbortControllerRef = useRef(null)
     const detailedReportAbortControllerRef = useRef(null)
+    const cancelPendingRecordingStartRef = useRef(false)
 
     const blinkTrackerRef = useRef({
         closed: false,
@@ -1769,13 +1517,8 @@ function App() {
     const [settingsOpen, setSettingsOpen] = useState(false)
     const [confirmRemoveOpen, setConfirmRemoveOpen] = useState(false)
     const [confirmFolderSelectOpen, setConfirmFolderSelectOpen] = useState(false)
-    const [confirmRegenerateQuestionsOpen, setConfirmRegenerateQuestionsOpen] = useState(false)
+    const [confirmStartNewMockInterviewOpen, setConfirmStartNewMockInterviewOpen] = useState(false)
     const [confirmCloseSettingsUnsavedLlmOpen, setConfirmCloseSettingsUnsavedLlmOpen] = useState(false)
-    const [generateQuestionsCountModalOpen, setGenerateQuestionsCountModalOpen] = useState(false)
-    const [generateQuestionsCountInput, setGenerateQuestionsCountInput] = useState(
-        String(DEFAULT_GENERATED_QUESTION_COUNT),
-    )
-    const [pendingGenerateQuestionsOptions, setPendingGenerateQuestionsOptions] = useState(null)
     const [pendingDeleteAction, setPendingDeleteAction] = useState(null)
     const [savedKey, setSavedKey] = useState(() => getSavedValue(STORAGE_KEY))
     const [lastValidatedAt, setLastValidatedAt] = useState(() =>
@@ -1858,6 +1601,7 @@ function App() {
     const [isDesktopViewport, setIsDesktopViewport] = useState(() =>
         typeof window !== 'undefined' ? window.innerWidth > 860 : true,
     )
+    const [cameraWorkflowMode, setCameraWorkflowMode] = useState(CAMERA_WORKFLOW_MODE_MOCK_INTERVIEW)
     const [isSessionPanelMinimized, setIsSessionPanelMinimized] = useState(
         () => getImportedQuestionsFromCurrentUrl().length > 0,
     )
@@ -1874,7 +1618,22 @@ function App() {
         return imported.length ? 0 : null
     })
     const [nextQuestionCursor, setNextQuestionCursor] = useState(0)
-    const [answeredQuestionKeys, setAnsweredQuestionKeys] = useState([])
+    const [requestedQuestionGenerationCount, setRequestedQuestionGenerationCount] = useState(
+        DEFAULT_GENERATED_QUESTION_COUNT,
+    )
+    const [generatedQuestionProgressCount, setGeneratedQuestionProgressCount] = useState(0)
+    const {
+        isMockQuestionOverlayVisible,
+        setIsMockQuestionOverlayVisible,
+        isMockInterviewStarted,
+        setIsMockInterviewStarted,
+        hasMockInterviewStartedOnce,
+        setHasMockInterviewStartedOnce,
+        isEndingMockInterview,
+        setIsEndingMockInterview,
+        answeredQuestionKeys,
+        setAnsweredQuestionKeys,
+    } = useMockInterviewFlow()
     const [cvText, setCvText] = useState(() => getSavedValue(STORAGE_CV_TEXT))
     const [jdText, setJdText] = useState(() => getSavedValue(STORAGE_JD_TEXT))
     const [companyNameInput, setCompanyNameInput] = useState(() =>
@@ -1916,85 +1675,171 @@ function App() {
         prolongedClosureCount,
     } = cameraUiMetrics
 
-    const [previousAnswers, setPreviousAnswers] = useState([])
-    const [isLoadingPreviousAnswers, setIsLoadingPreviousAnswers] = useState(false)
-    const [previousAnswersError, setPreviousAnswersError] = useState('')
-    const [previousAnswersSource, setPreviousAnswersSource] = useState(() =>
-        normalizePreviousAnswersSource(getSavedValue(STORAGE_PREVIOUS_ANSWERS_SOURCE)),
-    )
-    const [historyModalOpen, setHistoryModalOpen] = useState(false)
-    const [selectedPreviousAnswerId, setSelectedPreviousAnswerId] = useState('')
-    const [selectedHistoryMedia, setSelectedHistoryMedia] = useState({
-        audioUrl: '',
-        videoUrl: '',
-    })
+    const {
+        previousAnswers,
+        setPreviousAnswers,
+        isLoadingPreviousAnswers,
+        setIsLoadingPreviousAnswers,
+        previousAnswersError,
+        setPreviousAnswersError,
+        previousAnswersSource,
+        setPreviousAnswersSource,
+        historyModalOpen,
+        setHistoryModalOpen,
+        selectedPreviousAnswerId,
+        setSelectedPreviousAnswerId,
+        selectedHistoryMedia,
+        setSelectedHistoryMedia,
+        historyPlaybackRate,
+        setHistoryPlaybackRate,
+        selectedPreviousAnswerFileSizes,
+        setSelectedPreviousAnswerFileSizes,
+        selectedPreviousAnswerTotalSizeBytes,
+        setSelectedPreviousAnswerTotalSizeBytes,
+        recycleBinSizeBytes,
+        setRecycleBinSizeBytes,
+        recordingsFolderSizeBytes,
+        setRecordingsFolderSizeBytes,
+        isRecycleBinBusy,
+        setIsRecycleBinBusy,
+    } = useHistoryAnswers(() => ({
+        previousAnswers: [],
+        isLoadingPreviousAnswers: false,
+        previousAnswersError: '',
+        previousAnswersSource: normalizeEnumValue(
+            getSavedValue(STORAGE_PREVIOUS_ANSWERS_SOURCE),
+            PREVIOUS_ANSWERS_SOURCES,
+            PREVIOUS_ANSWERS_SOURCE_FOLDER,
+        ),
+        historyModalOpen: false,
+        selectedPreviousAnswerId: '',
+        selectedHistoryMedia: {
+            audioUrl: '',
+            videoUrl: '',
+        },
+        historyPlaybackRate: 1,
+        selectedPreviousAnswerFileSizes: {
+            report: '',
+            text: '',
+            audio: '',
+            video: '',
+        },
+        selectedPreviousAnswerTotalSizeBytes: 0,
+        recycleBinSizeBytes: 0,
+        recordingsFolderSizeBytes: 0,
+        isRecycleBinBusy: false,
+    }))
     const [isGeneratingQuestions, setIsGeneratingQuestions] = useState(false)
-    const [isGeneratingAmReport, setIsGeneratingAmReport] = useState(false)
-    const [isGeneratingDetailedReport, setIsGeneratingDetailedReport] = useState(false)
-    const [amReportModalOpen, setAmReportModalOpen] = useState(false)
-    const [amReportMarkdownPreview, setAmReportMarkdownPreview] = useState('')
-    const [detailedReportModalOpen, setDetailedReportModalOpen] = useState(false)
-    const [detailedReportMarkdownPreview, setDetailedReportMarkdownPreview] = useState('')
-    const [amReportPdfPreviewOpen, setAmReportPdfPreviewOpen] = useState(false)
-    const [amReportPdfPreviewUrl, setAmReportPdfPreviewUrl] = useState('')
-    const [amReportPdfBlob, setAmReportPdfBlob] = useState(null)
-    const [amReportPdfFileName, setAmReportPdfFileName] = useState('')
-    const [detailedReportPdfPreviewOpen, setDetailedReportPdfPreviewOpen] = useState(false)
-    const [detailedReportPdfPreviewUrl, setDetailedReportPdfPreviewUrl] = useState('')
-    const [detailedReportPdfBlob, setDetailedReportPdfBlob] = useState(null)
-    const [detailedReportPdfFileName, setDetailedReportPdfFileName] = useState('')
-    const [confirmCloseAmReportPdfOpen, setConfirmCloseAmReportPdfOpen] = useState(false)
-    const [confirmCloseDetailedReportPdfOpen, setConfirmCloseDetailedReportPdfOpen] = useState(false)
-    const [llmProviderMode, setLlmProviderMode] = useState(() =>
-        normalizeLlmProviderMode(getSavedValue(STORAGE_LLM_PROVIDER_MODE)),
-    )
-    const [openrouterApiKey, setOpenrouterApiKey] = useState(() =>
-        getSavedValue(STORAGE_OPENROUTER_API_KEY),
-    )
-    const [openrouterModel, setOpenrouterModel] = useState(() =>
-        getSavedValue(STORAGE_OPENROUTER_MODEL) || LLM_PROVIDER_ENV_CONFIG.openrouter.model,
-    )
-    const [nimApiKey, setNimApiKey] = useState(() =>
-        getSavedValue(STORAGE_NIM_API_KEY),
-    )
-    const [nimModel, setNimModel] = useState(() =>
-        getSavedValue(STORAGE_NIM_MODEL) || LLM_PROVIDER_ENV_CONFIG.nim.model,
-    )
-    const [nimBaseUrl, setNimBaseUrl] = useState(() =>
-        getSavedValue(STORAGE_NIM_BASE_URL) || DEFAULT_NIM_BASE_URL,
-    )
-    const [openrouterApiKeyInput, setOpenrouterApiKeyInput] = useState(openrouterApiKey)
-    const [openrouterModelInput, setOpenrouterModelInput] = useState(openrouterModel)
-    const [openrouterCustomModelInput, setOpenrouterCustomModelInput] = useState(() => {
-        const normalized = String(openrouterModel || '').trim()
-        return OPENROUTER_MODEL_PRESETS.some((preset) => preset.value === normalized)
+    const {
+        isGeneratingAmReport,
+        setIsGeneratingAmReport,
+        isGeneratingDetailedReport,
+        setIsGeneratingDetailedReport,
+        combinedReportModalOpen,
+        setCombinedReportModalOpen,
+        amReportMarkdownPreview,
+        setAmReportMarkdownPreview,
+        detailedReportMarkdownPreview,
+        setDetailedReportMarkdownPreview,
+        combinedReportPdfPreviewOpen,
+        setCombinedReportPdfPreviewOpen,
+        amReportPdfPreviewUrl,
+        setAmReportPdfPreviewUrl,
+        amReportPdfBlob,
+        setAmReportPdfBlob,
+        amReportPdfFileName,
+        setAmReportPdfFileName,
+        detailedReportPdfPreviewUrl,
+        setDetailedReportPdfPreviewUrl,
+        detailedReportPdfBlob,
+        setDetailedReportPdfBlob,
+        detailedReportPdfFileName,
+        setDetailedReportPdfFileName,
+        confirmCloseCombinedReportPdfOpen,
+        setConfirmCloseCombinedReportPdfOpen,
+    } = useReportGeneration()
+
+    const {
+        llmProviderMode,
+        setLlmProviderMode,
+        openrouterApiKey,
+        setOpenrouterApiKey,
+        openrouterModel,
+        setOpenrouterModel,
+        nimApiKey,
+        setNimApiKey,
+        nimModel,
+        setNimModel,
+        nimBaseUrl,
+        setNimBaseUrl,
+        openrouterApiKeyInput,
+        setOpenrouterApiKeyInput,
+        openrouterModelInput,
+        setOpenrouterModelInput,
+        openrouterCustomModelInput,
+        setOpenrouterCustomModelInput,
+        nimApiKeyInput,
+        setNimApiKeyInput,
+        nimModelInput,
+        setNimModelInput,
+        nimBaseUrlInput,
+        setNimBaseUrlInput,
+        nimCustomModelInput,
+        setNimCustomModelInput,
+        llmProviderModeInput,
+        setLlmProviderModeInput,
+        llmSettingsError,
+        setLlmSettingsError,
+        isSavingOpenrouterKey,
+        setIsSavingOpenrouterKey,
+        isSavingNimKey,
+        setIsSavingNimKey,
+    } = useLlmSettings(() => {
+        const persistedLlmProviderMode = normalizeEnumValue(
+            getSavedValue(STORAGE_LLM_PROVIDER_MODE),
+            LLM_PROVIDER_MODES,
+            LLM_PROVIDER_MODE_NIM_ONLY,
+        )
+        const persistedOpenrouterApiKey = getSavedValue(STORAGE_OPENROUTER_API_KEY)
+        const persistedOpenrouterModel =
+            getSavedValue(STORAGE_OPENROUTER_MODEL) || LLM_PROVIDER_ENV_CONFIG.openrouter.model
+        const persistedNimApiKey = getSavedValue(STORAGE_NIM_API_KEY)
+        const persistedNimModel =
+            getSavedValue(STORAGE_NIM_MODEL) || LLM_PROVIDER_ENV_CONFIG.nim.model
+        const persistedNimBaseUrl = getSavedValue(STORAGE_NIM_BASE_URL) || DEFAULT_NIM_BASE_URL
+
+        const initialOpenrouterCustomModelInput = OPENROUTER_MODEL_PRESETS.some(
+            (preset) => preset.value === String(persistedOpenrouterModel || '').trim(),
+        )
             ? ''
-            : normalized
-    })
-    const [nimApiKeyInput, setNimApiKeyInput] = useState(nimApiKey)
-    const [nimModelInput, setNimModelInput] = useState(nimModel)
-    const [nimBaseUrlInput, setNimBaseUrlInput] = useState(nimBaseUrl)
-    const [nimCustomModelInput, setNimCustomModelInput] = useState(() => {
-        const normalized = String(nimModel || '').trim()
-        return NIM_MODEL_PRESETS.some((preset) => preset.value === normalized)
+            : String(persistedOpenrouterModel || '').trim()
+
+        const initialNimCustomModelInput = NIM_MODEL_PRESETS.some(
+            (preset) => preset.value === String(persistedNimModel || '').trim(),
+        )
             ? ''
-            : normalized
+            : String(persistedNimModel || '').trim()
+
+        return {
+            llmProviderMode: persistedLlmProviderMode,
+            openrouterApiKey: persistedOpenrouterApiKey,
+            openrouterModel: persistedOpenrouterModel,
+            nimApiKey: persistedNimApiKey,
+            nimModel: persistedNimModel,
+            nimBaseUrl: persistedNimBaseUrl,
+            openrouterApiKeyInput: persistedOpenrouterApiKey,
+            openrouterModelInput: persistedOpenrouterModel,
+            openrouterCustomModelInput: initialOpenrouterCustomModelInput,
+            nimApiKeyInput: persistedNimApiKey,
+            nimModelInput: persistedNimModel,
+            nimBaseUrlInput: persistedNimBaseUrl,
+            nimCustomModelInput: initialNimCustomModelInput,
+            llmProviderModeInput: persistedLlmProviderMode,
+            llmSettingsError: '',
+            isSavingOpenrouterKey: false,
+            isSavingNimKey: false,
+        }
     })
-    const [llmProviderModeInput, setLlmProviderModeInput] = useState(llmProviderMode)
-    const [llmSettingsError, setLlmSettingsError] = useState('')
-    const [isSavingOpenrouterKey, setIsSavingOpenrouterKey] = useState(false)
-    const [isSavingNimKey, setIsSavingNimKey] = useState(false)
-    const [historyPlaybackRate, setHistoryPlaybackRate] = useState(1)
-    const [selectedPreviousAnswerFileSizes, setSelectedPreviousAnswerFileSizes] = useState({
-        report: '',
-        text: '',
-        audio: '',
-        video: '',
-    })
-    const [selectedPreviousAnswerTotalSizeBytes, setSelectedPreviousAnswerTotalSizeBytes] = useState(0)
-    const [recycleBinSizeBytes, setRecycleBinSizeBytes] = useState(0)
-    const [recordingsFolderSizeBytes, setRecordingsFolderSizeBytes] = useState(0)
-    const [isRecycleBinBusy, setIsRecycleBinBusy] = useState(false)
     const historyVideoRef = useRef(null)
     const historyAudioRef = useRef(null)
     const selectedHistoryMediaRef = useRef({ audioUrl: '', videoUrl: '' })
@@ -2040,22 +1885,22 @@ function App() {
     }, [customInterviewerImageDataUrl, interviewerImageId])
 
     const openrouterModelOptions = useMemo(
-        () => buildModelOptionsWithCurrent(OPENROUTER_MODEL_PRESETS),
+        () => buildModelOptionsWithCurrent(OPENROUTER_MODEL_PRESETS, CUSTOM_MODEL_OPTION_VALUE),
         [],
     )
 
     const nimModelOptions = useMemo(
-        () => buildModelOptionsWithCurrent(NIM_MODEL_PRESETS),
+        () => buildModelOptionsWithCurrent(NIM_MODEL_PRESETS, CUSTOM_MODEL_OPTION_VALUE),
         [],
     )
 
     const openrouterModelSelectValue = useMemo(
-        () => getModelSelectValue(openrouterModelInput, OPENROUTER_MODEL_PRESETS),
+        () => getModelSelectValue(openrouterModelInput, OPENROUTER_MODEL_PRESETS, CUSTOM_MODEL_OPTION_VALUE),
         [openrouterModelInput],
     )
 
     const nimModelSelectValue = useMemo(
-        () => getModelSelectValue(nimModelInput, NIM_MODEL_PRESETS),
+        () => getModelSelectValue(nimModelInput, NIM_MODEL_PRESETS, CUSTOM_MODEL_OPTION_VALUE),
         [nimModelInput],
     )
 
@@ -2086,7 +1931,11 @@ function App() {
         interviewSummaries.length > 0
 
     const hasUnsavedLlmSettingsChanges = useMemo(() => {
-        const normalizedProviderModeInput = normalizeLlmProviderMode(llmProviderModeInput)
+        const normalizedProviderModeInput = normalizeEnumValue(
+            llmProviderModeInput,
+            LLM_PROVIDER_MODES,
+            LLM_PROVIDER_MODE_AUTO,
+        )
         const normalizedOpenrouterApiKeyInput = openrouterApiKeyInput.trim()
         const normalizedOpenrouterModelInput = openrouterModelInput.trim()
         const normalizedNimApiKeyInput = nimApiKeyInput.trim()
@@ -2132,6 +1981,19 @@ function App() {
         const timerId = window.setTimeout(() => setToast(''), timeoutMs)
         return () => window.clearTimeout(timerId)
     }, [toast])
+
+    useEffect(() => {
+        if (!banner) return undefined
+
+        const isNoTranscriptBanner = /No transcript was returned(?: by Deepgram)?/i.test(banner)
+        if (!isNoTranscriptBanner) return undefined
+
+        const timerId = window.setTimeout(() => {
+            setBanner((currentBanner) => (currentBanner === banner ? '' : currentBanner))
+        }, 5000)
+
+        return () => window.clearTimeout(timerId)
+    }, [banner])
 
     useEffect(() => {
         function onBeforeUnload(event) {
@@ -2256,7 +2118,7 @@ function App() {
         revokeHistoryMediaUrls(selectedHistoryMediaRef.current)
         selectedHistoryMediaRef.current = nextUrls
         setSelectedHistoryMedia(nextUrls)
-    }, [revokeHistoryMediaUrls])
+    }, [revokeHistoryMediaUrls, setSelectedHistoryMedia])
 
     async function loadHistoryMedia(item) {
         if (!item) {
@@ -2283,6 +2145,7 @@ function App() {
         replaceHistoryMediaUrls({ audioUrl, videoUrl })
     }
 
+    // Keep dependencies minimal here to avoid callback identity churn from custom hook setters.
     const loadPreviousAnswersFromFolder = useCallback(async () => {
         if (isIphoneClient) {
             setPreviousAnswers([])
@@ -2329,7 +2192,7 @@ function App() {
                     }
 
                     if (entryHandle.kind !== 'file') continue
-                    const parts = splitFileName(entryName)
+                    const parts = splitFileName(entryName, sanitizeDisplayText)
                     const scopedNameKey = `${folderPath}/${entryName}`
                     const scopedBaseKey = `${folderPath}/${parts.baseName}`
 
@@ -2382,6 +2245,7 @@ function App() {
                     fallbackDateIso,
                     file.lastModified || 0,
                     entry.folderPath,
+                    sanitizeDisplayText,
                 )
                 if (!parsed) continue
 
@@ -2425,8 +2289,10 @@ function App() {
         } finally {
             setIsLoadingPreviousAnswers(false)
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [fileSystemAccessSupported, isIphoneClient])
 
+    // Keep dependencies minimal here to avoid callback identity churn from custom hook setters.
     const loadPreviousAnswersFromLocalStorage = useCallback(async () => {
         setIsLoadingPreviousAnswers(true)
         setPreviousAnswersError('')
@@ -2490,6 +2356,7 @@ function App() {
         } finally {
             setIsLoadingPreviousAnswers(false)
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
 
     const loadPreviousAnswers = useCallback(async () => {
@@ -2499,6 +2366,7 @@ function App() {
         return loadPreviousAnswersFromFolder()
     }, [loadPreviousAnswersFromFolder, loadPreviousAnswersFromLocalStorage, previousAnswersSource])
 
+    // Keep dependencies minimal here to avoid repeated source flipping and update loops.
     useEffect(() => {
         if (!isFolderFeatureDisabled) return
         if (previousAnswersSource !== PREVIOUS_ANSWERS_SOURCE_FOLDER) return
@@ -2507,6 +2375,7 @@ function App() {
         setSelectedPreviousAnswerId('')
         replaceHistoryMediaUrls({ audioUrl: '', videoUrl: '' })
         void loadPreviousAnswersFromLocalStorage()
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [
         isFolderFeatureDisabled,
         previousAnswersSource,
@@ -2529,10 +2398,33 @@ function App() {
         setHistoryModalOpen(true)
     }
 
+    async function openLocalStoragePreviousAnswersFromSettings() {
+        setPreviousAnswersSource(PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE)
+
+        const items = await loadPreviousAnswersFromLocalStorage()
+        if (!items.length) {
+            setHistoryModalOpen(true)
+            setSelectedPreviousAnswerId('')
+            replaceHistoryMediaUrls({ audioUrl: '', videoUrl: '' })
+            return
+        }
+
+        const firstItem = items[0]
+        setSelectedPreviousAnswerId(firstItem.id)
+        await loadHistoryMedia(firstItem)
+        setHistoryModalOpen(true)
+    }
+
+    function openSessionSummaryFromSettings() {
+        openSummaryModal()
+    }
+
+    // Keep dependencies minimal here to avoid callback identity churn from custom hook setters.
     const closePreviousAnswersModal = useCallback(() => {
         setHistoryModalOpen(false)
         setSelectedPreviousAnswerId('')
         replaceHistoryMediaUrls({ audioUrl: '', videoUrl: '' })
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [replaceHistoryMediaUrls])
 
     async function selectPreviousAnswer(item) {
@@ -2545,6 +2437,7 @@ function App() {
         [previousAnswers, selectedPreviousAnswerId],
     )
 
+    // Keep dependencies minimal here to avoid repeated file-size effect loops.
     useEffect(() => {
         let cancelled = false
 
@@ -2612,6 +2505,7 @@ function App() {
         return () => {
             cancelled = true
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [selectedPreviousAnswer])
 
     const selectedPreviousAnswerSummaryFingerprint = useMemo(() => {
@@ -2673,9 +2567,15 @@ function App() {
             ? 'Loading previous answers...'
             : ''
     const isSummaryViewDisabled = !interviewSummaries.length
-    const summaryViewDisabledReason = isSummaryViewDisabled
-        ? 'Record and transcribe at least one answer first.'
-        : ''
+
+    const localTranscriptMetricsStorageBytes = useMemo(() => {
+        try {
+            const raw = getSavedValue(STORAGE_PREVIOUS_ANSWERS_LOCAL)
+            return new Blob([raw]).size
+        } catch {
+            return 0
+        }
+    }, [settingsOpen, previousAnswers, transcript, latestInterviewMetrics])
 
     function suppressDisabledTooltipPointerDefault(event, isDisabled) {
         if (!isDisabled) return
@@ -2713,6 +2613,7 @@ function App() {
         setToast('Custom interviewer image removed.')
     }
 
+    // Keep dependencies minimal here; closeSettings is intentionally excluded to avoid escape-handler churn.
     useEffect(() => {
         let cancelled = false
 
@@ -2778,11 +2679,37 @@ function App() {
         return index >= 0 ? index + 1 : 0
     }, [parsedDrawerQuestionKeys, questionInput])
 
+    const currentMockQuestionIndex = useMemo(() => {
+        if (!parsedDrawerQuestions.length) return -1
+
+        if (
+            activeQuestionListIndex != null &&
+            activeQuestionListIndex >= 0 &&
+            activeQuestionListIndex < parsedDrawerQuestions.length
+        ) {
+            return activeQuestionListIndex
+        }
+
+        const currentQuestionKey = normalizeQuestionKey(questionInput)
+        if (!currentQuestionKey) return 0
+
+        const index = parsedDrawerQuestionKeys.findIndex((key) => key === currentQuestionKey)
+        return index >= 0 ? index : 0
+    }, [activeQuestionListIndex, parsedDrawerQuestionKeys, parsedDrawerQuestions.length, questionInput])
+
+    const isMockOnLastQuestion =
+        currentMockQuestionIndex >= 0 &&
+        currentMockQuestionIndex === parsedDrawerQuestions.length - 1
+
     const shouldPromptQuestionImport =
         !parsedDrawerQuestions.length
 
     const hasQuestionsInList = parsedDrawerQuestions.length > 0
     const canPromptGenerateQuestionsFromCvJd = hasCvAndJdContext()
+    const hasMockCvJdInput = Boolean(cvText.trim() || jdText.trim())
+    const isMockMissingCvJdInput = !hasMockCvJdInput
+    const isCvJdModalEditLocked =
+        isGeneratingQuestions || isGeneratingAmReport || isGeneratingDetailedReport
 
     const showNoNextQuestionTooltip =
         shouldPromptQuestionImport && !isImportQuestionDisabled
@@ -2795,6 +2722,10 @@ function App() {
                 : `${parsedDrawerQuestions.length} question(s) in question list`
 
     const shouldShowSessionPanel = false
+    const shouldShowOpenrouterSettings =
+        llmProviderModeInput !== LLM_PROVIDER_MODE_NIM_ONLY
+    const shouldShowNimKeyAndModelSettings =
+        llmProviderModeInput !== LLM_PROVIDER_MODE_OPENROUTER_ONLY
 
     const warningPopupMessage = useMemo(() => {
         if (banner) return banner
@@ -2802,7 +2733,10 @@ function App() {
         if (needsRevalidation) {
             return 'Revalidation recommended. Your key was last checked over 30 days ago.'
         }
-        if (!hasTtsProvider && readQuestionWithTts) {
+        if (
+            !hasTtsProvider &&
+            (cameraWorkflowMode !== CAMERA_WORKFLOW_MODE_PRACTICE || readQuestionWithTts)
+        ) {
             return 'Question TTS uses your system voice and is unavailable in this browser.'
         }
         return ''
@@ -2811,24 +2745,25 @@ function App() {
         previousAnswersError,
         needsRevalidation,
         hasTtsProvider,
+        cameraWorkflowMode,
         readQuestionWithTts,
     ])
 
     const activePopupMessage = toast || warningPopupMessage
 
     useEffect(() => {
-        if (!amReportModalOpen) return
+        if (!combinedReportModalOpen) return
         const container = amReportPreviewScrollRef.current
         if (!container) return
         container.scrollTop = container.scrollHeight
-    }, [amReportMarkdownPreview, amReportModalOpen])
+    }, [amReportMarkdownPreview, combinedReportModalOpen])
 
     useEffect(() => {
-        if (!detailedReportModalOpen) return
+        if (!combinedReportModalOpen) return
         const container = detailedReportPreviewScrollRef.current
         if (!container) return
         container.scrollTop = container.scrollHeight
-    }, [detailedReportMarkdownPreview, detailedReportModalOpen])
+    }, [detailedReportMarkdownPreview, combinedReportModalOpen])
 
     useEffect(() => {
         return () => {
@@ -2916,6 +2851,39 @@ function App() {
         setChangelogModalOpen(false)
     }
 
+    const {
+        confirmRegenerateQuestionsOpen,
+        confirmGenerateQuestionsClearSummaryOpen,
+        generateQuestionsCountModalOpen,
+        generateQuestionsCountInput,
+        setGenerateQuestionsCountInput,
+        confirmGenerateQuestionsClearSummary,
+        cancelGenerateQuestionsClearSummary,
+        confirmGenerateQuestionsCountSelection,
+        closeGenerateQuestionsCountModal,
+        generateQuestionsInBackground,
+        requestGenerateQuestionsFromQuestionsModal,
+        confirmRegenerateQuestions,
+        cancelRegenerateQuestions,
+        handleQuestionGenerationEscape,
+    } = useQuestionGeneration({
+        isGeneratingQuestions,
+        hasQuestionsInList: parsedDrawerQuestions.length > 0,
+        hasSummaryEntries: interviewSummaries.length > 0,
+        defaultQuestionCount: DEFAULT_GENERATED_QUESTION_COUNT,
+        minQuestionCount: 2,
+        maxQuestionCount: 25,
+        onGenerateQuestions: (options) => {
+            void generateQuestionsFromCvJd(options)
+        },
+        onClearSummaryBeforeGenerate: () => {
+            setInterviewSummaries([])
+            setSelectedSummaryId('')
+            closeSummaryModal()
+        },
+        onToast: setToast,
+    })
+
     function buildCvJdForGeminiMarkdown() {
         const companyName = companyNameInput.trim()
         const candidateCv = cvText.trim()
@@ -2984,6 +2952,129 @@ function App() {
             .map((part) => (part.endsWith('?') ? part : `${part}?`))
 
         return splitByQuestionMarks.length > 1 ? splitByQuestionMarks : normalizedLines
+    }
+
+    function hasAnswerTranscriptSection(questionBlockMarkdown) {
+        return /(^|\n)\s*(\*\*Answer Transcript\*\*|###\s*Answer Transcript\b)/i.test(
+            questionBlockMarkdown,
+        )
+    }
+
+    function buildQuotedTranscriptLines(transcriptText) {
+        const lines = String(transcriptText || '')
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean)
+
+        if (!lines.length) return []
+        if (lines.length === 1) {
+            return [`> "${lines[0]}"`]
+        }
+
+        const firstLine = `> "${lines[0]}`
+        const middleLines = lines.slice(1, -1).map((line) => `> ${line}`)
+        const lastLine = `> ${lines[lines.length - 1]}"`
+        return [firstLine, ...middleLines, lastLine]
+    }
+
+    function insertAnswerTranscriptInQuestionBlock(questionBlockMarkdown, transcriptText) {
+        if (!transcriptText?.trim() || hasAnswerTranscriptSection(questionBlockMarkdown)) {
+            return questionBlockMarkdown
+        }
+
+        const lines = questionBlockMarkdown.split('\n')
+        const firstBoldedHeadingIndex = lines.findIndex(
+            (line, index) => index > 0 && /^\s*\*\*[^*\n]+\*\*\s*$/.test(line.trim()),
+        )
+        if (firstBoldedHeadingIndex < 0) {
+            return questionBlockMarkdown
+        }
+
+        let insertAt = lines.length
+        for (let index = firstBoldedHeadingIndex + 1; index < lines.length; index += 1) {
+            if (/^\s*\*\*[^*\n]+\*\*\s*$/.test(lines[index].trim())) {
+                insertAt = index
+                break
+            }
+        }
+
+        const quotedTranscriptLines = buildQuotedTranscriptLines(transcriptText)
+        if (!quotedTranscriptLines.length) return questionBlockMarkdown
+
+        lines.splice(insertAt, 0, '', '**Answer Transcript**', ...quotedTranscriptLines, '')
+        return lines.join('\n').replace(/\n{3,}/g, '\n\n')
+    }
+
+    function normalizeDetailedReportMarkdownForPdf(detailedMarkdown, summaries) {
+        const normalizedMarkdown = String(detailedMarkdown || '').replace(/\r\n?/g, '\n')
+        const questionBlockPattern =
+            /^###\s*Question\s+(\d+)\s*:[^\n]*\n[\s\S]*?(?=^###\s*Question\s+\d+\s*:|$)/gm
+
+        const extractedBlocks = []
+        let match
+        while ((match = questionBlockPattern.exec(normalizedMarkdown)) !== null) {
+            const questionNumber = Number.parseInt(match[1], 10)
+            const blockText = match[0]
+            const headingText =
+                blockText.match(/^###\s*Question\s+\d+\s*:\s*(.*)$/m)?.[1]?.trim() || ''
+
+            extractedBlocks.push({
+                start: match.index,
+                end: match.index + blockText.length,
+                questionNumber,
+                headingText,
+                blockText,
+            })
+        }
+
+        if (!extractedBlocks.length) return normalizedMarkdown
+
+        const questionOrder = extractedBlocks.map((block) => block.questionNumber)
+        const isStrictlyDescending =
+            questionOrder.length > 1 &&
+            questionOrder.every((value, index) => index === 0 || questionOrder[index - 1] > value)
+
+        const questionBlocks = isStrictlyDescending
+            ? [...extractedBlocks].sort((a, b) => a.questionNumber - b.questionNumber)
+            : extractedBlocks
+
+        const summariesChronological = [...(summaries || [])].sort((a, b) => {
+            const left = Date.parse(a?.capturedAt || '')
+            const right = Date.parse(b?.capturedAt || '')
+            const leftValue = Number.isFinite(left) ? left : 0
+            const rightValue = Number.isFinite(right) ? right : 0
+            return leftValue - rightValue
+        })
+
+        const transcriptByQuestionKey = new Map()
+        for (const entry of summariesChronological) {
+            const key = normalizeQuestionKey(entry?.question)
+            const transcriptText = String(entry?.transcript || '').trim()
+            if (!key || !transcriptText || transcriptByQuestionKey.has(key)) continue
+            transcriptByQuestionKey.set(key, transcriptText)
+        }
+
+        const enhancedBlocks = questionBlocks.map((block) => {
+            const normalizedHeadingKey = normalizeQuestionKey(block.headingText)
+            const transcriptFromHeading = normalizedHeadingKey
+                ? transcriptByQuestionKey.get(normalizedHeadingKey) || ''
+                : ''
+            const transcriptFromIndex =
+                summariesChronological[block.questionNumber - 1]?.transcript || ''
+            const transcriptText = String(transcriptFromHeading || transcriptFromIndex || '').trim()
+
+            return insertAnswerTranscriptInQuestionBlock(block.blockText, transcriptText)
+        })
+
+        const firstStart = extractedBlocks[0].start
+        const lastEnd = extractedBlocks[extractedBlocks.length - 1].end
+        const before = normalizedMarkdown.slice(0, firstStart)
+        const after = normalizedMarkdown.slice(lastEnd)
+        const combinedBlocks = enhancedBlocks
+            .map((blockText) => blockText.trimEnd())
+            .join('\n\n')
+
+        return `${before}${combinedBlocks}${after}`
     }
 
     function getLlmProviderCandidatesForCurrentMode() {
@@ -3082,10 +3173,14 @@ function App() {
         if (isGeneratingQuestions) return
 
         const normalizedQuestionCount = Math.max(
-            3,
-            Math.min(40, Number.parseInt(questionCount, 10) || DEFAULT_GENERATED_QUESTION_COUNT),
+            2,
+            Math.min(25, Number.parseInt(questionCount, 10) || DEFAULT_GENERATED_QUESTION_COUNT),
         )
+        const shouldOpenQuestionsDrawer =
+            openQuestionsDrawer && cameraWorkflowMode === CAMERA_WORKFLOW_MODE_PRACTICE
         const jdOnlyQuestionCount = Math.floor(0.4 * normalizedQuestionCount)
+        setRequestedQuestionGenerationCount(normalizedQuestionCount)
+        setGeneratedQuestionProgressCount(0)
 
         const cv = cvText.trim()
         const jobDescription = jdText.trim()
@@ -3111,10 +3206,14 @@ function App() {
         if (closeCvJd) {
             closeCvJdModal()
         }
-        if (openQuestionsDrawer) {
+        if (shouldOpenQuestionsDrawer) {
             setQuestionsDrawerOpen(true)
             setQuestionsBulkInput('Generating questions...')
+        } else if (cameraWorkflowMode === CAMERA_WORKFLOW_MODE_MOCK_INTERVIEW) {
+            setQuestionsDrawerOpen(false)
         }
+        setIsMockQuestionOverlayVisible(false)
+        setIsMockInterviewStarted(false)
         setActiveQuestionListIndex(null)
         setNextQuestionCursor(0)
 
@@ -3126,7 +3225,7 @@ function App() {
             for (let index = 0; index < providerCandidates.length; index += 1) {
                 const providerConfig = providerCandidates[index]
 
-                if (index > 0 && openQuestionsDrawer) {
+                if (index > 0 && shouldOpenQuestionsDrawer) {
                     const retryLabel =
                         providerConfig.providerId === 'nim' ? 'NVIDIA NIM' : 'OpenRouter'
                     setQuestionsBulkInput(`Retrying with ${retryLabel}...`)
@@ -3150,6 +3249,11 @@ function App() {
                         stream: true,
                         onChunk: (fullText) => {
                             setQuestionsBulkInput(fullText || 'Generating questions...')
+                            const generatedCount = parseGeneratedQuestions(fullText).length
+                            const boundedCount = Math.min(normalizedQuestionCount, generatedCount)
+                            setGeneratedQuestionProgressCount((prev) =>
+                                boundedCount > prev ? boundedCount : prev,
+                            )
                         },
                         context: {
                             question: 'Generate interview questions from profile context.',
@@ -3180,12 +3284,16 @@ function App() {
             }
 
             setQuestionsBulkInput(parsedQuestions.join('\n'))
+            setGeneratedQuestionProgressCount(
+                Math.min(normalizedQuestionCount, parsedQuestions.length),
+            )
             setActiveQuestionListIndex(0)
             setNextQuestionCursor(0)
             setQuestionInput(parsedQuestions[0] || '')
             setToast(`Generated ${parsedQuestions.length} question(s).`)
         } catch (error) {
             setQuestionsBulkInput('')
+            setGeneratedQuestionProgressCount(0)
             if (!showLlmProviderHttpErrorToast(error)) {
                 setToast(error?.message || 'Could not generate questions.')
             }
@@ -3194,11 +3302,11 @@ function App() {
         }
     }
 
-    async function generateAmFeedbackReport() {
+    async function generateCombinedInterviewReports() {
         if (isGeneratingAmReport || isGeneratingDetailedReport) return
 
         if (!interviewSummaries.length) {
-            setToast('Add at least one answer to Answer Summary before generating AM report.')
+            setToast('Add at least one answer to Answer Summary before generating reports.')
             return
         }
 
@@ -3208,7 +3316,7 @@ function App() {
         const consultantFullName = consultantFullNameInput.trim()
         const jobTitle = jobTitleInput.trim()
         if (!cv && !jobDescription && !companyName) {
-            setToast('Add CV, JD, or company name before generating AM report.')
+            setToast('Add CV, JD, or company name before generating reports.')
             return
         }
 
@@ -3221,6 +3329,7 @@ function App() {
         const summaryMarkdown = buildAnswerSummaryMarkdown(
             interviewSummaries,
             overallInterviewSummary,
+            (value) => formatReadableCapturedDate(value, sanitizeDisplayText),
         )
 
         const metricSummary = [
@@ -3231,241 +3340,227 @@ function App() {
             `Average gaze center (%): ${overallInterviewSummary.averageGazeCenterPct}`,
         ].join(', ')
 
-        setIsGeneratingAmReport(true)
-        setAmReportModalOpen(true)
-        setAmReportMarkdownPreview('Generating AM report...')
-        setConfirmCloseAmReportPdfOpen(false)
-        setToast('Generating AM feedback report...')
-
-        try {
-            let result = null
-            let lastError = null
-            const controller = new AbortController()
-            amReportAbortControllerRef.current = controller
-
-            for (let index = 0; index < providerCandidates.length; index += 1) {
-                const providerConfig = providerCandidates[index]
-                setAmReportMarkdownPreview('')
-
-                if (controller.signal.aborted) {
-                    const abortError = new Error('AM report generation canceled.')
-                    abortError.code = 'request-aborted'
-                    throw abortError
-                }
-
-                const providerLabel = getLlmProviderUsageLabel(providerConfig.providerId)
-                const providerUsageMessage = `Generating AM Report, LLM API used: ${providerLabel}`
-                console.info(providerUsageMessage)
-                setToast(providerUsageMessage)
-
-                try {
-                    result = await sendInterviewChatMessage({
-                        providerId: providerConfig.providerId,
-                        apiKey: providerConfig.apiKey,
-                        model: providerConfig.model,
-                        baseUrl: providerConfig.baseUrl,
-                        userMessage: AM_REPORT_USER_MESSAGE,
-                        context: {
-                            question: 'Generate concise mock interview feedback and summary for the consultant at consulting firm. Do not include per question feedback.',
-                            answer: summaryMarkdown,
-                            generationGuidelines: DEFAULT_AM_REPORT_GENERATION_GUIDELINES,
-                            metricSummary,
-                            companyName,
-                            consultantFullName,
-                            jobTitle,
-                            jobDescription,
-                            cv
-                        },
-                        stream: true,
-                        onChunk: (fullText) => {
-                            setAmReportMarkdownPreview(fullText || '')
-                        },
-                        signal: controller.signal,
-                    })
-                    break
-                } catch (error) {
-                    if (error?.code === 'request-aborted') {
-                        throw error
-                    }
-                    showLlmProviderHttpErrorToast(error, providerConfig.providerId)
-                    lastError = error
-                }
-            }
-
-            if (!result?.text) {
-                throw lastError || new Error('Could not generate AM report.')
-            }
-
-            const pdfDocument = await downloadInterviewReportPdf({
-                companyName,
-                consultantFullName,
-                jobTitle,
-                feedbackText: result.text,
-                reportTitle: 'Account Manager Interview Feedback Report',
-                feedbackSectionTitle: 'AM Feedback Output',
-                fileNamePrefix: 'am-feedback-report',
-            })
-
-            if (!pdfDocument?.blob) {
-                throw new Error('Could not prepare AM feedback PDF.')
-            }
-
-            const previewUrl = URL.createObjectURL(pdfDocument.blob)
-            setAmReportPdfPreviewUrl(previewUrl)
-            setAmReportPdfBlob(pdfDocument.blob)
-            setAmReportPdfFileName(pdfDocument.fileName || 'am-feedback-report.pdf')
-            setAmReportPdfPreviewOpen(true)
-            setAmReportModalOpen(false)
-            setToast('AM feedback PDF ready. Review or download.')
-        } catch (error) {
-            setAmReportModalOpen(false)
-            if (error?.code === 'request-aborted') {
-                setToast('AM report generation canceled.')
-            } else {
-                if (!showLlmProviderHttpErrorToast(error)) {
-                    setToast(error?.message || 'Could not generate AM report.')
-                }
-            }
-        } finally {
-            amReportAbortControllerRef.current = null
-            setIsGeneratingAmReport(false)
-        }
-    }
-
-    async function generateDetailedInterviewReport() {
-        if (isGeneratingDetailedReport || isGeneratingAmReport) return
-
-        if (!interviewSummaries.length) {
-            setToast('Add at least one answer to Answer Summary before generating a detailed report.')
-            return
-        }
-
-        const cv = cvText.trim()
-        const jobDescription = jdText.trim()
-        const companyName = companyNameInput.trim()
-        const consultantFullName = consultantFullNameInput.trim()
-        const jobTitle = jobTitleInput.trim()
-        if (!cv && !jobDescription && !companyName) {
-            setToast('Add CV, JD, or company name before generating a detailed report.')
-            return
-        }
-
-        const providerCandidates = getLlmProviderCandidatesForCurrentMode()
-        if (!providerCandidates.length) {
-            showLlmProviderMissingKeyToast()
-            return
-        }
-
-        const summaryMarkdown = buildAnswerSummaryMarkdown(
-            interviewSummaries,
-            overallInterviewSummary,
-        )
-
-        const metricSummary = [
-            `Total answers: ${overallInterviewSummary.totalAnswers}`,
-            `Average WPM: ${overallInterviewSummary.averageWpm}`,
-            `Average answer length (sec): ${overallInterviewSummary.averageAnswerLengthSec}`,
-            `Average hesitations: ${overallInterviewSummary.averageHesitations}`,
-            `Average gaze center (%): ${overallInterviewSummary.averageGazeCenterPct}`,
-        ].join(', ')
-
+        setAmReportPdfPreviewUrl('')
+        setAmReportPdfBlob(null)
+        setAmReportPdfFileName('')
+        setDetailedReportPdfPreviewUrl('')
+        setDetailedReportPdfBlob(null)
+        setDetailedReportPdfFileName('')
+        setIsGeneratingAmReport(false)
         setIsGeneratingDetailedReport(true)
-        setDetailedReportModalOpen(true)
+        setCombinedReportModalOpen(true)
+        setCombinedReportPdfPreviewOpen(false)
+        setAmReportMarkdownPreview('Waiting for detailed report...')
         setDetailedReportMarkdownPreview('Generating detailed report...')
-        setConfirmCloseDetailedReportPdfOpen(false)
-        setToast('Generating detailed interview report...')
+        setConfirmCloseCombinedReportPdfOpen(false)
+        setToast('Generating detailed report first, then AM report...')
 
-        try {
+        const generateDetailedTask = async () => {
             let result = null
             let lastError = null
             const controller = new AbortController()
             detailedReportAbortControllerRef.current = controller
 
-            for (let index = 0; index < providerCandidates.length; index += 1) {
-                const providerConfig = providerCandidates[index]
-                setDetailedReportMarkdownPreview('')
+            try {
+                for (let index = 0; index < providerCandidates.length; index += 1) {
+                    const providerConfig = providerCandidates[index]
+                    setDetailedReportMarkdownPreview('')
 
-                if (controller.signal.aborted) {
-                    const abortError = new Error('Detailed report generation canceled.')
-                    abortError.code = 'request-aborted'
-                    throw abortError
-                }
-
-                const providerLabel = getLlmProviderUsageLabel(providerConfig.providerId)
-                const providerUsageMessage = `Generating Detailed Report, LLM API used: ${providerLabel}`
-                console.info(providerUsageMessage)
-                setToast(providerUsageMessage)
-
-                try {
-                    result = await sendInterviewChatMessage({
-                        providerId: providerConfig.providerId,
-                        apiKey: providerConfig.apiKey,
-                        model: providerConfig.model,
-                        baseUrl: providerConfig.baseUrl,
-                        userMessage: DETAILED_REPORT_USER_MESSAGE,
-                        context: {
-                            question: 'Generate a detailed mock interview report with both overall summary and per-question analysis.',
-                            answer: summaryMarkdown,
-                            generationGuidelines: DEFAULT_DETAILED_REPORT_GENERATION_GUIDELINES,
-                            metricSummary,
-                            companyName,
-                            consultantFullName,
-                            jobTitle,
-                            jobDescription,
-                            cv,
-                        },
-                        stream: true,
-                        onChunk: (fullText) => {
-                            setDetailedReportMarkdownPreview(fullText || '')
-                        },
-                        signal: controller.signal,
-                    })
-                    break
-                } catch (error) {
-                    if (error?.code === 'request-aborted') {
-                        throw error
+                    if (controller.signal.aborted) {
+                        const abortError = new Error('Detailed report generation canceled.')
+                        abortError.code = 'request-aborted'
+                        throw abortError
                     }
-                    showLlmProviderHttpErrorToast(error, providerConfig.providerId)
-                    lastError = error
+
+                    const providerLabel = getLlmProviderUsageLabel(providerConfig.providerId)
+                    const providerUsageMessage = `Generating Detailed Report, LLM API used: ${providerLabel}`
+                    console.info(providerUsageMessage)
+
+                    try {
+                        result = await sendInterviewChatMessage({
+                            providerId: providerConfig.providerId,
+                            apiKey: providerConfig.apiKey,
+                            model: providerConfig.model,
+                            baseUrl: providerConfig.baseUrl,
+                            userMessage: DETAILED_REPORT_USER_MESSAGE,
+                            context: {
+                                question: 'Generate a detailed mock interview report with both overall summary and per-question analysis.',
+                                answer: summaryMarkdown,
+                                generationGuidelines: DEFAULT_DETAILED_REPORT_GENERATION_GUIDELINES,
+                                metricSummary,
+                                companyName,
+                                consultantFullName,
+                                jobTitle,
+                                jobDescription,
+                                cv,
+                            },
+                            stream: true,
+                            onChunk: (fullText) => {
+                                setDetailedReportMarkdownPreview(fullText || '')
+                            },
+                            signal: controller.signal,
+                        })
+                        break
+                    } catch (error) {
+                        if (error?.code === 'request-aborted') {
+                            throw error
+                        }
+                        showLlmProviderHttpErrorToast(error, providerConfig.providerId)
+                        lastError = error
+                    }
                 }
+
+                if (!result?.text) {
+                    throw lastError || new Error('Could not generate detailed report.')
+                }
+
+                const normalizedDetailedPdfMarkdown = normalizeDetailedReportMarkdownForPdf(
+                    result.text,
+                    interviewSummaries,
+                )
+
+                const pdfDocument = await downloadInterviewReportPdf({
+                    companyName,
+                    consultantFullName,
+                    jobTitle,
+                    feedbackText: normalizedDetailedPdfMarkdown,
+                    reportTitle: 'Detailed Interview Report',
+                    feedbackSectionTitle: 'Detailed Feedback Output',
+                    fileNamePrefix: 'detailed-interview-report',
+                })
+
+                if (!pdfDocument?.blob) {
+                    throw new Error('Could not prepare detailed report PDF.')
+                }
+
+                return { text: result.text, pdfDocument }
+            } finally {
+                detailedReportAbortControllerRef.current = null
             }
+        }
 
-            if (!result?.text) {
-                throw lastError || new Error('Could not generate detailed report.')
+        const generateAmTask = async (detailedReportText) => {
+            let result = null
+            let lastError = null
+            const controller = new AbortController()
+            amReportAbortControllerRef.current = controller
+
+            try {
+                for (let index = 0; index < providerCandidates.length; index += 1) {
+                    const providerConfig = providerCandidates[index]
+                    setAmReportMarkdownPreview('')
+
+                    if (controller.signal.aborted) {
+                        const abortError = new Error('AM report generation canceled.')
+                        abortError.code = 'request-aborted'
+                        throw abortError
+                    }
+
+                    const providerLabel = getLlmProviderUsageLabel(providerConfig.providerId)
+                    const providerUsageMessage = `Generating AM Report, LLM API used: ${providerLabel}`
+                    console.info(providerUsageMessage)
+
+                    try {
+                        result = await sendInterviewChatMessage({
+                            providerId: providerConfig.providerId,
+                            apiKey: providerConfig.apiKey,
+                            model: providerConfig.model,
+                            baseUrl: providerConfig.baseUrl,
+                            userMessage: AM_REPORT_USER_MESSAGE,
+                            context: {
+                                question: 'Generate concise mock interview feedback and summary for the consultant at consulting firm. Do not include per question feedback. Ensure consistency with the detailed report provided in context.',
+                                answer: `${summaryMarkdown}\n\nDetailed report for alignment:\n${detailedReportText}`,
+                                generationGuidelines: `${DEFAULT_AM_REPORT_GENERATION_GUIDELINES}\n\nUse the detailed report context to keep conclusions, strengths, risks, and recommendations consistent across both outputs.`,
+                                metricSummary,
+                                companyName,
+                                consultantFullName,
+                                jobTitle,
+                                jobDescription,
+                                cv,
+                            },
+                            stream: true,
+                            onChunk: (fullText) => {
+                                setAmReportMarkdownPreview(fullText || '')
+                            },
+                            signal: controller.signal,
+                        })
+                        break
+                    } catch (error) {
+                        if (error?.code === 'request-aborted') {
+                            throw error
+                        }
+                        showLlmProviderHttpErrorToast(error, providerConfig.providerId)
+                        lastError = error
+                    }
+                }
+
+                if (!result?.text) {
+                    throw lastError || new Error('Could not generate AM report.')
+                }
+
+                const pdfDocument = await downloadInterviewReportPdf({
+                    companyName,
+                    consultantFullName,
+                    jobTitle,
+                    feedbackText: result.text,
+                    reportTitle: 'Account Manager Interview Feedback Report',
+                    feedbackSectionTitle: 'AM Feedback Output',
+                    fileNamePrefix: 'am-feedback-report',
+                })
+
+                if (!pdfDocument?.blob) {
+                    throw new Error('Could not prepare AM feedback PDF.')
+                }
+
+                return { text: result.text, pdfDocument }
+            } finally {
+                amReportAbortControllerRef.current = null
             }
+        }
 
-            const pdfDocument = await downloadInterviewReportPdf({
-                companyName,
-                consultantFullName,
-                jobTitle,
-                feedbackText: result.text,
-                reportTitle: 'Detailed Interview Report',
-                feedbackSectionTitle: 'Detailed Feedback Output',
-                fileNamePrefix: 'detailed-interview-report',
-            })
+        let hasDetailedPdf = false
+        let hasAmPdf = false
 
-            if (!pdfDocument?.blob) {
-                throw new Error('Could not prepare detailed report PDF.')
-            }
+        try {
+            const detailedResult = await generateDetailedTask()
+            const detailedPreviewUrl = URL.createObjectURL(detailedResult.pdfDocument.blob)
+            setDetailedReportPdfPreviewUrl(detailedPreviewUrl)
+            setDetailedReportPdfBlob(detailedResult.pdfDocument.blob)
+            setDetailedReportPdfFileName(detailedResult.pdfDocument.fileName || 'detailed-interview-report.pdf')
+            hasDetailedPdf = true
 
-            const previewUrl = URL.createObjectURL(pdfDocument.blob)
-            setDetailedReportPdfPreviewUrl(previewUrl)
-            setDetailedReportPdfBlob(pdfDocument.blob)
-            setDetailedReportPdfFileName(pdfDocument.fileName || 'detailed-interview-report.pdf')
-            setDetailedReportPdfPreviewOpen(true)
-            setDetailedReportModalOpen(false)
-            setToast('Detailed report PDF ready. Review or download.')
+            setIsGeneratingDetailedReport(false)
+            setIsGeneratingAmReport(true)
+            setAmReportMarkdownPreview('Generating AM report from detailed report...')
+
+            const amResult = await generateAmTask(detailedResult.text)
+            const amPreviewUrl = URL.createObjectURL(amResult.pdfDocument.blob)
+            setAmReportPdfPreviewUrl(amPreviewUrl)
+            setAmReportPdfBlob(amResult.pdfDocument.blob)
+            setAmReportPdfFileName(amResult.pdfDocument.fileName || 'am-feedback-report.pdf')
+            hasAmPdf = true
+
+            setCombinedReportModalOpen(false)
+            setCombinedReportPdfPreviewOpen(true)
+            setToast('Detailed and AM PDFs ready. Review or download.')
         } catch (error) {
-            setDetailedReportModalOpen(false)
+            setCombinedReportModalOpen(false)
+
+            if (hasDetailedPdf || hasAmPdf) {
+                setCombinedReportPdfPreviewOpen(true)
+            }
+
             if (error?.code === 'request-aborted') {
-                setToast('Detailed report generation canceled.')
-            } else {
-                if (!showLlmProviderHttpErrorToast(error)) {
-                    setToast(error?.message || 'Could not generate detailed report.')
+                setToast('Report generation canceled.')
+            } else if (!showLlmProviderHttpErrorToast(error)) {
+                if (hasDetailedPdf && !hasAmPdf) {
+                    setToast('Detailed report is ready, but AM report generation failed.')
+                } else {
+                    setToast(error?.message || 'Could not generate reports.')
                 }
             }
         } finally {
-            detailedReportAbortControllerRef.current = null
+            setIsGeneratingAmReport(false)
             setIsGeneratingDetailedReport(false)
         }
     }
@@ -3482,6 +3577,11 @@ function App() {
         if (controller) {
             controller.abort()
         }
+    }
+
+    function cancelCombinedReportGeneration() {
+        cancelAmReportGeneration()
+        cancelDetailedReportGeneration()
     }
 
     function downloadCurrentAmReportPdf() {
@@ -3504,25 +3604,16 @@ function App() {
         setToast('Detailed report PDF downloaded.')
     }
 
-    function requestCloseAmReportPdfPreview() {
-        setConfirmCloseAmReportPdfOpen(true)
+    function requestCloseCombinedReportPdfPreview() {
+        setConfirmCloseCombinedReportPdfOpen(true)
     }
 
-    function requestCloseDetailedReportPdfPreview() {
-        setConfirmCloseDetailedReportPdfOpen(true)
-    }
-
-    function closeAmReportPdfPreviewConfirmed() {
-        setConfirmCloseAmReportPdfOpen(false)
-        setAmReportPdfPreviewOpen(false)
+    function closeCombinedReportPdfPreviewConfirmed() {
+        setConfirmCloseCombinedReportPdfOpen(false)
+        setCombinedReportPdfPreviewOpen(false)
         setAmReportPdfBlob(null)
         setAmReportPdfFileName('')
         setAmReportPdfPreviewUrl('')
-    }
-
-    function closeDetailedReportPdfPreviewConfirmed() {
-        setConfirmCloseDetailedReportPdfOpen(false)
-        setDetailedReportPdfPreviewOpen(false)
         setDetailedReportPdfBlob(null)
         setDetailedReportPdfFileName('')
         setDetailedReportPdfPreviewUrl('')
@@ -3541,52 +3632,8 @@ function App() {
         }
     }
 
-    function parseQuestionsFromBulkInput(rawBulkInput) {
-        return rawBulkInput
-            .split(/\r?\n/)
-            .map((line) => line.trim())
-            .filter(Boolean)
-    }
-
     function hasCvAndJdContext() {
         return Boolean(cvText.trim()) && Boolean(jdText.trim())
-    }
-
-    function openGenerateQuestionsCountModal(options = {}) {
-        if (isGeneratingQuestions) return
-        setPendingGenerateQuestionsOptions(options)
-        setGenerateQuestionsCountInput(String(DEFAULT_GENERATED_QUESTION_COUNT))
-        setGenerateQuestionsCountModalOpen(true)
-    }
-
-    function confirmGenerateQuestionsCountSelection() {
-        const parsedCount = Number.parseInt(generateQuestionsCountInput, 10)
-        if (!Number.isInteger(parsedCount) || parsedCount < 3 || parsedCount > 40) {
-            setToast('Enter a question count between 3 and 40.')
-            return
-        }
-
-        const options = pendingGenerateQuestionsOptions || {}
-        setGenerateQuestionsCountModalOpen(false)
-        setPendingGenerateQuestionsOptions(null)
-        void generateQuestionsFromCvJd({
-            ...options,
-            questionCount: parsedCount,
-        })
-    }
-
-    function closeGenerateQuestionsCountModal() {
-        setGenerateQuestionsCountModalOpen(false)
-        setPendingGenerateQuestionsOptions(null)
-    }
-
-    function generateQuestionsInBackground() {
-        if (isGeneratingQuestions) return
-        setToast('Generating questions in background...')
-        openGenerateQuestionsCountModal({
-            openQuestionsDrawer: false,
-            runInBackground: true,
-        })
     }
 
     function handleQuestionsBulkInputChange(rawBulkInput) {
@@ -3616,23 +3663,216 @@ function App() {
         setQuestionsBulkInput('')
         setActiveQuestionListIndex(null)
         setNextQuestionCursor(0)
+        setIsMockQuestionOverlayVisible(false)
+        setIsMockInterviewStarted(false)
+        setHasMockInterviewStartedOnce(false)
         setToast('Questions list cleared.')
     }
 
-    function requestGenerateQuestionsFromQuestionsModal() {
-        if (isGeneratingQuestions) return
+    function getCurrentMockQuestionIndex() {
+        if (!parsedDrawerQuestions.length) return -1
 
-        if (parsedDrawerQuestions.length) {
-            setConfirmRegenerateQuestionsOpen(true)
+        if (
+            activeQuestionListIndex != null &&
+            activeQuestionListIndex >= 0 &&
+            activeQuestionListIndex < parsedDrawerQuestions.length
+        ) {
+            return activeQuestionListIndex
+        }
+
+        const currentIndexFromInput = parsedDrawerQuestionKeys.findIndex(
+            (questionKey) => questionKey === normalizeQuestionKey(questionInput),
+        )
+
+        return currentIndexFromInput >= 0 ? currentIndexFromInput : 0
+    }
+
+    function shuffleQuestions(questions) {
+        const shuffled = [...questions]
+        for (let index = shuffled.length - 1; index > 0; index -= 1) {
+            const randomIndex = Math.floor(Math.random() * (index + 1))
+                ;[shuffled[index], shuffled[randomIndex]] = [shuffled[randomIndex], shuffled[index]]
+        }
+        return shuffled
+    }
+
+    async function ensureMicrophonePermissionForMockInterviewStart() {
+        if (!navigator?.mediaDevices?.getUserMedia) {
+            setBanner('Microphone access is unavailable in this browser.')
+            setToast('Allow microphone access to start mock interview.')
+            return false
+        }
+
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                audio: true,
+                video: false,
+            })
+            for (const track of stream.getTracks()) {
+                track.stop()
+            }
+            return true
+        } catch {
+            setBanner('Microphone access is required to start mock interview.')
+            setToast('Allow microphone access to start mock interview.')
+            return false
+        }
+    }
+
+    async function startMockInterviewQuestionAt(index, options = {}) {
+        const questions = options.questions || parsedDrawerQuestions
+        const question = questions[index]
+        if (!question) return false
+
+        // Reset overlay visibility on question transition; user can explicitly show it again.
+        setIsMockQuestionOverlayVisible(false)
+
+        importQuestion(question, {
+            closePanel: false,
+            questionIndex: index,
+        })
+
+        const started = await startRecording('audio', question, options)
+        return started
+    }
+
+    async function runMockStartOrDoneAction() {
+        if (!parsedDrawerQuestions.length) {
+            setToast('Generate questions first.')
             return
         }
 
-        openGenerateQuestionsCountModal()
+        if (isMockInterviewStarted) {
+            if (!isRecording || isSpeakingQuestion || isPreparingRecording || isTranscribing) {
+                return
+            }
+
+            await stopRecordingAndTranscribe()
+
+            if (!isMockInterviewStarted) return
+
+            const currentIndex = getCurrentMockQuestionIndex()
+            const nextIndex = currentIndex + 1
+
+            if (nextIndex >= parsedDrawerQuestions.length) {
+                setIsMockInterviewStarted(false)
+                setToast('Mock interview completed.')
+                return
+            }
+
+            const nextStarted = await startMockInterviewQuestionAt(nextIndex, {
+                skipBusyCheck: true,
+            })
+            if (!nextStarted) {
+                setIsMockInterviewStarted(false)
+                setToast('Could not continue to the next question.')
+            }
+            return
+        }
+
+        const startIndex = getCurrentMockQuestionIndex()
+        if (startIndex < 0) {
+            setToast('Generate questions first.')
+            return
+        }
+
+        const hasMicrophonePermission = await ensureMicrophonePermissionForMockInterviewStart()
+        if (!hasMicrophonePermission) {
+            return
+        }
+
+        const shuffledQuestions = shuffleQuestions(parsedDrawerQuestions)
+        setQuestionsBulkInput(shuffledQuestions.join('\n'))
+        setNextQuestionCursor(0)
+        setActiveQuestionListIndex(null)
+
+        setIsMockInterviewStarted(true)
+        setHasMockInterviewStartedOnce(true)
+
+        const started = await startMockInterviewQuestionAt(0, {
+            questions: shuffledQuestions,
+        })
+        if (!started) {
+            setIsMockInterviewStarted(false)
+        }
     }
 
-    function confirmRegenerateQuestions() {
-        setConfirmRegenerateQuestionsOpen(false)
-        openGenerateQuestionsCountModal()
+    function handleStartMockInterview() {
+        if (!isMockInterviewStarted && hasMockInterviewStartedOnce && interviewSummaries.length) {
+            setConfirmStartNewMockInterviewOpen(true)
+            return
+        }
+
+        void runMockStartOrDoneAction()
+    }
+
+    function confirmStartNewMockInterview() {
+        setConfirmStartNewMockInterviewOpen(false)
+        setInterviewSummaries([])
+        setSelectedSummaryId('')
+        closeSummaryModal()
+        void runMockStartOrDoneAction()
+    }
+
+    function cancelStartNewMockInterview() {
+        setConfirmStartNewMockInterviewOpen(false)
+    }
+
+    async function handleEndQuestionInterviewAndGenerateReports() {
+        if (isEndingMockInterview) return
+        setIsEndingMockInterview(true)
+        try {
+            cancelPendingRecordingStartRef.current = true
+            if (typeof window !== 'undefined' && window.speechSynthesis) {
+                window.speechSynthesis.cancel()
+            }
+
+            const wasRecording = isRecording
+            setIsMockInterviewStarted(false)
+
+            if (wasRecording) {
+                await stopRecordingAndTranscribe()
+                setToast('Mock interview ended early. Current answer was saved.')
+            } else {
+                setToast('Mock interview ended early.')
+            }
+        } finally {
+            setIsEndingMockInterview(false)
+        }
+    }
+
+    function handleShowCurrentMockQuestion() {
+        if (isMockQuestionOverlayVisible) {
+            setIsMockQuestionOverlayVisible(false)
+            return
+        }
+
+        if (!parsedDrawerQuestions.length) {
+            setToast('Generate questions first.')
+            return
+        }
+
+        const resolvedIndex =
+            activeQuestionListIndex != null &&
+                activeQuestionListIndex >= 0 &&
+                activeQuestionListIndex < parsedDrawerQuestions.length
+                ? activeQuestionListIndex
+                : 0
+
+        const currentQuestion = parsedDrawerQuestions[resolvedIndex]
+        if (!currentQuestion) {
+            setToast('No current question is available.')
+            return
+        }
+
+        setQuestionInput(currentQuestion)
+        setActiveQuestionListIndex(resolvedIndex)
+        setNextQuestionCursor((resolvedIndex + 1) % parsedDrawerQuestions.length)
+        setIsMockQuestionOverlayVisible(true)
+    }
+
+    function handleGenerateReportsFromMockInterview() {
+        void generateCombinedInterviewReports()
     }
 
     function performRemoveParsedQuestionAt(index) {
@@ -3781,16 +4021,15 @@ function App() {
                 setConfirmFolderSelectOpen(false)
                 return
             }
-            if (confirmRegenerateQuestionsOpen) {
-                setConfirmRegenerateQuestionsOpen(false)
+            if (handleQuestionGenerationEscape()) {
+                return
+            }
+            if (confirmStartNewMockInterviewOpen) {
+                setConfirmStartNewMockInterviewOpen(false)
                 return
             }
             if (confirmCloseSettingsUnsavedLlmOpen) {
                 setConfirmCloseSettingsUnsavedLlmOpen(false)
-                return
-            }
-            if (generateQuestionsCountModalOpen) {
-                closeGenerateQuestionsCountModal()
                 return
             }
             if (pendingDeleteAction) {
@@ -3811,10 +4050,9 @@ function App() {
     }, [
         confirmRemoveOpen,
         confirmFolderSelectOpen,
-        confirmRegenerateQuestionsOpen,
+        handleQuestionGenerationEscape,
+        confirmStartNewMockInterviewOpen,
         confirmCloseSettingsUnsavedLlmOpen,
-        generateQuestionsCountModalOpen,
-        closeGenerateQuestionsCountModal,
         pendingDeleteAction,
         settingsOpen,
         closeSettings,
@@ -4275,6 +4513,8 @@ function App() {
         })
     }
 
+    // Keep this as a hoisted function to avoid temporal dead zone issues in earlier effects.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     function closeSettings() {
         if (hasUnsavedLlmSettingsChanges) {
             setConfirmCloseSettingsUnsavedLlmOpen(true)
@@ -4296,7 +4536,11 @@ function App() {
     }
 
     function saveLlmSettings() {
-        const normalizedProviderMode = normalizeLlmProviderMode(llmProviderModeInput)
+        const normalizedProviderMode = normalizeEnumValue(
+            llmProviderModeInput,
+            LLM_PROVIDER_MODES,
+            LLM_PROVIDER_MODE_NIM_ONLY,
+        )
         const trimmedOpenrouterModel = openrouterModelInput.trim()
         const trimmedNimModel = nimModelInput.trim()
         const trimmedNimBaseUrl = nimBaseUrlInput.trim()
@@ -4434,7 +4678,7 @@ function App() {
     }
 
     function resetLlmSettingsToDefaults() {
-        const defaultProviderMode = LLM_PROVIDER_MODE_AUTO
+        const defaultProviderMode = LLM_PROVIDER_MODE_NIM_ONLY
         const defaultOpenrouterModel = LLM_PROVIDER_ENV_CONFIG.openrouter.model
         const defaultNimModel = LLM_PROVIDER_ENV_CONFIG.nim.model
         const defaultNimBaseUrl = DEFAULT_NIM_BASE_URL
@@ -4612,6 +4856,7 @@ function App() {
         const summaryMarkdown = buildAnswerSummaryMarkdown(
             interviewSummaries,
             overallInterviewSummary,
+            (value) => formatReadableCapturedDate(value, sanitizeDisplayText),
         )
 
         try {
@@ -4839,6 +5084,15 @@ function App() {
         setPendingDeleteAction({ kind: 'summary-answer' })
     }
 
+    function clearAllSummaryAnswers() {
+        if (!interviewSummaries.length) {
+            setToast('No summary answers to clear.')
+            return
+        }
+
+        setPendingDeleteAction({ kind: 'summary-all' })
+    }
+
     async function performDeleteSelectedSummaryAnswer() {
         if (!selectedSummary) {
             setToast('Select a summary answer first.')
@@ -4871,6 +5125,13 @@ function App() {
 
         if (action.kind === 'summary-answer') {
             await performDeleteSelectedSummaryAnswer()
+            return
+        }
+
+        if (action.kind === 'summary-all') {
+            setInterviewSummaries([])
+            setSelectedSummaryId(OVERALL_SUMMARY_VIEW_ID)
+            setToast('All summary answers cleared from this session.')
         }
     }
 
@@ -5102,7 +5363,7 @@ function App() {
             }
             setRecycleBinSizeBytes(0)
         }
-    }, [isFolderFeatureDisabled])
+    }, [isFolderFeatureDisabled, setRecycleBinSizeBytes])
 
     const refreshRecordingsFolderSize = useCallback(async () => {
         if (isFolderFeatureDisabled || !recordingsFolderRef.current) {
@@ -5123,7 +5384,7 @@ function App() {
         } catch {
             setRecordingsFolderSizeBytes(0)
         }
-    }, [isFolderFeatureDisabled])
+    }, [isFolderFeatureDisabled, setRecordingsFolderSizeBytes])
 
     async function clearRecycleBin() {
         if (isFolderFeatureDisabled) {
@@ -5206,7 +5467,7 @@ function App() {
             return null
         }
 
-        const baseName = buildSessionFileBaseName(capturedAtIso, question)
+        const baseName = buildSessionFileBaseName(capturedAtIso, question, sanitizeDisplayText)
         const jsonFileName = `${baseName}.json`
         const textFileName = `${baseName}.txt`
         const audioExt =
@@ -5304,11 +5565,19 @@ function App() {
     }
 
     async function speakQuestionIfEnabled(questionText = questionInput) {
-        if (!readQuestionWithTts) return
+        const isPracticeModeQuestion =
+            cameraWorkflowMode === CAMERA_WORKFLOW_MODE_PRACTICE
+        const shouldReadQuestionWithTts =
+            !isPracticeModeQuestion || readQuestionWithTts
+
+        if (!shouldReadQuestionWithTts) return
 
         const text = questionText.trim()
         if (!text) {
-            setBanner('Read (TTS) Question is enabled, but the question is empty.')
+            const enabledLabel = isPracticeModeQuestion
+                ? 'Read (TTS) Question is enabled for Practice mode'
+                : 'Question TTS is required in Mock Interview mode'
+            setBanner(`${enabledLabel}, but the question is empty.`)
             return
         }
 
@@ -5392,22 +5661,24 @@ function App() {
         }
     }
 
-    async function startRecording(mode = 'audio', importedQuestion = '') {
-        if (isRecording || isTranscribing || isPreparingRecording) return
+    async function startRecording(mode = 'audio', importedQuestion = '', options = {}) {
+        const { skipBusyCheck = false } = options
+        if (!skipBusyCheck && (isRecording || isTranscribing || isPreparingRecording)) return false
 
         if (!hasSttProvider) {
             openSettings()
             setBanner('Add Deepgram key, or enable "Use fallback when Deepgram key is missing" in Settings.')
-            return
+            return false
         }
 
         if (mode === 'video' && !cameraStreamRef.current) {
             setBanner('Camera access is required to capture video with audio.')
-            return
+            return false
         }
 
         try {
             setIsPreparingRecording(true)
+            cancelPendingRecordingStartRef.current = false
             recordingModeRef.current = mode
             setBanner('')
             if (!hasKey && canUseSttFallbackWithoutKey) {
@@ -5424,6 +5695,13 @@ function App() {
 
             const ttsQuestion = importedQuestion.trim() || questionInput.trim()
             await speakQuestionIfEnabled(ttsQuestion)
+
+            if (cancelPendingRecordingStartRef.current) {
+                setIsPreparingRecording(false)
+                recordingModeRef.current = 'audio'
+                cancelPendingRecordingStartRef.current = false
+                return false
+            }
 
             const stream = await navigator.mediaDevices.getUserMedia({
                 audio: true,
@@ -5497,6 +5775,7 @@ function App() {
             }
 
             setToast(mode === 'video' ? 'Video recording started.' : 'Audio recording started.')
+            return true
         } catch {
             setIsPreparingRecording(false)
             recordingActiveRef.current = false
@@ -5508,6 +5787,7 @@ function App() {
             videoRecorderRef.current = null
             chunksRef.current = []
             videoChunksRef.current = []
+            return false
         }
     }
 
@@ -5745,7 +6025,9 @@ function App() {
             ? CAMERA_DISPLAY_MODE_INTERVIEWER_PLUS_SELF_PIP
             : CAMERA_DISPLAY_MODE_INTERVIEWER_ONLY
         : CAMERA_DISPLAY_MODE_SELF_ONLY
+    const isPracticeMode = cameraWorkflowMode === CAMERA_WORKFLOW_MODE_PRACTICE
     const isCameraAccessAllowed = hasCameraAccess || cameraPermissionState === 'granted'
+    const isMockInterviewFocusMode = !isPracticeMode && isMockInterviewStarted
 
     function handleThemeModeToggle() {
         setDarkMode((prev) => !prev)
@@ -5797,6 +6079,24 @@ function App() {
         setIsCameraOverlayMenuOpen((prev) => !prev)
     }
 
+    function handleSelfViewFrameMouseDown(event) {
+        if (event.detail > 1) {
+            event.preventDefault()
+        }
+    }
+
+    function handleSelfViewFrameDoubleClick(event) {
+        event.preventDefault()
+        event.stopPropagation()
+
+        if (showPiP) {
+            applyCameraDisplayMode(CAMERA_DISPLAY_MODE_SELF_ONLY)
+            return
+        }
+
+        applyCameraDisplayMode(CAMERA_DISPLAY_MODE_INTERVIEWER_PLUS_SELF_PIP)
+    }
+
     useEffect(() => {
         if (!isCameraOverlayMenuOpen) return undefined
 
@@ -5811,7 +6111,7 @@ function App() {
     }, [isCameraOverlayMenuOpen])
 
     return (
-        <div className="app-shell">
+        <div className={`app-shell${isMockInterviewFocusMode ? ' mock-interview-focus-mode' : ''}`}>
             <header className="topbar">
                 <div className="topbar-inner">
                     <div className="topbar-title-row">
@@ -5853,20 +6153,7 @@ function App() {
                     <section
                         className={`panel camera-panel${centerCameraLayout ? ' centered-camera-panel' : ''}`}
                     >
-                        {isDesktopViewport && (
-                            <button
-                                type="button"
-                                className="generate-questions-peek-tab"
-                                onClick={() => {
-                                    openGenerateQuestionsCountModal()
-                                }}
-                                disabled={isGeneratingQuestions}
-                                title="Generates questions based on CV/JD/Company Name"
-                            >
-                                {isGeneratingQuestions ? 'Generating...' : 'Generate Questions'}
-                            </button>
-                        )}
-                        {isDesktopViewport && (
+                        {isDesktopViewport && isPracticeMode && (
                             <button
                                 type="button"
                                 className="question-peek-tab"
@@ -5882,26 +6169,19 @@ function App() {
                                 aria-expanded={questionsDrawerOpen}
                                 aria-controls="questions-modal"
                                 title={
-                                    questionsDrawerOpen
-                                        ? parsedDrawerQuestions.length
+                                    isGeneratingQuestions
+                                        ? 'Generating questions...'
+                                        : questionsDrawerOpen
                                             ? 'Hide questions list modal'
-                                            : 'Hide questions import modal'
-                                        : parsedDrawerQuestions.length
-                                            ? 'Show questions list modal'
-                                            : 'Show questions import modal'
+                                            : 'Show questions list modal'
                                 }
+                                disabled={isGeneratingQuestions}
                             >
-                                {parsedDrawerQuestions.length ? 'Questions List' : 'Questions Import'}
+                                Questions List
                             </button>
                         )}
-                        {isDesktopViewport && (
-                            <span
-                                className={`disabled-tooltip-wrap summary-peek-tab-wrap${summaryViewDisabledReason ? ' has-tooltip' : ''}`}
-                                data-disabled-reason={summaryViewDisabledReason}
-                                onPointerDown={(event) =>
-                                    suppressDisabledTooltipPointerDefault(event, isSummaryViewDisabled)
-                                }
-                            >
+                        {isDesktopViewport && isPracticeMode && (
+                            <span className="summary-peek-tab-wrap">
                                 <button
                                     type="button"
                                     className="summary-peek-tab"
@@ -5917,11 +6197,9 @@ function App() {
                                     aria-expanded={summaryModalOpen}
                                     aria-controls="summary-modal"
                                     title={
-                                        isSummaryViewDisabled
-                                            ? summaryViewDisabledReason
-                                            : summaryModalOpen
-                                                ? 'Hide answer summary modal'
-                                                : 'Show answer summary modal'
+                                        summaryModalOpen
+                                            ? 'Hide answer summary modal'
+                                            : 'Show answer summary modal'
                                     }
                                     disabled={isSummaryViewDisabled}
                                 >
@@ -5929,41 +6207,26 @@ function App() {
                                 </button>
                             </span>
                         )}
-                        {isDesktopViewport && (
+                        {isDesktopViewport && isPracticeMode && (
                             <button
                                 type="button"
-                                className="am-report-peek-tab"
+                                className="reports-peek-tab"
                                 onClick={() => {
-                                    void generateAmFeedbackReport()
+                                    void generateCombinedInterviewReports()
                                 }}
                                 disabled={isGeneratingAmReport || isGeneratingDetailedReport || !interviewSummaries.length}
                                 title={
                                     interviewSummaries.length
-                                        ? 'Generate AM feedback report PDF from summary and CV/JD'
-                                        : 'Answer a question first to generate a report.'
+                                        ? 'Generate reports sequentially (Detailed first, then AM) and review both PDFs side-by-side'
+                                        : 'Answer a question first to generate reports.'
                                 }
                             >
-                                {isGeneratingAmReport ? 'Generating...' : 'Generate AM Report'}
+                                {(isGeneratingAmReport || isGeneratingDetailedReport)
+                                    ? 'Generating Reports...'
+                                    : 'Generate Reports'}
                             </button>
                         )}
-                        {isDesktopViewport && (
-                            <button
-                                type="button"
-                                className="detailed-report-peek-tab"
-                                onClick={() => {
-                                    void generateDetailedInterviewReport()
-                                }}
-                                disabled={isGeneratingDetailedReport || isGeneratingAmReport || !interviewSummaries.length}
-                                title={
-                                    interviewSummaries.length
-                                        ? 'Generate detailed per-question report with suggested improved answers'
-                                        : 'Answer a question first to generate a detailed report.'
-                                }
-                            >
-                                {isGeneratingDetailedReport ? 'Generating...' : 'Generate Detailed Report'}
-                            </button>
-                        )}
-                        {isDesktopViewport && (
+                        {isDesktopViewport && isPracticeMode && (
                             <span
                                 className={`disabled-tooltip-wrap previous-peek-tab-wrap${previousAnswersViewDisabledReason ? ' has-tooltip' : ''}`}
                                 data-disabled-reason={previousAnswersViewDisabledReason}
@@ -5987,7 +6250,7 @@ function App() {
                             </span>
                         )}
 
-                        {isDesktopViewport && (
+                        {isDesktopViewport && isPracticeMode && (
                             <button
                                 type="button"
                                 className="cvjd-peek-tab"
@@ -6023,7 +6286,11 @@ function App() {
                             />
 
                             {showSelfView ? (
-                                <div className={`self-view-frame${showPiP ? ' pip' : ' full'}${isPortraitVideo ? ' portrait' : ''}`}>
+                                <div
+                                    className={`self-view-frame${showPiP ? ' pip' : ' full'}${isPortraitVideo ? ' portrait' : ''}`}
+                                    onMouseDown={handleSelfViewFrameMouseDown}
+                                    onDoubleClick={handleSelfViewFrameDoubleClick}
+                                >
                                     <video
                                         ref={videoRef}
                                         className="camera-video"
@@ -6141,7 +6408,7 @@ function App() {
                                 ) : null}
                             </div>
 
-                            {questionInput.trim() ? (
+                            {(questionInput.trim() && (isPracticeMode || isMockQuestionOverlayVisible)) ? (
                                 <div className="camera-question-overlay" aria-live="polite">
                                     <p>
                                         {currentQuestionListNumber
@@ -6170,107 +6437,111 @@ function App() {
                                             {deepgramKeyWarningText}
                                         </button>
                                     ) : null}
-                                    <div className="camera-recording-primary">
-                                        <button
-                                            type="button"
-                                            className="btn ghost two-line-btn"
-                                            onClick={() => startRecording('audio')}
-                                            disabled={isTranscribing}
-                                        >
-                                            <span>
-                                                Start Audio
-                                                <br />
-                                                Recording
+                                    {isPracticeMode && (
+                                        <>
+                                            <div className="camera-recording-primary">
+                                                <button
+                                                    type="button"
+                                                    className="btn ghost two-line-btn"
+                                                    onClick={() => startRecording('audio')}
+                                                    disabled={isTranscribing}
+                                                >
+                                                    <span>
+                                                        Start Audio
+                                                        <br />
+                                                        Recording
+                                                    </span>
+                                                </button>
+                                                <span
+                                                    className={`disabled-tooltip-wrap start-video-wrap${isVideoStartDisabled && videoStartDisabledReason ? ' has-tooltip' : ''}`}
+                                                    data-disabled-reason={videoStartDisabledReason}
+                                                >
+                                                    <button
+                                                        type="button"
+                                                        className="btn two-line-btn"
+                                                        onClick={() => startRecording('video')}
+                                                        disabled={isVideoStartDisabled}
+                                                    >
+                                                        <span>
+                                                            Start Video
+                                                            <br />
+                                                            Recording
+                                                        </span>
+                                                    </button>
+                                                </span>
+                                            </div>
+                                            <span
+                                                className={`disabled-tooltip-wrap question-next-tooltip-wrap camera-recording-next-wrap${showNoNextQuestionTooltip ? ' has-tooltip' : ''}`}
+                                            >
+                                                {hasQuestionsInList ? (
+                                                    <>
+                                                        <button
+                                                            type="button"
+                                                            className="btn ghost question-prev-btn two-line-btn"
+                                                            onClick={handlePreviousQuestionAction}
+                                                            disabled={isImportQuestionDisabled}
+                                                            title="Go to previous question"
+                                                        >
+                                                            <span className="material-symbols-outlined question-nav-icon" aria-hidden="true">
+                                                                chevron_left
+                                                            </span>
+                                                            <span className="question-nav-label">
+                                                                Previous
+                                                                <br />
+                                                                Question
+                                                            </span>
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            className="btn question-next-btn two-line-btn"
+                                                            onClick={handleNextQuestionAction}
+                                                            disabled={isImportQuestionDisabled}
+                                                            title={nextQuestionTitle}
+                                                        >
+                                                            <span className="question-nav-label">
+                                                                Next
+                                                                <br />
+                                                                Question
+                                                            </span>
+                                                            <span className="material-symbols-outlined question-nav-icon" aria-hidden="true">
+                                                                chevron_right
+                                                            </span>
+                                                        </button>
+                                                    </>
+                                                ) : isGeneratingQuestions ? null : canPromptGenerateQuestionsFromCvJd ? (
+                                                    <button
+                                                        type="button"
+                                                        className="btn question-next-btn question-generate-btn two-line-btn"
+                                                        onClick={generateQuestionsInBackground}
+                                                        disabled={isImportQuestionDisabled}
+                                                        title="Generate questions in the background"
+                                                    >
+                                                        <span className="question-nav-label">
+                                                            Generate
+                                                            <br />
+                                                            Questions
+                                                        </span>
+                                                    </button>
+                                                ) : (
+                                                    <button
+                                                        type="button"
+                                                        className="btn ghost question-next-btn two-line-btn"
+                                                        onClick={openCvJdModal}
+                                                        disabled={isImportQuestionDisabled}
+                                                        title="Add CV and JD details first"
+                                                    >
+                                                        <span className="question-nav-label">
+                                                            Add JD and CV
+                                                            <br />
+                                                            information
+                                                        </span>
+                                                    </button>
+                                                )}
                                             </span>
-                                        </button>
-                                        <span
-                                            className={`disabled-tooltip-wrap start-video-wrap${isVideoStartDisabled && videoStartDisabledReason ? ' has-tooltip' : ''}`}
-                                            data-disabled-reason={videoStartDisabledReason}
-                                        >
-                                            <button
-                                                type="button"
-                                                className="btn two-line-btn"
-                                                onClick={() => startRecording('video')}
-                                                disabled={isVideoStartDisabled}
-                                            >
-                                                <span>
-                                                    Start Video
-                                                    <br />
-                                                    Recording
-                                                </span>
-                                            </button>
-                                        </span>
-                                    </div>
-                                    <span
-                                        className={`disabled-tooltip-wrap question-next-tooltip-wrap camera-recording-next-wrap${showNoNextQuestionTooltip ? ' has-tooltip' : ''}`}
-                                    >
-                                        {hasQuestionsInList ? (
-                                            <>
-                                                <button
-                                                    type="button"
-                                                    className="btn ghost question-prev-btn two-line-btn"
-                                                    onClick={handlePreviousQuestionAction}
-                                                    disabled={isImportQuestionDisabled}
-                                                    title="Go to previous question"
-                                                >
-                                                    <span className="material-symbols-outlined question-nav-icon" aria-hidden="true">
-                                                        chevron_left
-                                                    </span>
-                                                    <span className="question-nav-label">
-                                                        Previous
-                                                        <br />
-                                                        Question
-                                                    </span>
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    className="btn question-next-btn two-line-btn"
-                                                    onClick={handleNextQuestionAction}
-                                                    disabled={isImportQuestionDisabled}
-                                                    title={nextQuestionTitle}
-                                                >
-                                                    <span className="question-nav-label">
-                                                        Next
-                                                        <br />
-                                                        Question
-                                                    </span>
-                                                    <span className="material-symbols-outlined question-nav-icon" aria-hidden="true">
-                                                        chevron_right
-                                                    </span>
-                                                </button>
-                                            </>
-                                        ) : isGeneratingQuestions ? null : canPromptGenerateQuestionsFromCvJd ? (
-                                            <button
-                                                type="button"
-                                                className="btn question-next-btn question-generate-btn two-line-btn"
-                                                onClick={generateQuestionsInBackground}
-                                                disabled={isImportQuestionDisabled}
-                                                title="Generate questions in the background"
-                                            >
-                                                <span className="question-nav-label">
-                                                    Generate
-                                                    <br />
-                                                    Questions
-                                                </span>
-                                            </button>
-                                        ) : (
-                                            <button
-                                                type="button"
-                                                className="btn ghost question-next-btn two-line-btn"
-                                                onClick={openCvJdModal}
-                                                disabled={isImportQuestionDisabled}
-                                                title="Add CV and JD details first"
-                                            >
-                                                <span className="question-nav-label">
-                                                    Add JD and CV
-                                                    <br />
-                                                    information
-                                                </span>
-                                            </button>
-                                        )}
-                                    </span>
+                                        </>
+                                    )}
                                 </>
-                            ) : (
+                            ) : isPracticeMode ? (
                                 <button
                                     type="button"
                                     className="btn"
@@ -6278,8 +6549,192 @@ function App() {
                                 >
                                     Stop and Transcribe
                                 </button>
-                            )}
+                            ) : null}
                         </div>
+
+                        {!isPracticeMode && (
+                            <div className="actions wrap mock-interview-actions">
+                                <div className="mock-question-actions">
+                                    <button
+                                        type="button"
+                                        className={`btn two-line-btn mock-cvjd-btn${hasMockCvJdInput ? ' ghost' : ' mock-cvjd-pulse-btn'}`}
+                                        onClick={openCvJdModal}
+                                        disabled={isImportQuestionDisabled}
+                                        title={
+                                            hasMockCvJdInput
+                                                ? 'Review or update your saved CV and JD details'
+                                                : 'Add CV and JD details'
+                                        }
+                                    >
+                                        <span>
+                                            {hasMockCvJdInput ? 'Modify JD/CV' : 'Input JD/CV'}
+                                        </span>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className={`btn two-line-btn mock-generate-questions-btn${isMockMissingCvJdInput ? ' ghost' : ''}`}
+                                        onClick={() =>
+                                            requestGenerateQuestionsFromQuestionsModal({
+                                                openQuestionsDrawer: false,
+                                            })
+                                        }
+                                        disabled={
+                                            isGeneratingQuestions ||
+                                            isImportQuestionDisabled ||
+                                            isMockMissingCvJdInput
+                                        }
+                                        title={
+                                            isMockMissingCvJdInput
+                                                ? 'Add CV and JD details first.'
+                                                : hasQuestionsInList
+                                                    ? 'Re-generate questions based on CV/JD/Company Name'
+                                                    : 'Generate questions based on CV/JD/Company Name'
+                                        }
+                                    >
+                                        {isGeneratingQuestions
+                                            ? (
+                                                <span>
+                                                    Generating
+                                                    <br />
+                                                    {`(${generatedQuestionProgressCount}/${requestedQuestionGenerationCount})`}
+                                                </span>
+                                            )
+                                            : (
+                                                <span>
+                                                    {hasQuestionsInList ? 'Re-generate' : 'Generate'}
+                                                    <br />
+                                                    Questions
+                                                </span>
+                                            )}
+                                    </button>
+                                </div>
+                                <div className="mock-start-actions">
+                                    <button
+                                        type="button"
+                                        className={`btn mock-start-interview-btn${isMockMissingCvJdInput ? ' ghost' : ''}`}
+                                        onClick={handleStartMockInterview}
+                                        disabled={
+                                            isGeneratingQuestions ||
+                                            isMockMissingCvJdInput ||
+                                            !hasQuestionsInList ||
+                                            (isMockInterviewStarted &&
+                                                (!isRecording || isSpeakingQuestion || isPreparingRecording || isTranscribing))
+                                        }
+                                        title={
+                                            isGeneratingQuestions
+                                                ? 'Wait for question generation to finish.'
+                                                : isMockMissingCvJdInput
+                                                    ? 'Add CV and JD details first.'
+                                                    : !hasQuestionsInList
+                                                        ? 'Generate questions first.'
+                                                        : isMockInterviewStarted && (isSpeakingQuestion || isPreparingRecording || isTranscribing)
+                                                            ? 'Reading current question with TTS.'
+                                                            : isMockInterviewStarted && isRecording
+                                                                ? 'Done with current question and continue to the next one.'
+                                                                : 'Start current mock interview.'
+                                        }
+                                    >
+                                        <span>
+                                            {isMockInterviewStarted
+                                                ? (isSpeakingQuestion || isPreparingRecording || isTranscribing)
+                                                    ? 'Reading Question (TTS)'
+                                                    : 'Finished my Answer'
+                                                : (
+                                                    <>
+                                                        Start Mock
+                                                        <br />
+                                                        Interview
+                                                    </>
+                                                )}
+                                        </span>
+                                    </button>
+                                </div>
+                                <div className="mock-right-actions">
+                                    <button
+                                        type="button"
+                                        className="btn ghost mock-show-current-question-btn"
+                                        onClick={handleShowCurrentMockQuestion}
+                                        disabled={isMockMissingCvJdInput || !hasQuestionsInList}
+                                        title={
+                                            isMockMissingCvJdInput
+                                                ? 'Add CV and JD details first.'
+                                                : !hasQuestionsInList
+                                                    ? 'Generate questions first.'
+                                                    : isMockQuestionOverlayVisible
+                                                        ? 'Hide the current question.'
+                                                        : 'Show the current question.'
+                                        }
+                                    >
+                                        <span>
+                                            {isMockQuestionOverlayVisible ? 'Hide Current' : 'Show Current'}
+                                            <br />
+                                            Question
+                                        </span>
+                                    </button>
+                                    <div className="mock-end-actions">
+                                        <button
+                                            type="button"
+                                            className={`btn two-line-btn mock-end-interview-btn${isMockMissingCvJdInput ? ' ghost' : ''}`}
+                                            onClick={handleEndQuestionInterviewAndGenerateReports}
+                                            disabled={
+                                                isMockMissingCvJdInput ||
+                                                !hasQuestionsInList ||
+                                                !isMockInterviewStarted ||
+                                                isEndingMockInterview
+                                            }
+                                            title={
+                                                isMockMissingCvJdInput
+                                                    ? 'Add CV and JD details first.'
+                                                    : !hasQuestionsInList
+                                                        ? 'Generate questions first.'
+                                                        : !isMockInterviewStarted
+                                                            ? 'Start mock interview first.'
+                                                            : isEndingMockInterview
+                                                                ? 'Ending interview and saving current answer...'
+                                                                : !isMockOnLastQuestion
+                                                                    ? 'End interview early and save current answer.'
+                                                                    : 'End current mock interview.'
+                                            }
+                                        >
+                                            <span>
+                                                {isEndingMockInterview
+                                                    ? 'Ending...'
+                                                    : isMockInterviewStarted && !isMockOnLastQuestion
+                                                        ? 'End Interview Early'
+                                                        : 'End Interview'}
+                                            </span>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="btn ghost two-line-btn mock-generate-reports-btn"
+                                            onClick={handleGenerateReportsFromMockInterview}
+                                            disabled={
+                                                isMockMissingCvJdInput ||
+                                                !hasQuestionsInList ||
+                                                !hasMockInterviewStartedOnce ||
+                                                isMockInterviewStarted ||
+                                                isImportQuestionDisabled ||
+                                                isGeneratingAmReport ||
+                                                isGeneratingDetailedReport
+                                            }
+                                            title={
+                                                isMockMissingCvJdInput
+                                                    ? 'Add CV and JD details first.'
+                                                    : !hasQuestionsInList
+                                                        ? 'Generate questions first.'
+                                                        : !hasMockInterviewStartedOnce
+                                                            ? 'Start mock interview first.'
+                                                            : isMockInterviewStarted || isImportQuestionDisabled
+                                                                ? 'End the interview first before generating reports.'
+                                                                : 'Generate reports sequentially (Detailed first, then AM).'
+                                            }
+                                        >
+                                            <span>Generate Reports</span>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
 
                         {debugEnabled && (
                             <div className="actions wrap camera-controls-row">
@@ -6494,11 +6949,14 @@ function App() {
                                             Revalidation recommended. Your key was last checked over 30 days ago.
                                         </p>
                                     )}
-                                    {!hasTtsProvider && readQuestionWithTts && (
-                                        <p className="muted">
-                                            Question TTS uses your system voice and is unavailable in this browser.
-                                        </p>
-                                    )}
+                                    {!hasTtsProvider && (
+                                        cameraWorkflowMode !== CAMERA_WORKFLOW_MODE_PRACTICE ||
+                                        readQuestionWithTts
+                                    ) && (
+                                            <p className="muted">
+                                                Question TTS uses your system voice and is unavailable in this browser.
+                                            </p>
+                                        )}
                                     {banner && <p className="banner">{banner}</p>}
                                     {deepgramDebugEnabled && transcriptionProviderStatus && (
                                         <p className="muted">{transcriptionProviderStatus}</p>
@@ -6558,79 +7016,15 @@ function App() {
                 </main>
             </div>
 
-            {changelogModalOpen && (
-                <div
-                    className="overlay changelog-overlay"
-                    role="presentation"
-                    onPointerDown={(event) => {
-                        if (event.target === event.currentTarget) {
-                            closeChangelogModal()
-                        }
-                    }}
-                >
-                    <div
-                        id="changelog-modal"
-                        className="modal question-modal changelog-modal"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="changelog-title"
-                        onClick={(event) => event.stopPropagation()}
-                    >
-                        <div className="history-modal-header">
-                            <h2 id="changelog-title">Changelog (Last 10 Releases)</h2>
-                            <div className="summary-header-actions">
-                                <button
-                                    type="button"
-                                    className="btn ghost history-close-btn"
-                                    onClick={closeChangelogModal}
-                                    aria-label="Close"
-                                    title="Close"
-                                >
-                                    X
-                                </button>
-                            </div>
-                        </div>
-
-                        <div className="question-modal-body changelog-modal-body">
-                            <div className="question-modal-inner changelog-modal-inner">
-                                {recentChangelogEntries.length ? (
-                                    <div className="changelog-release-list">
-                                        {recentChangelogEntries.map((release) => (
-                                            <article key={`${release.version}-${release.date}`} className="changelog-release-card">
-                                                <h3>
-                                                    {release.version} <span className="muted">{release.date}</span>
-                                                </h3>
-                                                {release.sections.length ? (
-                                                    release.sections.map((section) => (
-                                                        <section key={`${release.version}-${section.title}`} className="changelog-section">
-                                                            <p className="label changelog-section-title">{section.title}</p>
-                                                            {section.bullets.length ? (
-                                                                <ul className="changelog-bullet-list">
-                                                                    {section.bullets.map((item, index) => (
-                                                                        <li key={`${release.version}-${section.title}-${index}`}>{item}</li>
-                                                                    ))}
-                                                                </ul>
-                                                            ) : null}
-                                                        </section>
-                                                    ))
-                                                ) : (
-                                                    <p className="muted">No changes listed.</p>
-                                                )}
-                                            </article>
-                                        ))}
-                                    </div>
-                                ) : (
-                                    <p className="muted">No changelog entries found.</p>
-                                )}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <ChangelogModal
+                isOpen={changelogModalOpen}
+                onClose={closeChangelogModal}
+                recentChangelogEntries={recentChangelogEntries}
+            />
 
             {historyModalOpen && (
                 <div
-                    className="overlay"
+                    className={`overlay${settingsOpen ? ' overlay-above-settings' : ''}`}
                     role="presentation"
                     onPointerDown={(event) => {
                         if (event.target === event.currentTarget) {
@@ -6775,7 +7169,7 @@ function App() {
                                             onClick={() => selectPreviousAnswer(item)}
                                         >
                                             <strong>{item.question}</strong>
-                                            <span>{formatReadableCapturedDate(item.capturedAt)}</span>
+                                            <span>{formatReadableCapturedDate(item.capturedAt, sanitizeDisplayText)}</span>
                                             {item.folderPath ? (
                                                 <span className="history-folder-chip">{item.folderPath}</span>
                                             ) : (
@@ -6802,7 +7196,7 @@ function App() {
                                                 <p className="metric-label history-detail-meta">
                                                     {selectedPreviousAnswer.folderPath ? `${selectedPreviousAnswer.folderPath} · ` : ''}
                                                     {selectedPreviousAnswer.source} ·{' '}
-                                                    {formatReadableCapturedDate(selectedPreviousAnswer.capturedAt)}
+                                                    {formatReadableCapturedDate(selectedPreviousAnswer.capturedAt, sanitizeDisplayText)}
                                                 </p>
                                                 {selectedPreviousAnswer.source !==
                                                     PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE && (
@@ -6999,7 +7393,7 @@ function App() {
 
             {summaryModalOpen && (
                 <div
-                    className="overlay"
+                    className={`overlay${settingsOpen ? ' overlay-above-settings' : ''}`}
                     role="presentation"
                     onPointerDown={(event) => {
                         if (event.target === event.currentTarget) {
@@ -7030,6 +7424,18 @@ function App() {
                                         content_copy
                                     </span>
                                     <span>Copy All</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn danger"
+                                    onClick={clearAllSummaryAnswers}
+                                    disabled={!interviewSummaries.length}
+                                    title="Clear all answers"
+                                >
+                                    <span className="material-symbols-outlined topbar-icon" aria-hidden="true">
+                                        delete_sweep
+                                    </span>
+                                    <span>Clear All Answers</span>
                                 </button>
                                 <button
                                     type="button"
@@ -7064,7 +7470,7 @@ function App() {
                                             onClick={() => setSelectedSummaryId(item.id)}
                                         >
                                             <strong>{item.question}</strong>
-                                            <span>{formatReadableCapturedDate(item.capturedAt)}</span>
+                                            <span>{formatReadableCapturedDate(item.capturedAt, sanitizeDisplayText)}</span>
                                         </button>
                                     ))}
                                     {!interviewSummaries.length && (
@@ -7119,7 +7525,7 @@ function App() {
                                             <div className="history-detail-title-block">
                                                 <h3>{selectedSummary.question}</h3>
                                                 <p className="metric-label history-detail-meta">
-                                                    {formatReadableCapturedDate(selectedSummary.capturedAt)}
+                                                    {formatReadableCapturedDate(selectedSummary.capturedAt, sanitizeDisplayText)}
                                                 </p>
                                             </div>
                                             <div className="history-detail-actions">
@@ -7203,10 +7609,14 @@ function App() {
                                     type="button"
                                     className="btn ghost"
                                     onClick={() => {
-                                        openGenerateQuestionsCountModal({ closeCvJd: true })
+                                        requestGenerateQuestionsFromQuestionsModal({ closeCvJd: true })
                                     }}
-                                    disabled={isGeneratingQuestions}
-                                    title="Generates questions based on CV/JD/Company Name"
+                                    disabled={isGeneratingQuestions || (!cvText.trim() && !jdText.trim())}
+                                    title={
+                                        !cvText.trim() && !jdText.trim()
+                                            ? 'Add CV or JD details first.'
+                                            : 'Generates questions based on CV/JD/Company Name'
+                                    }
                                 >
                                     {isGeneratingQuestions ? 'Generating...' : 'Generate Questions'}
                                 </button>
@@ -7224,9 +7634,6 @@ function App() {
 
                         <div className="question-modal-body cvjd-modal-body">
                             <div className="question-modal-inner cvjd-modal-inner">
-                                <p className="muted">
-                                    Save your candidate profile and target role details here for quick Gemini prompts.
-                                </p>
                                 <label htmlFor="cvjd-consultant-full-name" className="label cvjd-label">
                                     Consultant Full Name
                                 </label>
@@ -7238,6 +7645,7 @@ function App() {
                                     onChange={(event) => setConsultantFullNameInput(event.target.value)}
                                     placeholder="Example: Alex Morgan"
                                     autoComplete="off"
+                                    disabled={isCvJdModalEditLocked}
                                 />
                                 <label htmlFor="cvjd-company" className="label cvjd-label">
                                     Company Name
@@ -7250,6 +7658,7 @@ function App() {
                                     onChange={(event) => setCompanyNameInput(event.target.value)}
                                     placeholder="Example: Contoso"
                                     autoComplete="off"
+                                    disabled={isCvJdModalEditLocked}
                                 />
 
                                 <label htmlFor="cvjd-job-title" className="label cvjd-label">
@@ -7263,6 +7672,7 @@ function App() {
                                     onChange={(event) => setJobTitleInput(event.target.value)}
                                     placeholder="Example: Senior Consultant"
                                     autoComplete="off"
+                                    disabled={isCvJdModalEditLocked}
                                 />
 
                                 <label htmlFor="cvjd-jd" className="label cvjd-label">
@@ -7275,6 +7685,7 @@ function App() {
                                     onChange={(event) => setJdText(event.target.value)}
                                     rows={12}
                                     placeholder="Paste the job description here"
+                                    disabled={isCvJdModalEditLocked}
                                 />
 
                                 <label htmlFor="cvjd-cv" className="label cvjd-label">
@@ -7287,6 +7698,7 @@ function App() {
                                     onChange={(event) => setCvText(event.target.value)}
                                     rows={12}
                                     placeholder="Paste your CV here"
+                                    disabled={isCvJdModalEditLocked}
                                 />
                             </div>
                         </div>
@@ -7313,7 +7725,7 @@ function App() {
                         onClick={(event) => event.stopPropagation()}
                     >
                         <div className="history-modal-header">
-                            <h2 id="questions-modal-title">Questions LIst</h2>
+                            <h2 id="questions-modal-title">Questions List</h2>
                             <div className="summary-header-actions">
                                 <button
                                     type="button"
@@ -7470,88 +7882,130 @@ function App() {
                             </div>
                         </div>
                         <div className="settings-modal-body">
-                            <p className="muted">
-                                Add your Deepgram API key to enable live transcription. Your key is stored only in this browser.
-                            </p>
-
-                            <label htmlFor="deepgram-key" className="label">
-                                Deepgram API Key
-                            </label>
-                            <div className="key-input-row">
-                                <input
-                                    ref={deepgramKeyInputRef}
-                                    id="deepgram-key"
-                                    type={showKey ? 'text' : 'password'}
-                                    value={keyInput}
-                                    onChange={(event) => updateInput(event.target.value)}
-                                    onBlur={validateOnBlur}
-                                    aria-describedby={fieldError ? 'key-error' : undefined}
-                                    className={fieldError ? 'field field-error' : 'field'}
-                                    autoComplete="off"
-                                />
-                                <button
-                                    type="button"
-                                    className="btn key-save-btn"
-                                    onMouseDown={(event) => event.preventDefault()}
-                                    onClick={saveSettings}
-                                >
-                                    Save key
-                                </button>
-                            </div>
-                            <div className="actions wrap key-actions-row">
-                                <button
-                                    type="button"
-                                    className="btn ghost"
-                                    onClick={() => setShowKey((prev) => !prev)}
-                                >
-                                    {showKey ? 'Hide key' : 'Show key'}
-                                </button>
-                                {hasKey && (
+                            <div className="settings-section">
+                                <label className="label interview-mode-label">Interview Mode</label>
+                                <div className="camera-mode-toggle" role="group" aria-label="Interview mode">
                                     <button
                                         type="button"
-                                        className="btn danger"
-                                        onClick={() => setConfirmRemoveOpen(true)}
+                                        className={`btn camera-mode-toggle-btn${cameraWorkflowMode === CAMERA_WORKFLOW_MODE_PRACTICE ? ' is-active' : ' ghost'}`}
+                                        onClick={() => setCameraWorkflowMode(CAMERA_WORKFLOW_MODE_PRACTICE)}
+                                        aria-pressed={cameraWorkflowMode === CAMERA_WORKFLOW_MODE_PRACTICE}
                                     >
-                                        Remove key
+                                        Practice Mode
                                     </button>
-                                )}
-                                <label className="debug-toggle" title="Use local fallback when Deepgram key is missing">
-                                    <input
-                                        type="checkbox"
-                                        checked={fallbackWithoutDeepgramKey}
-                                        onChange={(event) =>
-                                            setFallbackWithoutDeepgramKey(event.target.checked)
-                                        }
-                                    />
-                                    <span>Use fallback when Deepgram key is missing</span>
-                                </label>
+                                    <button
+                                        type="button"
+                                        className={`btn camera-mode-toggle-btn${cameraWorkflowMode === CAMERA_WORKFLOW_MODE_MOCK_INTERVIEW ? ' is-active' : ' ghost'}`}
+                                        onClick={() => setCameraWorkflowMode(CAMERA_WORKFLOW_MODE_MOCK_INTERVIEW)}
+                                        aria-pressed={cameraWorkflowMode === CAMERA_WORKFLOW_MODE_MOCK_INTERVIEW}
+                                    >
+                                        Mock Interview Mode
+                                    </button>
+                                </div>
+                                <div className="camera-mode-toggle settings-mode-shortcuts">
+                                    <button
+                                        type="button"
+                                        className="btn ghost camera-mode-toggle-btn"
+                                        onClick={openLocalStoragePreviousAnswersFromSettings}
+                                    >
+                                        View Previous Answers
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn ghost camera-mode-toggle-btn"
+                                        onClick={openSessionSummaryFromSettings}
+                                    >
+                                        View Session Summary
+                                    </button>
+                                </div>
                             </div>
-                            {fieldError && (
-                                <p id="key-error" className="error-text" aria-live="polite">
-                                    {fieldError}
-                                </p>
-                            )}
-
-                            <p className="privacy-note">
-                                Anyone with access to this browser profile can use this key until you remove it.
-                            </p>
-                            <p className="privacy-note">
-                                Do not share screenshots of this page while key is visible.
-                            </p>
-                            <label className="debug-toggle">
-                                <input
-                                    type="checkbox"
-                                    checked={deepgramDebugEnabled}
-                                    onChange={(event) => setDeepgramDebugEnabled(event.target.checked)}
-                                />
-                                <span>Deepgram Debug</span>
-                            </label>
 
                             <div className="settings-section">
-                                <label className="label">LLM Chat Providers</label>
-                                <p className="muted">
-                                    Configure OpenRouter or NVIDIA NIM for question generation.
+                                <h3 className="settings-section-title">Speech &amp; Transcription</h3>
+                                <label htmlFor="deepgram-key" className="label label-with-link">
+                                    <span>Deepgram API Key</span>
+                                    <a
+                                        className="settings-provider-link"
+                                        href="https://deepgram.com/"
+                                        target="_blank"
+                                        rel="noreferrer"
+                                    >
+                                        (Get API Key)
+                                    </a>
+                                </label>
+                                <div className="key-input-row">
+                                    <input
+                                        ref={deepgramKeyInputRef}
+                                        id="deepgram-key"
+                                        type={showKey ? 'text' : 'password'}
+                                        value={keyInput}
+                                        onChange={(event) => updateInput(event.target.value)}
+                                        onBlur={validateOnBlur}
+                                        aria-describedby={fieldError ? 'key-error' : undefined}
+                                        className={fieldError ? 'field field-error' : 'field'}
+                                        autoComplete="off"
+                                    />
+                                    <button
+                                        type="button"
+                                        className="btn key-save-btn"
+                                        onMouseDown={(event) => event.preventDefault()}
+                                        onClick={saveSettings}
+                                    >
+                                        Save key
+                                    </button>
+                                </div>
+                                <div className="actions wrap key-actions-row">
+                                    <button
+                                        type="button"
+                                        className="btn ghost"
+                                        onClick={() => setShowKey((prev) => !prev)}
+                                    >
+                                        {showKey ? 'Hide key' : 'Show key'}
+                                    </button>
+                                    {hasKey && (
+                                        <button
+                                            type="button"
+                                            className="btn danger"
+                                            onClick={() => setConfirmRemoveOpen(true)}
+                                        >
+                                            Remove key
+                                        </button>
+                                    )}
+                                    <label className="debug-toggle" title="Use local fallback when Deepgram key is missing">
+                                        <input
+                                            type="checkbox"
+                                            checked={fallbackWithoutDeepgramKey}
+                                            onChange={(event) =>
+                                                setFallbackWithoutDeepgramKey(event.target.checked)
+                                            }
+                                        />
+                                        <span>Use fallback when Deepgram key is missing</span>
+                                    </label>
+                                </div>
+                                {fieldError && (
+                                    <p id="key-error" className="error-text" aria-live="polite">
+                                        {fieldError}
+                                    </p>
+                                )}
+
+                                <p className="privacy-note">
+                                    Anyone with access to this browser profile can use this key until you remove it.
                                 </p>
+                                <p className="privacy-note">
+                                    Do not share screenshots of this page while key is visible.
+                                </p>
+                                <label className="debug-toggle">
+                                    <input
+                                        type="checkbox"
+                                        checked={deepgramDebugEnabled}
+                                        onChange={(event) => setDeepgramDebugEnabled(event.target.checked)}
+                                    />
+                                    <span>Deepgram Debug</span>
+                                </label>
+                            </div>
+
+                            <div className="settings-section">
+                                <h3 className="settings-section-title">LLM Chat Providers</h3>
 
                                 <label className="label">Select Provider</label>
                                 <select
@@ -7559,7 +8013,11 @@ function App() {
                                     value={llmProviderModeInput}
                                     onChange={(event) =>
                                         setLlmProviderModeInput(
-                                            normalizeLlmProviderMode(event.target.value),
+                                            normalizeEnumValue(
+                                                event.target.value,
+                                                LLM_PROVIDER_MODES,
+                                                LLM_PROVIDER_MODE_NIM_ONLY,
+                                            ),
                                         )
                                     }
                                 >
@@ -7571,109 +8029,125 @@ function App() {
                                     Auto mode tries OpenRouter first, then retries with NVIDIA NIM if OpenRouter fails.
                                 </p>
 
-                                <label className="label">OpenRouter API Key</label>
-                                <div className="key-input-row">
-                                    <input
-                                        className="field"
-                                        type="password"
-                                        value={openrouterApiKeyInput}
-                                        onChange={(event) => setOpenrouterApiKeyInput(event.target.value)}
-                                        autoComplete="off"
-                                    />
-                                    <button
-                                        type="button"
-                                        className="btn key-save-btn"
-                                        onMouseDown={(event) => event.preventDefault()}
-                                        onClick={saveOpenrouterKeyOnly}
-                                        disabled={isSavingOpenrouterKey}
-                                    >
-                                        {isSavingOpenrouterKey ? 'Saving...' : 'Save key'}
-                                    </button>
-                                </div>
+                                {shouldShowOpenrouterSettings && (
+                                    <>
+                                        <label className="label label-with-link">
+                                            <span>OpenRouter API Key</span>
+                                            <a
+                                                className="settings-provider-link"
+                                                href="https://openrouter.ai/"
+                                                target="_blank"
+                                                rel="noreferrer"
+                                            >
+                                                (Get API Key)
+                                            </a>
+                                        </label>
+                                        <div className="key-input-row">
+                                            <input
+                                                className="field"
+                                                type="password"
+                                                value={openrouterApiKeyInput}
+                                                onChange={(event) => setOpenrouterApiKeyInput(event.target.value)}
+                                                autoComplete="off"
+                                            />
+                                            <button
+                                                type="button"
+                                                className="btn key-save-btn"
+                                                onMouseDown={(event) => event.preventDefault()}
+                                                onClick={saveOpenrouterKeyOnly}
+                                                disabled={isSavingOpenrouterKey}
+                                            >
+                                                {isSavingOpenrouterKey ? 'Saving...' : 'Save key'}
+                                            </button>
+                                        </div>
 
-                                <label className="label">OpenRouter Model</label>
-                                <select
-                                    className="field"
-                                    value={openrouterModelSelectValue}
-                                    onChange={(event) => handleOpenrouterModelSelection(event.target.value)}
-                                >
-                                    {openrouterModelOptions.map((option) => (
-                                        <option key={option.value} value={option.value}>
-                                            {option.label}
-                                        </option>
-                                    ))}
-                                </select>
-                                {openrouterModelSelectValue === CUSTOM_MODEL_OPTION_VALUE && (
-                                    <input
-                                        className="field"
-                                        type="text"
-                                        value={openrouterCustomModelInput}
-                                        onChange={(event) => {
-                                            const nextValue = event.target.value
-                                            setOpenrouterCustomModelInput(nextValue)
-                                            setOpenrouterModelInput(nextValue)
-                                        }}
-                                        placeholder="Enter custom OpenRouter model id"
-                                    />
+                                        <label className="label">OpenRouter Model</label>
+                                        <select
+                                            className="field"
+                                            value={openrouterModelSelectValue}
+                                            onChange={(event) => handleOpenrouterModelSelection(event.target.value)}
+                                        >
+                                            {openrouterModelOptions.map((option) => (
+                                                <option key={option.value} value={option.value}>
+                                                    {option.label}
+                                                </option>
+                                            ))}
+                                        </select>
+                                        {openrouterModelSelectValue === CUSTOM_MODEL_OPTION_VALUE && (
+                                            <input
+                                                className="field"
+                                                type="text"
+                                                value={openrouterCustomModelInput}
+                                                onChange={(event) => {
+                                                    const nextValue = event.target.value
+                                                    setOpenrouterCustomModelInput(nextValue)
+                                                    setOpenrouterModelInput(nextValue)
+                                                }}
+                                                placeholder="Enter custom OpenRouter model id"
+                                            />
+                                        )}
+                                    </>
                                 )}
 
-                                <label className="label">NVIDIA NIM API Key</label>
-                                <div className="key-input-row">
-                                    <input
-                                        className="field"
-                                        type="password"
-                                        value={nimApiKeyInput}
-                                        onChange={(event) => setNimApiKeyInput(event.target.value)}
-                                        autoComplete="off"
-                                    />
-                                    <button
-                                        type="button"
-                                        className="btn key-save-btn"
-                                        onMouseDown={(event) => event.preventDefault()}
-                                        onClick={saveNimKeyOnly}
-                                        disabled={isSavingNimKey}
-                                    >
-                                        {isSavingNimKey ? 'Saving...' : 'Save key'}
-                                    </button>
-                                </div>
+                                {shouldShowNimKeyAndModelSettings && (
+                                    <>
+                                        <label className="label label-with-link">
+                                            <span>NVIDIA NIM API Key</span>
+                                            <a
+                                                className="settings-provider-link"
+                                                href="https://build.nvidia.com/explore/discover"
+                                                target="_blank"
+                                                rel="noreferrer"
+                                            >
+                                                (Get API Key)
+                                            </a>
+                                        </label>
+                                        <div className="key-input-row">
+                                            <input
+                                                className="field"
+                                                type="password"
+                                                value={nimApiKeyInput}
+                                                onChange={(event) => setNimApiKeyInput(event.target.value)}
+                                                autoComplete="off"
+                                            />
+                                            <button
+                                                type="button"
+                                                className="btn key-save-btn"
+                                                onMouseDown={(event) => event.preventDefault()}
+                                                onClick={saveNimKeyOnly}
+                                                disabled={isSavingNimKey}
+                                            >
+                                                {isSavingNimKey ? 'Saving...' : 'Save key'}
+                                            </button>
+                                        </div>
 
-                                <label className="label">NVIDIA NIM Model</label>
-                                <select
-                                    className="field"
-                                    value={nimModelSelectValue}
-                                    onChange={(event) => handleNimModelSelection(event.target.value)}
-                                >
-                                    {nimModelOptions.map((option) => (
-                                        <option key={option.value} value={option.value}>
-                                            {option.label}
-                                        </option>
-                                    ))}
-                                </select>
-                                {nimModelSelectValue === CUSTOM_MODEL_OPTION_VALUE && (
-                                    <input
-                                        className="field"
-                                        type="text"
-                                        value={nimCustomModelInput}
-                                        onChange={(event) => {
-                                            const nextValue = event.target.value
-                                            setNimCustomModelInput(nextValue)
-                                            setNimModelInput(nextValue)
-                                        }}
-                                        placeholder="Enter custom NVIDIA NIM model id"
-                                    />
+                                        <label className="label">NVIDIA NIM Model</label>
+                                        <select
+                                            className="field"
+                                            value={nimModelSelectValue}
+                                            onChange={(event) => handleNimModelSelection(event.target.value)}
+                                        >
+                                            {nimModelOptions.map((option) => (
+                                                <option key={option.value} value={option.value}>
+                                                    {option.label}
+                                                </option>
+                                            ))}
+                                        </select>
+                                        {nimModelSelectValue === CUSTOM_MODEL_OPTION_VALUE && (
+                                            <input
+                                                className="field"
+                                                type="text"
+                                                value={nimCustomModelInput}
+                                                onChange={(event) => {
+                                                    const nextValue = event.target.value
+                                                    setNimCustomModelInput(nextValue)
+                                                    setNimModelInput(nextValue)
+                                                }}
+                                                placeholder="Enter custom NVIDIA NIM model id"
+                                            />
+                                        )}
+                                    </>
                                 )}
-
-                                <label className="label">NVIDIA NIM Base URL</label>
-                                <input
-                                    className="field"
-                                    type="text"
-                                    value={nimBaseUrlInput}
-                                    onChange={(event) => setNimBaseUrlInput(event.target.value)}
-                                    placeholder="/api/nim"
-                                />
-                                <p className="muted">
-                                    Use a same-origin proxy endpoint in deployed environments to avoid browser CORS blocks (example: /api/nim).
-                                </p>
 
                                 <div className="actions wrap llm-settings-actions">
                                     <button
@@ -7701,7 +8175,7 @@ function App() {
                             </div>
 
                             <div className="settings-section">
-                                <label className="label">Camera Debug Overlay</label>
+                                <h3 className="settings-section-title">Camera Debug Overlay</h3>
                                 <p className="muted">
                                     Enable landmark and posture debugging overlays in Camera View.
                                 </p>
@@ -7716,7 +8190,7 @@ function App() {
                             </div>
 
                             <div className="settings-section">
-                                <label className="label">Camera Display</label>
+                                <h3 className="settings-section-title">Camera Display</h3>
                                 <label className="debug-toggle">
                                     <input
                                         type="checkbox"
@@ -7810,6 +8284,9 @@ function App() {
                                         >
                                             Choose Custom Interviewer
                                         </button>
+                                        <span className="muted interviewer-image-help interviewer-image-help-inline">
+                                            Choose a custom interviewer image from your device.
+                                        </span>
                                         {hasCustomInterviewerImage && (
                                             <button
                                                 type="button"
@@ -7827,39 +8304,47 @@ function App() {
                                         className="sr-only"
                                         onChange={handleInterviewerImageUpload}
                                     />
-                                    <p className="muted interviewer-image-help">
-                                        Choose a custom interviewer image from your device.
-                                    </p>
                                 </div>
                             </div>
 
                             <div className="settings-section">
-                                <label className="label">Question Playback</label>
+                                <h3 className="settings-section-title">Question Playback</h3>
                                 <p className="muted">
-                                    Read each interview question aloud before recording starts.
+                                    This toggle applies to Practice mode only. Mock Interview mode always reads each question with TTS.
                                 </p>
                                 <label className="debug-toggle">
                                     <input
                                         type="checkbox"
                                         checked={readQuestionWithTts}
                                         onChange={(event) => setReadQuestionWithTts(event.target.checked)}
-                                        disabled={isRecording || isTranscribing || isSpeakingQuestion}
+                                        disabled={
+                                            cameraWorkflowMode !== CAMERA_WORKFLOW_MODE_PRACTICE ||
+                                            isRecording ||
+                                            isTranscribing ||
+                                            isSpeakingQuestion
+                                        }
                                     />
-                                    <span>Read (TTS) Question</span>
+                                    <span>Read (TTS) Question in Practice Mode</span>
                                 </label>
+                                {cameraWorkflowMode !== CAMERA_WORKFLOW_MODE_PRACTICE && (
+                                    <p className="muted">Mock Interview mode enforces question TTS.</p>
+                                )}
                             </div>
 
                             {isDesktopViewport && (
                                 <div className="settings-section">
-                                    <label className="label">Recording Save Folder</label>
-                                    <p className="muted">
+                                    <h3 className="settings-section-title">Recording Save Folder</h3>
+                                    <p className="muted recording-storage-note">
                                         {isIphoneClient
                                             ? 'Recording save folder is unavailable on iPhone browsers.'
                                             : recordingsFolderName
                                                 ? `Current folder: ${recordingsFolderName} (Size: ${formatFileSize(recordingsFolderSizeBytes)})`
                                                 : fileSystemAccessSupported
-                                                    ? 'No folder selected. Recordings can still be downloaded manually.'
+                                                    ? 'No folder selected. Recordings can still be downloaded manually. Transcript and metrics are still saved to local storage.'
                                                     : 'Folder selection is unavailable in this browser.'}
+                                    </p>
+                                    <p className="muted recording-storage-note">
+                                        Transcript + metrics local storage: {formatFileSize(localTranscriptMetricsStorageBytes)} / approx {formatFileSize(LOCAL_STORAGE_APPROX_MAX_BYTES)}.
                                     </p>
                                     {recordingsFolderName && (
                                         <p className="muted">
@@ -7874,6 +8359,13 @@ function App() {
                                             disabled={isFolderFeatureDisabled}
                                         >
                                             {recordingsFolderName ? 'Change Save Folder' : 'Select Save Folder'}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="btn ghost"
+                                            onClick={openLocalStoragePreviousAnswersFromSettings}
+                                        >
+                                            View Previous Answers
                                         </button>
                                         {recordingsFolderName && (
                                             <button
@@ -7954,31 +8446,44 @@ function App() {
                 </div>
             )}
 
-            {amReportModalOpen && (
+            {combinedReportModalOpen && (
                 <div className="overlay" role="presentation">
                     <div
                         className="modal question-modal am-report-stream-modal"
                         role="dialog"
                         aria-modal="true"
-                        aria-labelledby="am-report-stream-title"
+                        aria-labelledby="combined-report-stream-title"
                     >
                         <div className="history-modal-header">
-                            <h2 id="am-report-stream-title">Generating AM Report</h2>
+                            <h2 id="combined-report-stream-title">Generating Reports (Detailed to AM)</h2>
                             <div className="summary-header-actions">
                                 <button
                                     type="button"
                                     className="btn danger"
-                                    onClick={cancelAmReportGeneration}
-                                    disabled={!isGeneratingAmReport}
+                                    onClick={cancelCombinedReportGeneration}
+                                    disabled={!isGeneratingAmReport && !isGeneratingDetailedReport}
                                 >
                                     Cancel
                                 </button>
                             </div>
                         </div>
-                        <div className="question-modal-body am-report-stream-body" ref={amReportPreviewScrollRef}>
-                            <div className="question-modal-inner am-report-stream-inner" aria-live="polite">
-                                <div className="am-report-stream-content no-select">
-                                    <ReactMarkdown>{amReportMarkdownPreview || 'Generating AM report...'}</ReactMarkdown>
+                        <div className="question-modal-body am-report-stream-body">
+                            <div className="combined-report-stream-grid" aria-live="polite">
+                                <div className="combined-report-stream-panel">
+                                    <h3>AM Report</h3>
+                                    <div className="question-modal-inner am-report-stream-inner" ref={amReportPreviewScrollRef}>
+                                        <div className="am-report-stream-content no-select">
+                                            <ReactMarkdown>{amReportMarkdownPreview || 'Generating AM report...'}</ReactMarkdown>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="combined-report-stream-panel">
+                                    <h3>Detailed Report</h3>
+                                    <div className="question-modal-inner am-report-stream-inner" ref={detailedReportPreviewScrollRef}>
+                                        <div className="am-report-stream-content no-select">
+                                            <ReactMarkdown>{detailedReportMarkdownPreview || 'Generating detailed report...'}</ReactMarkdown>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -7986,13 +8491,13 @@ function App() {
                 </div>
             )}
 
-            {amReportPdfPreviewOpen && (
+            {combinedReportPdfPreviewOpen && (
                 <div
                     className="overlay"
                     role="presentation"
                     onPointerDown={(event) => {
                         if (event.target === event.currentTarget) {
-                            requestCloseAmReportPdfPreview()
+                            requestCloseCombinedReportPdfPreview()
                         }
                     }}
                 >
@@ -8000,27 +8505,16 @@ function App() {
                         className="modal question-modal am-report-pdf-modal"
                         role="dialog"
                         aria-modal="true"
-                        aria-labelledby="am-report-pdf-title"
+                        aria-labelledby="combined-report-pdf-title"
                         onClick={(event) => event.stopPropagation()}
                     >
                         <div className="history-modal-header">
-                            <h2 id="am-report-pdf-title">AM Feedback PDF</h2>
+                            <h2 id="combined-report-pdf-title">Report PDFs</h2>
                             <div className="summary-header-actions">
                                 <button
                                     type="button"
-                                    className="btn ghost history-close-btn icon-only-btn"
-                                    onClick={downloadCurrentAmReportPdf}
-                                    aria-label="Download PDF"
-                                    title="Download PDF"
-                                >
-                                    <span className="material-symbols-outlined" aria-hidden="true">
-                                        download
-                                    </span>
-                                </button>
-                                <button
-                                    type="button"
                                     className="btn ghost history-close-btn"
-                                    onClick={requestCloseAmReportPdfPreview}
+                                    onClick={requestCloseCombinedReportPdfPreview}
                                     aria-label="Close"
                                     title="Close"
                                 >
@@ -8028,350 +8522,153 @@ function App() {
                                 </button>
                             </div>
                         </div>
-                        <div className="am-report-pdf-body">
-                            {amReportPdfPreviewUrl ? (
-                                <iframe
-                                    title="AM Feedback PDF Preview"
-                                    src={amReportPdfPreviewUrl}
-                                    className="am-report-pdf-iframe"
-                                />
-                            ) : (
-                                <p className="muted">Could not render PDF preview.</p>
-                            )}
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {detailedReportModalOpen && (
-                <div className="overlay" role="presentation">
-                    <div
-                        className="modal question-modal am-report-stream-modal"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="detailed-report-stream-title"
-                    >
-                        <div className="history-modal-header">
-                            <h2 id="detailed-report-stream-title">Generating Detailed Report</h2>
-                            <div className="summary-header-actions">
-                                <button
-                                    type="button"
-                                    className="btn danger"
-                                    onClick={cancelDetailedReportGeneration}
-                                    disabled={!isGeneratingDetailedReport}
-                                >
-                                    Cancel
-                                </button>
-                            </div>
-                        </div>
-                        <div className="question-modal-body am-report-stream-body" ref={detailedReportPreviewScrollRef}>
-                            <div className="question-modal-inner am-report-stream-inner" aria-live="polite">
-                                <div className="am-report-stream-content no-select">
-                                    <ReactMarkdown>{detailedReportMarkdownPreview || 'Generating detailed report...'}</ReactMarkdown>
+                        <div className="combined-report-pdf-body">
+                            <section className="combined-report-pdf-panel">
+                                <div className="combined-report-pdf-panel-header">
+                                    <h3>AM Report PDF</h3>
+                                    <button
+                                        type="button"
+                                        className="btn ghost icon-only-btn"
+                                        onClick={downloadCurrentAmReportPdf}
+                                        aria-label="Download AM PDF"
+                                        title="Download AM PDF"
+                                        disabled={!amReportPdfBlob}
+                                    >
+                                        <span className="material-symbols-outlined" aria-hidden="true">
+                                            download
+                                        </span>
+                                    </button>
                                 </div>
-                            </div>
+                                <div className="am-report-pdf-body">
+                                    {amReportPdfPreviewUrl ? (
+                                        <iframe
+                                            title="AM Feedback PDF Preview"
+                                            src={amReportPdfPreviewUrl}
+                                            className="am-report-pdf-iframe"
+                                        />
+                                    ) : (
+                                        <p className="muted combined-report-pdf-empty">AM PDF not available.</p>
+                                    )}
+                                </div>
+                            </section>
+                            <section className="combined-report-pdf-panel">
+                                <div className="combined-report-pdf-panel-header">
+                                    <h3>Detailed Report PDF</h3>
+                                    <button
+                                        type="button"
+                                        className="btn ghost icon-only-btn"
+                                        onClick={downloadCurrentDetailedReportPdf}
+                                        aria-label="Download Detailed PDF"
+                                        title="Download Detailed PDF"
+                                        disabled={!detailedReportPdfBlob}
+                                    >
+                                        <span className="material-symbols-outlined" aria-hidden="true">
+                                            download
+                                        </span>
+                                    </button>
+                                </div>
+                                <div className="am-report-pdf-body">
+                                    {detailedReportPdfPreviewUrl ? (
+                                        <iframe
+                                            title="Detailed Interview Report PDF Preview"
+                                            src={detailedReportPdfPreviewUrl}
+                                            className="am-report-pdf-iframe"
+                                        />
+                                    ) : (
+                                        <p className="muted combined-report-pdf-empty">Detailed PDF not available.</p>
+                                    )}
+                                </div>
+                            </section>
                         </div>
                     </div>
                 </div>
             )}
 
-            {detailedReportPdfPreviewOpen && (
-                <div
-                    className="overlay"
-                    role="presentation"
-                    onPointerDown={(event) => {
-                        if (event.target === event.currentTarget) {
-                            requestCloseDetailedReportPdfPreview()
-                        }
-                    }}
-                >
-                    <div
-                        className="modal question-modal am-report-pdf-modal"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="detailed-report-pdf-title"
-                        onClick={(event) => event.stopPropagation()}
-                    >
-                        <div className="history-modal-header">
-                            <h2 id="detailed-report-pdf-title">Detailed Interview Report PDF</h2>
-                            <div className="summary-header-actions">
-                                <button
-                                    type="button"
-                                    className="btn ghost history-close-btn icon-only-btn"
-                                    onClick={downloadCurrentDetailedReportPdf}
-                                    aria-label="Download PDF"
-                                    title="Download PDF"
-                                >
-                                    <span className="material-symbols-outlined" aria-hidden="true">
-                                        download
-                                    </span>
-                                </button>
-                                <button
-                                    type="button"
-                                    className="btn ghost history-close-btn"
-                                    onClick={requestCloseDetailedReportPdfPreview}
-                                    aria-label="Close"
-                                    title="Close"
-                                >
-                                    X
-                                </button>
-                            </div>
-                        </div>
-                        <div className="am-report-pdf-body">
-                            {detailedReportPdfPreviewUrl ? (
-                                <iframe
-                                    title="Detailed Interview Report PDF Preview"
-                                    src={detailedReportPdfPreviewUrl}
-                                    className="am-report-pdf-iframe"
-                                />
-                            ) : (
-                                <p className="muted">Could not render PDF preview.</p>
-                            )}
-                        </div>
-                    </div>
-                </div>
-            )}
+            <ConfirmActionModal
+                isOpen={confirmCloseCombinedReportPdfOpen}
+                title="Exit PDF preview?"
+                message="If you exit now, both generated PDFs will be discarded."
+                confirmLabel="Exit"
+                cancelLabel="Stay"
+                onConfirm={closeCombinedReportPdfPreviewConfirmed}
+                onCancel={() => setConfirmCloseCombinedReportPdfOpen(false)}
+                titleId="combined-pdf-close-title"
+            />
 
-            {confirmCloseAmReportPdfOpen && (
-                <div className="overlay" role="presentation">
-                    <div
-                        className="modal compact"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="am-pdf-close-title"
-                    >
-                        <h2 id="am-pdf-close-title">Exit PDF preview?</h2>
-                        <p className="muted">
-                            If you exit now, the generated PDF will not be saved and will be discarded.
-                        </p>
-                        <div className="actions">
-                            <button
-                                type="button"
-                                className="btn danger"
-                                onClick={closeAmReportPdfPreviewConfirmed}
-                            >
-                                Exit
-                            </button>
-                            <button
-                                type="button"
-                                className="btn ghost"
-                                onClick={() => setConfirmCloseAmReportPdfOpen(false)}
-                            >
-                                Stay
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <ConfirmActionModal
+                isOpen={confirmRemoveOpen}
+                title="Remove Deepgram key?"
+                message="Transcription will be disabled until a new key is added."
+                confirmLabel="Remove key"
+                cancelLabel="Keep key"
+                onConfirm={removeKey}
+                onCancel={() => setConfirmRemoveOpen(false)}
+                titleId="remove-title"
+            />
 
-            {confirmCloseDetailedReportPdfOpen && (
-                <div className="overlay" role="presentation">
-                    <div
-                        className="modal compact"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="detailed-pdf-close-title"
-                    >
-                        <h2 id="detailed-pdf-close-title">Exit PDF preview?</h2>
-                        <p className="muted">
-                            If you exit now, the generated PDF will not be saved and will be discarded.
-                        </p>
-                        <div className="actions">
-                            <button
-                                type="button"
-                                className="btn danger"
-                                onClick={closeDetailedReportPdfPreviewConfirmed}
-                            >
-                                Exit
-                            </button>
-                            <button
-                                type="button"
-                                className="btn ghost"
-                                onClick={() => setConfirmCloseDetailedReportPdfOpen(false)}
-                            >
-                                Stay
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <ConfirmActionModal
+                isOpen={confirmFolderSelectOpen}
+                title="Select Save Folder"
+                message="Choose a local folder to automatically save transcripts and video/audio recordings. You can change this folder anytime in Settings."
+                confirmLabel="Select Folder"
+                cancelLabel="Cancel"
+                onConfirm={selectRecordingsFolder}
+                onCancel={() => setConfirmFolderSelectOpen(false)}
+                confirmClassName="btn"
+                titleId="folder-select-title"
+            />
 
-            {confirmRemoveOpen && (
-                <div className="overlay" role="presentation">
-                    <div
-                        className="modal compact"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="remove-title"
-                    >
-                        <h2 id="remove-title">Remove Deepgram key?</h2>
-                        <p className="muted">Transcription will be disabled until a new key is added.</p>
-                        <div className="actions">
-                            <button type="button" className="btn danger" onClick={removeKey}>
-                                Remove key
-                            </button>
-                            <button
-                                type="button"
-                                className="btn ghost"
-                                onClick={() => setConfirmRemoveOpen(false)}
-                            >
-                                Keep key
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <ConfirmActionModal
+                isOpen={confirmRegenerateQuestionsOpen}
+                title="Re-generate questions?"
+                message="Existing questions in this list will be overwritten."
+                confirmLabel="Re-generate"
+                cancelLabel="Cancel"
+                onConfirm={confirmRegenerateQuestions}
+                onCancel={cancelRegenerateQuestions}
+                titleId="regenerate-questions-title"
+            />
 
-            {confirmFolderSelectOpen && (
-                <div className="overlay" role="presentation">
-                    <div
-                        className="modal compact"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="folder-select-title"
-                    >
-                        <h2 id="folder-select-title">Select Save Folder</h2>
-                        <p className="muted">
-                            Choose a local folder to automatically save transcripts and video/audio recordings. You can change this folder anytime in Settings.
-                        </p>
-                        <div className="actions">
-                            <button type="button" className="btn" onClick={selectRecordingsFolder}>
-                                Select Folder
-                            </button>
-                            <button
-                                type="button"
-                                className="btn ghost"
-                                onClick={() => setConfirmFolderSelectOpen(false)}
-                            >
-                                Cancel
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <ConfirmActionModal
+                isOpen={confirmGenerateQuestionsClearSummaryOpen}
+                title="Generate new questions?"
+                message="Generating new questions will clear the current Answer Summary."
+                confirmLabel="Continue"
+                cancelLabel="Cancel"
+                onConfirm={confirmGenerateQuestionsClearSummary}
+                onCancel={cancelGenerateQuestionsClearSummary}
+                titleId="generate-questions-clear-summary-title"
+            />
 
-            {confirmRegenerateQuestionsOpen && (
-                <div className="overlay" role="presentation">
-                    <div
-                        className="modal compact"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="regenerate-questions-title"
-                    >
-                        <h2 id="regenerate-questions-title">Re-generate questions?</h2>
-                        <p className="muted">
-                            Existing questions in this list will be overwritten.
-                        </p>
-                        <div className="actions">
-                            <button
-                                type="button"
-                                className="btn danger"
-                                onClick={confirmRegenerateQuestions}
-                            >
-                                Re-generate
-                            </button>
-                            <button
-                                type="button"
-                                className="btn ghost"
-                                onClick={() => setConfirmRegenerateQuestionsOpen(false)}
-                            >
-                                Cancel
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <ConfirmActionModal
+                isOpen={confirmStartNewMockInterviewOpen}
+                title="Start a new mock interview?"
+                message="Starting a new mock interview will clear the current Answer Summary."
+                confirmLabel="Start New Interview"
+                cancelLabel="Cancel"
+                onConfirm={confirmStartNewMockInterview}
+                onCancel={cancelStartNewMockInterview}
+                titleId="restart-mock-title"
+            />
 
-            {generateQuestionsCountModalOpen && (
-                <div className="overlay" role="presentation">
-                    <div
-                        className="modal compact"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="question-count-title"
-                    >
-                        <h2 id="question-count-title">How many questions?</h2>
-                        <p className="muted">
-                            Enter how many interview questions to generate.
-                        </p>
-                        <label htmlFor="question-count-input" className="label">
-                            Question count
-                        </label>
-                        <input
-                            id="question-count-input"
-                            type="number"
-                            className="field"
-                            min={3}
-                            max={40}
-                            step={1}
-                            value={generateQuestionsCountInput}
-                            onChange={(event) => setGenerateQuestionsCountInput(event.target.value)}
-                            autoFocus
-                        />
-                        <div className="actions">
-                            <button
-                                type="button"
-                                className="btn"
-                                onClick={confirmGenerateQuestionsCountSelection}
-                            >
-                                Generate Questions
-                            </button>
-                            <button
-                                type="button"
-                                className="btn ghost"
-                                onClick={closeGenerateQuestionsCountModal}
-                            >
-                                Cancel
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <GenerateQuestionsCountModal
+                isOpen={generateQuestionsCountModalOpen}
+                value={generateQuestionsCountInput}
+                onValueChange={setGenerateQuestionsCountInput}
+                onConfirm={confirmGenerateQuestionsCountSelection}
+                onClose={closeGenerateQuestionsCountModal}
+                min={2}
+                max={25}
+            />
 
-            {pendingDeleteAction && (
-                <div className="overlay" role="presentation">
-                    <div
-                        className="modal compact"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="delete-confirm-title"
-                    >
-                        <h2 id="delete-confirm-title">
-                            {pendingDeleteAction.kind === 'parsed-question'
-                                ? 'Delete question?'
-                                : pendingDeleteAction.kind === 'previous-answer'
-                                    ? 'Delete previous answer?'
-                                    : 'Delete answer from summary?'}
-                        </h2>
-                        <p className="muted">
-                            {pendingDeleteAction.kind === 'parsed-question'
-                                ? 'This question will be removed from the Questions Import list.'
-                                : pendingDeleteAction.kind === 'previous-answer'
-                                    ? selectedPreviousAnswer?.source ===
-                                        PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE
-                                        ? 'This will remove the selected answer from local storage history.'
-                                        : `This will remove the selected answer and move linked saved files into ${RECYCLE_BIN_FOLDER_NAME} under the selected folder.`
-                                    : 'This will remove the selected answer from Answer Summary only. Saved folder files will not be deleted.'}
-                        </p>
-                        <div className="actions">
-                            <button
-                                type="button"
-                                className="btn danger"
-                                onClick={confirmPendingDeleteAction}
-                            >
-                                Delete
-                            </button>
-                            <button
-                                type="button"
-                                className="btn ghost"
-                                onClick={() => setPendingDeleteAction(null)}
-                            >
-                                Cancel
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <PendingDeleteModal
+                pendingDeleteAction={pendingDeleteAction}
+                selectedPreviousAnswerSource={selectedPreviousAnswer?.source}
+                localStorageSourceValue={PREVIOUS_ANSWERS_SOURCE_LOCAL_STORAGE}
+                recycleBinFolderName={RECYCLE_BIN_FOLDER_NAME}
+                onConfirm={confirmPendingDeleteAction}
+                onCancel={() => setPendingDeleteAction(null)}
+            />
 
             <div className="sr-only" aria-live="polite">
                 {activePopupMessage}
